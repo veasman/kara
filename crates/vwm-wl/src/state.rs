@@ -4,39 +4,29 @@ use smithay::delegate_output;
 use smithay::delegate_seat;
 use smithay::delegate_shm;
 use smithay::delegate_xdg_shell;
-use smithay::desktop::Space;
-use smithay::desktop::Window;
-use smithay::input::Seat;
-use smithay::input::SeatHandler;
-use smithay::input::SeatState;
+use smithay::desktop::{Space, Window};
+use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::input::pointer::CursorImageStatus;
 use smithay::reexports::calloop::LoopSignal;
-use smithay::reexports::wayland_server::Display;
-use smithay::reexports::wayland_server::DisplayHandle;
-use smithay::reexports::wayland_server::Client;
-use smithay::reexports::wayland_server::backend::ClientData;
-use smithay::reexports::wayland_server::backend::ClientId;
-use smithay::reexports::wayland_server::backend::DisconnectReason;
+use smithay::reexports::wayland_server::{Client, Display, DisplayHandle};
+use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_buffer;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::Clock;
-use smithay::utils::Monotonic;
+use smithay::utils::{Clock, Logical, Monotonic, Rectangle, Serial, SERIAL_COUNTER};
 use smithay::wayland::buffer::BufferHandler;
-use smithay::wayland::compositor::CompositorClientState;
-use smithay::wayland::compositor::CompositorHandler;
-use smithay::wayland::compositor::CompositorState;
+use smithay::wayland::compositor::{CompositorClientState, CompositorHandler, CompositorState};
 use smithay::wayland::selection::SelectionHandler;
-use smithay::wayland::selection::data_device::ClientDndGrabHandler;
-use smithay::wayland::selection::data_device::DataDeviceHandler;
-use smithay::wayland::selection::data_device::DataDeviceState;
-use smithay::wayland::selection::data_device::ServerDndGrabHandler;
-use smithay::wayland::shell::xdg::PopupSurface;
-use smithay::wayland::shell::xdg::PositionerState;
-use smithay::wayland::shell::xdg::ToplevelSurface;
-use smithay::wayland::shell::xdg::XdgShellHandler;
-use smithay::wayland::shell::xdg::XdgShellState;
-use smithay::wayland::shm::ShmHandler;
-use smithay::wayland::shm::ShmState;
+use smithay::wayland::selection::data_device::{
+    ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
+};
+use smithay::wayland::shell::xdg::{
+    PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+};
+use smithay::wayland::shm::{ShmHandler, ShmState};
+
+use crate::input::{Keybind, default_keybinds};
+use crate::layout::{layout_workspace, ClientGeometry};
+use crate::workspace::{Workspace, WORKSPACE_COUNT};
 
 pub struct ClientState {
     pub compositor: CompositorClientState,
@@ -52,6 +42,7 @@ pub struct Vwm {
     pub loop_signal: LoopSignal,
     pub running: bool,
 
+    // Smithay protocol state
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
     pub shm_state: ShmState,
@@ -59,8 +50,18 @@ pub struct Vwm {
     pub data_device_state: DataDeviceState,
     pub seat: Seat<Self>,
 
+    // Desktop
     pub space: Space<Window>,
     pub clock: Clock<Monotonic>,
+
+    // Window management
+    pub workspaces: Vec<Workspace>,
+    pub current_ws: usize,
+    pub previous_ws: usize,
+    pub keybinds: Vec<Keybind>,
+
+    // Cached work area (set from output geometry)
+    pub workarea: Rectangle<i32, Logical>,
 }
 
 impl Vwm {
@@ -77,6 +78,8 @@ impl Vwm {
         seat.add_keyboard(Default::default(), 200, 25).unwrap();
         seat.add_pointer();
 
+        let workspaces = (0..WORKSPACE_COUNT).map(Workspace::new).collect();
+
         Self {
             display_handle: dh,
             loop_signal,
@@ -89,9 +92,82 @@ impl Vwm {
             seat,
             space: Space::default(),
             clock: Clock::new(),
+            workspaces,
+            current_ws: 0,
+            previous_ws: 0,
+            keybinds: default_keybinds(),
+            workarea: Rectangle::from_loc_and_size((0, 0), (800, 600)),
         }
     }
+
+    /// Set the work area from the output geometry
+    pub fn set_workarea(&mut self, rect: Rectangle<i32, Logical>) {
+        self.workarea = rect;
+    }
+
+    /// Apply the tiling layout for the current workspace and map windows in the Space
+    pub fn apply_layout(&mut self) {
+        let ws = &self.workspaces[self.current_ws];
+        let geometries = layout_workspace(ws, self.workarea);
+
+        for geom in &geometries {
+            if geom.visible {
+                // Configure the toplevel with the target size
+                if let Some(toplevel) = geom.window.toplevel() {
+                    toplevel.with_pending_state(|state| {
+                        state.size = Some((geom.rect.size.w, geom.rect.size.h).into());
+                    });
+                    toplevel.send_configure();
+                }
+                // Map in the space at the layout position
+                self.space.map_element(geom.window.clone(), geom.rect.loc, false);
+            } else {
+                self.space.unmap_elem(&geom.window);
+            }
+        }
+    }
+
+    /// Set keyboard focus to the currently focused window in the workspace
+    pub fn apply_focus(&mut self) {
+        let ws = &self.workspaces[self.current_ws];
+        let serial = SERIAL_COUNTER.next_serial();
+
+        if let Some(window) = ws.focused() {
+            let window = window.clone();
+            // Deactivate all, activate focused
+            for w in &ws.clients {
+                w.set_activated(false);
+            }
+            window.set_activated(true);
+
+            if let Some(toplevel) = window.toplevel() {
+                let wl_surface = toplevel.wl_surface().clone();
+                let keyboard = self.seat.get_keyboard().unwrap();
+                keyboard.set_focus(self, Some(wl_surface), serial);
+            }
+
+            // Raise focused window
+            self.space.raise_element(&window, true);
+        } else {
+            let keyboard = self.seat.get_keyboard().unwrap();
+            keyboard.set_focus(self, None::<WlSurface>, serial);
+        }
+    }
+
+    /// Focus a specific window (e.g., on click)
+    pub fn focus_window(&mut self, target: &Window) {
+        let ws = &mut self.workspaces[self.current_ws];
+        if let Some(idx) = ws.clients.iter().position(|w| w == target) {
+            if ws.focused_idx != Some(idx) {
+                ws.last_focused_idx = ws.focused_idx;
+                ws.focused_idx = Some(idx);
+            }
+        }
+        self.apply_focus();
+    }
 }
+
+// --- Smithay handler implementations ---
 
 impl CompositorHandler for Vwm {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -103,8 +179,14 @@ impl CompositorHandler for Vwm {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
-        // Ensure the surface is committed in smithay's internal tracking
         smithay::backend::renderer::utils::on_commit_buffer_handler::<Self>(surface);
+
+        // If this commit is for a mapped window, refresh the space
+        if let Some(window) = self.space.elements().find(|w| {
+            w.toplevel().map_or(false, |t| t.wl_surface() == surface)
+        }).cloned() {
+            window.on_commit();
+        }
     }
 }
 
@@ -125,7 +207,33 @@ impl XdgShellHandler for Vwm {
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         let window = Window::new_wayland_window(surface);
-        self.space.map_element(window, (0, 0), false);
+
+        // Add to current workspace
+        self.workspaces[self.current_ws].add_client(window);
+
+        // Re-layout and focus
+        self.apply_layout();
+        self.apply_focus();
+    }
+
+    fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        // Find and remove the window from whichever workspace it's on
+        let target = self.space.elements().find(|w| {
+            w.toplevel().map_or(false, |t| t == &surface)
+        }).cloned();
+
+        if let Some(window) = target {
+            self.space.unmap_elem(&window);
+
+            for ws in &mut self.workspaces {
+                if ws.remove_client(&window) {
+                    break;
+                }
+            }
+
+            self.apply_layout();
+            self.apply_focus();
+        }
     }
 
     fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}
@@ -134,7 +242,7 @@ impl XdgShellHandler for Vwm {
         &mut self,
         _surface: PopupSurface,
         _seat: smithay::reexports::wayland_server::protocol::wl_seat::WlSeat,
-        _serial: smithay::utils::Serial,
+        _serial: Serial,
     ) {
     }
 
@@ -145,8 +253,6 @@ impl XdgShellHandler for Vwm {
         _token: u32,
     ) {
     }
-
-    fn toplevel_destroyed(&mut self, _surface: ToplevelSurface) {}
 }
 
 impl SeatHandler for Vwm {
@@ -159,7 +265,6 @@ impl SeatHandler for Vwm {
     }
 
     fn focus_changed(&mut self, _seat: &Seat<Self>, _focused: Option<&Self::KeyboardFocus>) {}
-
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
 }
 
@@ -175,11 +280,11 @@ impl DataDeviceHandler for Vwm {
 
 impl ClientDndGrabHandler for Vwm {}
 impl ServerDndGrabHandler for Vwm {}
+impl smithay::wayland::output::OutputHandler for Vwm {}
 
 delegate_compositor!(Vwm);
 delegate_xdg_shell!(Vwm);
 delegate_shm!(Vwm);
 delegate_seat!(Vwm);
 delegate_data_device!(Vwm);
-impl smithay::wayland::output::OutputHandler for Vwm {}
 delegate_output!(Vwm);
