@@ -78,6 +78,26 @@ Keybind matching: in the keyboard `input()` filter closure, compare the modified
 - **M6**: Animations — pending (three-tier system: none/light/heavy)
 - **M7**: Production — pending (udev/DRM, XWayland, session management)
 
+## Picking Up Where We Left Off
+
+**Last session**: 2026-04-04. M1+M2 built but NOT runtime-tested yet. Charlton prefers building solid before testing.
+
+**Next task is M3 — config parser**:
+1. Port vwm's C parser (`~/repos/vwm/src/config.c`, ~1900 lines) to Rust in `crates/vwm-config/`
+2. The C parser uses `split_line_tokens()` for tokenization, a block state machine for nesting, and `config_unquote_inplace()` for quoted strings
+3. Add `$variable` expansion (preprocessing pass, like Hyprland/Sway)
+4. Add `{1-9}` range expansion in the binds block (expands to 9 keybinds)
+5. All blocks: general, theme, animations, bar (with nested modules), scratchpad (with define), rules, autostart, commands, binds
+6. Include files: `include "path"` with `~` expansion, max depth 16
+7. Hot reload: SIGUSR1 or SIGHUP via `signal-hook` crate
+8. Wire config into `Vwm` state — replace `default_keybinds()` with config-loaded keybinds
+9. Reference config: `~/repos/vwm/example/vwm.conf` is the canonical example
+10. Full plan: `~/.claude/plans/jolly-gathering-hartmanis.md`
+
+**After M3**: M4 (bar), M5 (scratchpad/multi-monitor/rules), M6 (animations), M7 (udev/DRM/XWayland)
+
+**Broader roadmap** (Charlton's notes): theming integration with loom-rs, notification daemon, sigil Wayland migration, rofi replacement
+
 ## Dependencies
 
 - `smithay 0.7` — compositor toolkit (Wayland protocols, input, rendering)
