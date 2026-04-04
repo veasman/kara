@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vwm-wl",
+    "crates/vwm-config",
+    "crates/vwm-bar",
+]
+
+[workspace.dependencies]
+smithay = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
