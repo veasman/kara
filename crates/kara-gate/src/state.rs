@@ -1,5 +1,6 @@
 use smithay::delegate_compositor;
 use smithay::delegate_data_device;
+use smithay::delegate_layer_shell;
 use smithay::delegate_output;
 use smithay::delegate_seat;
 use smithay::delegate_shm;
@@ -21,6 +22,9 @@ use smithay::wayland::selection::data_device::{
 };
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+};
+use smithay::wayland::shell::wlr_layer::{
+    Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
@@ -45,10 +49,14 @@ pub struct Gate {
     // Smithay protocol state
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    pub layer_shell_state: WlrLayerShellState,
     pub shm_state: ShmState,
     pub seat_state: SeatState<Self>,
     pub data_device_state: DataDeviceState,
     pub seat: Seat<Self>,
+
+    // Layer surfaces (kara-summon, kara-whisper, etc.)
+    pub layer_surfaces: Vec<LayerSurface>,
 
     // Desktop
     pub space: Space<Window>,
@@ -81,6 +89,7 @@ impl Gate {
 
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
@@ -120,10 +129,12 @@ impl Gate {
             running: true,
             compositor_state,
             xdg_shell_state,
+            layer_shell_state,
             shm_state,
             seat_state,
             data_device_state,
             seat,
+            layer_surfaces: Vec::new(),
             space: Space::default(),
             clock: Clock::new(),
             config,
@@ -301,6 +312,14 @@ impl CompositorHandler for Gate {
     fn commit(&mut self, surface: &WlSurface) {
         smithay::backend::renderer::utils::on_commit_buffer_handler::<Self>(surface);
 
+        // Handle layer surface initial configure
+        for layer in &self.layer_surfaces {
+            if layer.wl_surface() == surface {
+                layer.ensure_configured();
+                return;
+            }
+        }
+
         // If this commit is for a mapped window, refresh the space
         if let Some(window) = self.space.elements().find(|w| {
             w.toplevel().map_or(false, |t| t.wl_surface() == surface)
@@ -398,12 +417,43 @@ impl DataDeviceHandler for Gate {
     }
 }
 
+impl WlrLayerShellHandler for Gate {
+    fn shell_state(&mut self) -> &mut WlrLayerShellState {
+        &mut self.layer_shell_state
+    }
+
+    fn new_layer_surface(
+        &mut self,
+        surface: LayerSurface,
+        output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+        layer: Layer,
+        namespace: String,
+    ) {
+        tracing::info!("new layer surface: namespace={namespace}, layer={layer:?}");
+
+        // Configure with the full output width, let the client choose height
+        let (w, _h) = self.output_size;
+        surface.with_pending_state(|state| {
+            state.size = Some((w, 0).into());
+        });
+        surface.send_configure();
+
+        self.layer_surfaces.push(surface);
+    }
+
+    fn layer_destroyed(&mut self, surface: LayerSurface) {
+        tracing::info!("layer surface destroyed");
+        self.layer_surfaces.retain(|s| s != &surface);
+    }
+}
+
 impl ClientDndGrabHandler for Gate {}
 impl ServerDndGrabHandler for Gate {}
 impl smithay::wayland::output::OutputHandler for Gate {}
 
 delegate_compositor!(Gate);
 delegate_xdg_shell!(Gate);
+delegate_layer_shell!(Gate);
 delegate_shm!(Gate);
 delegate_seat!(Gate);
 delegate_data_device!(Gate);
