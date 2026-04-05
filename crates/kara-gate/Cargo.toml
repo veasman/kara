@@ -18,3 +18,6 @@ kara-config = { path = "../kara-config" }
 kara-sight = { path = "../kara-sight" }
 kara-ipc = { path = "../kara-ipc" }
 signal-hook = "0.3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+dirs = "6"
+tiny-skia = { workspace = true }
