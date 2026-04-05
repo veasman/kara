@@ -4,7 +4,7 @@
 //! dispatches them, and sends responses.
 
 use std::io::{BufReader, BufWriter};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 
 use kara_ipc::frame::{read_message, write_message};
 use kara_ipc::message::{Request, Response, ThemeColors};
@@ -16,7 +16,7 @@ impl Gate {
     /// Called once per frame from the main loop.
     pub fn poll_ipc(&mut self) {
         // Take listener out to avoid borrow conflict with self
-        let mut listener = match self.ipc_listener.take() {
+        let listener = match self.ipc_listener.take() {
             Some(l) => l,
             None => return,
         };

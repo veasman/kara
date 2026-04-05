@@ -8,7 +8,7 @@ Written in Rust. Built for Arch/Artix Linux. MIT license.
 
 | Name | Role | Status |
 |------|------|--------|
-| **kara-gate** | Wayland compositor | M1-M4 complete |
+| **kara-gate** | Wayland compositor | M1-M5 complete |
 | **kara-sight** | Status bar (in compositor) | M4 complete |
 | **kara-config** | Config parser | M3 complete |
 | **kara-beautify** | Appearance manager | Planned |
@@ -32,6 +32,12 @@ make run          # Run compositor (winit dev backend)
 make install                        # Install to /usr/local
 make PREFIX=/usr install            # Install to /usr
 make install-config                 # Copy example config to ~/.config/kara/
+```
+
+On Arch/Artix:
+
+```sh
+make pkg          # Build pacman package
 ```
 
 ## Configuration

@@ -13,6 +13,7 @@ pub struct TextRenderer {
     pub swash_cache: SwashCache,
     pub font_size: f32,
     pub line_height: f32,
+    font_family: String,
 }
 
 impl TextRenderer {
@@ -21,13 +22,42 @@ impl TextRenderer {
             font_system: FontSystem::new(),
             swash_cache: SwashCache::new(),
             font_size,
-            line_height: font_size * 1.4,
+            line_height: font_size,
+            font_family: String::new(),
+        }
+    }
+
+    pub fn new_with_font(font_family: &str, font_size: f32) -> Self {
+        Self {
+            font_system: FontSystem::new(),
+            swash_cache: SwashCache::new(),
+            font_size,
+            line_height: font_size,
+            font_family: font_family.to_string(),
         }
     }
 
     pub fn set_font_size(&mut self, size: f32) {
         self.font_size = size;
-        self.line_height = size * 1.4;
+        self.line_height = size;
+    }
+
+    pub fn set_font_family(&mut self, family: &str) {
+        self.font_family = family.to_string();
+    }
+
+    /// Compute the y offset needed so that text is vertically centered at `center_y`.
+    /// Returns the y value to pass to `draw()`.
+    pub fn center_y_offset(&self, center_y: f32) -> f32 {
+        // cosmic-text's y parameter is the top of the line area.
+        // Glyphs render at approximately: gy = y + glyph.y - placement.top
+        // For typical fonts: glyph.y=0, placement.top≈ascent≈font_size*0.8
+        // Glyph visual center ≈ y - ascent + glyph_h/2 ≈ y - font_size*0.3
+        // To center: y - font_size*0.3 = center_y → y = center_y + font_size*0.3
+        // Using a more precise approximation based on typical font metrics:
+        // ascent ≈ 0.8 * font_size, glyph_height ≈ font_size
+        // center_offset = ascent - glyph_height/2 = 0.8*fs - 0.5*fs = 0.3*fs
+        center_y + self.font_size * 0.3
     }
 
     /// Measure the pixel width of a text string.
@@ -39,7 +69,11 @@ impl TextRenderer {
         let metrics = Metrics::new(self.font_size, self.line_height);
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
 
-        let attrs = Attrs::new().family(Family::SansSerif);
+        let attrs = if self.font_family.is_empty() {
+            Attrs::new().family(Family::SansSerif)
+        } else {
+            Attrs::new().family(Family::Name(&self.font_family))
+        };
         buffer.set_text(&mut self.font_system, text, &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
@@ -59,7 +93,11 @@ impl TextRenderer {
         let metrics = Metrics::new(self.font_size, self.line_height);
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
 
-        let attrs = Attrs::new().family(Family::SansSerif);
+        let attrs = if self.font_family.is_empty() {
+            Attrs::new().family(Family::SansSerif)
+        } else {
+            Attrs::new().family(Family::Name(&self.font_family))
+        };
         buffer.set_text(&mut self.font_system, text, &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut self.font_system, false);
 

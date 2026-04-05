@@ -33,6 +33,7 @@ impl Default for ApplyOptions {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct DebugInfo {
     pub theme_name: String,
     pub theme_file: PathBuf,

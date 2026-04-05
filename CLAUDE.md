@@ -96,26 +96,25 @@ kara-glimpse    -> kara-ipc
 
 ## Picking Up Where We Left Off
 
-**Last session**: 2026-04-04. Massive restructure session. NOT runtime-tested yet.
+**Last session**: 2026-04-05. Runtime testing and bug fixing.
 
 **What was done this session**:
-1. Restructured vwm-wl → kara monorepo (11 crates, all `kara-*` naming)
-2. Migrated loom-rs into kara-color, kara-theme, kara-beautify
-3. Built kara-ipc (Unix socket, JSON framing, client/server)
-4. Extracted kara-ui (shared canvas + text rendering)
-5. Added wlr-layer-shell protocol support
-6. Added wallpaper rendering (image load → GPU texture)
-7. Implemented all M5 features: environment, autostart, rules, floating, fullscreen, borders, cursor theme, scratchpad
+1. Fixed winit deadlock — WAYLAND_DISPLAY was set before winit::init(), causing self-connection
+2. Fixed bar vertical centering — cosmic-text glyph placement offset was not accounted for
+3. Wired font family through to TextRenderer (was hardcoded to SansSerif)
+4. Eliminated all build warnings across all crates (0 warnings)
+5. Cleaned up all stale vwm references → kara naming
+6. Updated example config, README, env vars (VWM_* → KARA_*)
+7. Runtime-tested with winit backend — compositor launches, bar renders, config loads
 
 **Themes**: 4 shipped — cloud (light/airy), moonlight (dark/red/sharp), natural (gruvbox/warm), vague (muted purple)
 
-**NOT tested at runtime.** Charlton prefers building solid before testing.
+**Runtime tested**: Yes (winit backend on X11). Bar renders correctly, config loads (43 keybinds, 9 commands, 2 rules).
 
-**Next priorities** (ask Charlton):
-1. Runtime test with winit backend
-2. M6: Multi-monitor + animations (per-output workspaces, hotplug, animation system)
-3. M7: Production backend (udev/DRM, libinput, libseat — boot from TTY)
-4. M8: First-party tools (kara-summon, kara-whisper, kara-glimpse — need UI/architecture discussion before building)
+**Next priorities**:
+1. M6: Multi-monitor + animations (per-output workspaces, hotplug, animation system)
+2. M7: Production backend (udev/DRM, libinput, libseat — boot from TTY)
+3. M8: First-party tools (kara-summon, kara-whisper, kara-glimpse)
 
 **Repo**: git@github.com:veasman/kara.git (local dir may be ~/repos/kara/)
 

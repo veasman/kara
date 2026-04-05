@@ -1,4 +1,4 @@
-/// Config file parser — hand-rolled, ported from vwm's C config.c.
+/// Config file parser — hand-rolled block-based format.
 ///
 /// Line-based parser with:
 /// - `split_tokens()` tokenizer (handles single/double quotes, backslash escapes)
@@ -178,7 +178,7 @@ struct ParseContext {
 
 impl ParseContext {
     fn warn(&self, msg: &str) {
-        eprintln!("vwm-config: {}:{}: {}", self.path.display(), self.line_num, msg);
+        eprintln!("kara-config: {}:{}: {}", self.path.display(), self.line_num, msg);
     }
 }
 
@@ -827,14 +827,14 @@ fn load_file_recursive(
     vars: &mut HashMap<String, String>,
 ) {
     if depth > INCLUDE_MAX_DEPTH {
-        eprintln!("vwm-config: include depth exceeded while loading {}", path.display());
+        eprintln!("kara-config: include depth exceeded while loading {}", path.display());
         return;
     }
 
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("vwm-config: could not open {}: {e}", path.display());
+            eprintln!("kara-config: could not open {}: {e}", path.display());
             return;
         }
     };

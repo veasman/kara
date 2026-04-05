@@ -1,5 +1,5 @@
 use smithay::desktop::Window;
-use smithay::utils::{Logical, Rectangle, Size};
+use smithay::utils::{Logical, Rectangle};
 
 use crate::workspace::{LayoutKind, Workspace};
 
@@ -49,7 +49,7 @@ pub fn layout_workspace(
         let fx = area.loc.x + (area.size.w - fw) / 2;
         let fy = area.loc.y + (area.size.h - fh) / 2;
 
-        let outer = Rectangle::from_loc_and_size((fx, fy), (fw, fh));
+        let outer = Rectangle::new((fx, fy).into(), (fw, fh).into());
         let inner = inset_rect(outer, border_px);
 
         result.push(ClientGeometry {
@@ -66,9 +66,9 @@ pub fn layout_workspace(
 
 /// Inset a rectangle by `px` on all sides.
 fn inset_rect(r: Rectangle<i32, Logical>, px: i32) -> Rectangle<i32, Logical> {
-    Rectangle::from_loc_and_size(
-        (r.loc.x + px, r.loc.y + px),
-        ((r.size.w - px * 2).max(1), (r.size.h - px * 2).max(1)),
+    Rectangle::new(
+        (r.loc.x + px, r.loc.y + px).into(),
+        ((r.size.w - px * 2).max(1), (r.size.h - px * 2).max(1)).into(),
     )
 }
 
@@ -87,9 +87,9 @@ fn layout_tile_indexed(
     }
 
     // Apply outer gaps
-    let area = Rectangle::from_loc_and_size(
-        (area.loc.x + gap, area.loc.y + gap),
-        (area.size.w - gap * 2, area.size.h - gap * 2),
+    let area = Rectangle::new(
+        (area.loc.x + gap, area.loc.y + gap).into(),
+        (area.size.w - gap * 2, area.size.h - gap * 2).into(),
     );
 
     if count == 1 {
@@ -132,16 +132,16 @@ fn layout_tile_indexed(
 
     for (pos, &client_idx) in indices.iter().enumerate() {
         let outer = if pos < nmaster {
-            let r = Rectangle::from_loc_and_size(
-                (area.loc.x, area.loc.y + (master_h_each + gap) * mi),
-                (master_w, master_h_each),
+            let r = Rectangle::new(
+                (area.loc.x, area.loc.y + (master_h_each + gap) * mi).into(),
+                (master_w, master_h_each).into(),
             );
             mi += 1;
             r
         } else {
-            let r = Rectangle::from_loc_and_size(
-                (area.loc.x + master_w + gap, area.loc.y + (stack_h_each + gap) * si),
-                (stack_w.max(0), stack_h_each),
+            let r = Rectangle::new(
+                (area.loc.x + master_w + gap, area.loc.y + (stack_h_each + gap) * si).into(),
+                (stack_w.max(0), stack_h_each).into(),
             );
             si += 1;
             r
@@ -169,9 +169,9 @@ fn layout_monocle_indexed(
     focused_idx: Option<usize>,
 ) -> Vec<ClientGeometry> {
     let gap = ws.gap_px;
-    let area = Rectangle::from_loc_and_size(
-        (area.loc.x + gap, area.loc.y + gap),
-        (area.size.w - gap * 2, area.size.h - gap * 2),
+    let area = Rectangle::new(
+        (area.loc.x + gap, area.loc.y + gap).into(),
+        (area.size.w - gap * 2, area.size.h - gap * 2).into(),
     );
 
     let fi = focused_idx.unwrap_or(0);

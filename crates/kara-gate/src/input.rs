@@ -1,6 +1,6 @@
 use smithay::backend::input::{
     AbsolutePositionEvent, ButtonState, Event, InputEvent, KeyState, KeyboardKeyEvent,
-    PointerButtonEvent,
+    PointerButtonEvent, PointerMotionEvent,
 };
 use smithay::desktop::WindowSurfaceType;
 use smithay::input::keyboard::{FilterResult, ModifiersState};
@@ -85,7 +85,8 @@ impl Gate {
     ) {
         match event {
             InputEvent::Keyboard { event } => self.handle_keyboard::<B>(event),
-            InputEvent::PointerMotionAbsolute { event } => self.handle_pointer_motion::<B>(event),
+            InputEvent::PointerMotion { event } => self.handle_pointer_motion_relative::<B>(event),
+            InputEvent::PointerMotionAbsolute { event } => self.handle_pointer_motion_absolute::<B>(event),
             InputEvent::PointerButton { event } => self.handle_pointer_button::<B>(event),
             _ => {}
         }
@@ -130,7 +131,44 @@ impl Gate {
         }
     }
 
-    fn handle_pointer_motion<B: smithay::backend::input::InputBackend>(
+    fn handle_pointer_motion_relative<B: smithay::backend::input::InputBackend>(
+        &mut self,
+        event: B::PointerMotionEvent,
+    ) {
+        let delta = event.delta();
+        let (ow, oh) = self.output_size;
+        let new_x = (self.pointer_location.x + delta.x).clamp(0.0, ow as f64 - 1.0);
+        let new_y = (self.pointer_location.y + delta.y).clamp(0.0, oh as f64 - 1.0);
+        self.pointer_location = (new_x, new_y).into();
+
+        let pos = self.pointer_location;
+        let serial = SERIAL_COUNTER.next_serial();
+        let pointer = self.seat.get_pointer().unwrap();
+
+        let under = self.space.element_under(pos)
+            .and_then(|(window, loc)| {
+                window
+                    .surface_under(
+                        (pos.x - loc.x as f64, pos.y - loc.y as f64),
+                        WindowSurfaceType::ALL,
+                    )
+                    .map(|(s, p)| {
+                        (s, (p.x as f64 + loc.x as f64, p.y as f64 + loc.y as f64).into())
+                    })
+            });
+
+        pointer.motion(
+            self,
+            under,
+            &MotionEvent {
+                location: pos,
+                serial,
+                time: Event::time_msec(&event),
+            },
+        );
+    }
+
+    fn handle_pointer_motion_absolute<B: smithay::backend::input::InputBackend>(
         &mut self,
         event: B::PointerMotionAbsoluteEvent,
     ) {
@@ -145,6 +183,7 @@ impl Gate {
         };
 
         let pos = event.position_transformed(output_geo.size);
+        self.pointer_location = pos;
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().unwrap();
 

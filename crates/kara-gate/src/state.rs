@@ -4,6 +4,7 @@ use smithay::delegate_layer_shell;
 use smithay::delegate_output;
 use smithay::delegate_seat;
 use smithay::delegate_shm;
+use smithay::delegate_xdg_decoration;
 use smithay::delegate_xdg_shell;
 use smithay::desktop::{Space, Window};
 use smithay::input::{Seat, SeatHandler, SeatState};
@@ -27,6 +28,7 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::shell::wlr_layer::{
     Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState,
 };
+use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
 use crate::input::Keybind;
@@ -50,6 +52,8 @@ pub struct Gate {
     // Smithay protocol state
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    #[allow(dead_code)]
+    pub xdg_decoration_state: XdgDecorationState,
     pub layer_shell_state: WlrLayerShellState,
     pub shm_state: ShmState,
     pub seat_state: SeatState<Self>,
@@ -101,6 +105,13 @@ pub struct Gate {
 
     // Border rendering: cached geometry from last apply_layout
     pub border_rects: Vec<(smithay::utils::Rectangle<i32, Logical>, bool)>, // (rect, is_focused)
+
+    // Pointer location (tracked explicitly for relative motion from libinput)
+    pub pointer_location: smithay::utils::Point<f64, Logical>,
+
+    // Backend-specific data (UdevData for udev, None for winit)
+    #[allow(dead_code)]
+    pub backend_data: Option<Box<dyn std::any::Any>>,
 }
 
 impl Gate {
@@ -109,6 +120,7 @@ impl Gate {
 
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
         let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let mut seat_state = SeatState::new();
@@ -143,12 +155,13 @@ impl Gate {
             config.rules.len(),
         );
 
-        let mut gate = Self {
+        let gate = Self {
             display_handle: dh,
             loop_signal,
             running: true,
             compositor_state,
             xdg_shell_state,
+            xdg_decoration_state,
             layer_shell_state,
             shm_state,
             seat_state,
@@ -166,7 +179,7 @@ impl Gate {
             keybinds,
             wallpaper: None,
             output_size: (800, 600),
-            workarea: Rectangle::from_loc_and_size((0, 0), (800, 600)),
+            workarea: Rectangle::new((0, 0).into(), (800, 600).into()),
             ipc_listener: kara_ipc::server::bind_socket().ok(),
             fullscreen_window: None,
             scratchpad_visible: false,
@@ -174,6 +187,8 @@ impl Gate {
             scratchpad_started: false,
             autostart_done: false,
             border_rects: Vec::new(),
+            pointer_location: (0.0, 0.0).into(),
+            backend_data: None,
         };
 
         // Apply environment variables and cursor theme
@@ -237,7 +252,7 @@ impl Gate {
             kara_config::BarPosition::Bottom => (0, h - bar_h),
         };
 
-        self.workarea = Rectangle::from_loc_and_size((0, y), (w, area_h.max(0)));
+        self.workarea = Rectangle::new((0, y).into(), (w, area_h.max(0)).into());
     }
 
     /// Build the workspace context for bar rendering.
@@ -538,7 +553,7 @@ impl WlrLayerShellHandler for Gate {
     fn new_layer_surface(
         &mut self,
         surface: LayerSurface,
-        output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+        _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
         layer: Layer,
         namespace: String,
     ) {
@@ -560,12 +575,41 @@ impl WlrLayerShellHandler for Gate {
     }
 }
 
+impl XdgDecorationHandler for Gate {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        // Always request server-side decorations — kara-gate draws its own
+        // (themed borders/decorations from kara-beautify specs)
+        use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(Mode::ServerSide);
+        });
+        toplevel.send_configure();
+    }
+
+    fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode) {
+        use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(Mode::ServerSide);
+        });
+        toplevel.send_configure();
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(Mode::ServerSide);
+        });
+        toplevel.send_configure();
+    }
+}
+
 impl ClientDndGrabHandler for Gate {}
 impl ServerDndGrabHandler for Gate {}
 impl smithay::wayland::output::OutputHandler for Gate {}
 
 delegate_compositor!(Gate);
 delegate_xdg_shell!(Gate);
+delegate_xdg_decoration!(Gate);
 delegate_layer_shell!(Gate);
 delegate_shm!(Gate);
 delegate_seat!(Gate);

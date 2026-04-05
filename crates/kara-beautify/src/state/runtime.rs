@@ -66,6 +66,7 @@ pub fn read_preview_theme(paths: &KaraPaths) -> Result<Option<String>> {
     read_trimmed(paths.preview_original_theme_file())
 }
 
+#[allow(dead_code)]
 pub fn read_preview_wallpaper(paths: &KaraPaths) -> Result<Option<PathBuf>> {
     Ok(read_trimmed(paths.preview_original_wallpaper_file())?.map(PathBuf::from))
 }

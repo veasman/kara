@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use anyhow::{Result, anyhow};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct KaraPaths {
     pub home: PathBuf,
     pub config_home: PathBuf,

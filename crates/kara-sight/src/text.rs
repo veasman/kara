@@ -235,7 +235,7 @@ fn build_memory(ctx: &ModuleContext) -> ModuleContent {
 
 fn build_title(ctx: &ModuleContext) -> ModuleContent {
     let text = if ctx.focused_title.is_empty() {
-        "vwm-wl".to_string()
+        "kara".to_string()
     } else {
         // Truncate long titles
         if ctx.focused_title.len() > 60 {
@@ -271,7 +271,7 @@ fn build_sync(ctx: &ModuleContext) -> ModuleContent {
 }
 
 fn build_weather(ctx: &ModuleContext) -> ModuleContent {
-    // Weather is typically provided by a custom command via VWM_WEATHER_CMD
+    // Weather is typically provided by a custom command via KARA_WEATHER_CMD
     // For now, return empty — will be populated by script system
     ModuleContent { text: String::new(), color: ctx.theme.text }
 }
@@ -302,9 +302,9 @@ fn build_custom(arg: Option<&str>, ctx: &ModuleContext) -> ModuleContent {
 }
 
 fn build_script(name: &str, ctx: &ModuleContext) -> ModuleContent {
-    // Script modules run VWM_<NAME>_CMD env var with caching
+    // Script modules run KARA_<NAME>_CMD env var with caching
     // For now, try the env var directly
-    let env_name = format!("VWM_{}_CMD", name.to_ascii_uppercase());
+    let env_name = format!("KARA_{}_CMD", name.to_ascii_uppercase());
     let cmd = match std::env::var(&env_name) {
         Ok(c) if !c.is_empty() => c,
         _ => return ModuleContent { text: String::new(), color: ctx.theme.text },

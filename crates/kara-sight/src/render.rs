@@ -6,7 +6,7 @@
 use tiny_skia::Pixmap;
 
 use kara_config::{Bar as BarConfig, BarModuleKind, BarModule, BarModuleStyle, BarSection, Theme};
-use kara_ui::canvas::{color_from_u32, fill_circle, fill_rounded_rect, rounded_rect_path, stroke_rounded_rect};
+use kara_ui::canvas::{color_from_u32, fill_circle, fill_rounded_rect, stroke_rounded_rect};
 use kara_ui::TextRenderer;
 
 use crate::status::StatusCache;
@@ -20,14 +20,15 @@ pub struct BarRenderer {
 }
 
 impl BarRenderer {
-    pub fn new(_font_family: &str, font_size: f32) -> Self {
+    pub fn new(font_family: &str, font_size: f32) -> Self {
         Self {
-            text: TextRenderer::new(font_size),
+            text: TextRenderer::new_with_font(font_family, font_size),
         }
     }
 
     /// Update font settings (e.g., after config reload).
-    pub fn set_font(&mut self, _font_family: &str, font_size: f32) {
+    pub fn set_font(&mut self, font_family: &str, font_size: f32) {
+        self.text.set_font_family(font_family);
         self.text.set_font_size(font_size);
     }
 
@@ -78,13 +79,17 @@ impl BarRenderer {
         let item_gap = bar_config.gap.max(0) as u32;
         let content_margin = bar_config.content_margin_x.max(0) as u32;
 
+        // Compute the vertical content area (where pills sit, and where content is centered)
+        let content_y = bar_config.content_margin_y.max(0);
+        let content_h = (height as i32 - content_y * 2).max(1);
+
         // Layout LEFT section (left to right)
         let mut left_x = content_margin as i32;
         for module in &left {
             let w = self.measure_module(module, &mod_ctx, bar_config, ws_ctx) + pill_pad * 2;
             self.draw_module(
                 &mut pixmap, module, &mod_ctx, bar_config, theme,
-                left_x, w as i32, uses_pills, ws_ctx,
+                left_x, w as i32, uses_pills, ws_ctx, content_y, content_h,
             );
             left_x += w as i32 + item_gap as i32;
         }
@@ -96,7 +101,7 @@ impl BarRenderer {
             right_x -= w as i32;
             self.draw_module(
                 &mut pixmap, module, &mod_ctx, bar_config, theme,
-                right_x, w as i32, uses_pills, ws_ctx,
+                right_x, w as i32, uses_pills, ws_ctx, content_y, content_h,
             );
             right_x -= item_gap as i32;
         }
@@ -120,7 +125,7 @@ impl BarRenderer {
                     let w = self.measure_module(module, &mod_ctx, bar_config, ws_ctx) + pill_pad * 2;
                     self.draw_module(
                         &mut pixmap, module, &mod_ctx, bar_config, theme,
-                        cx, w as i32, uses_pills, ws_ctx,
+                        cx, w as i32, uses_pills, ws_ctx, content_y, content_h,
                     );
                     cx += w as i32 + item_gap as i32;
                 }
@@ -170,6 +175,7 @@ impl BarRenderer {
     }
 
     /// Draw a single module at position x.
+    /// content_y/content_h define the vertical content area (symmetric inset from bar edges).
     fn draw_module(
         &mut self,
         pixmap: &mut Pixmap,
@@ -181,27 +187,35 @@ impl BarRenderer {
         width: i32,
         uses_pills: bool,
         ws_ctx: &WorkspaceContext,
+        content_y: i32,
+        content_h: i32,
     ) {
         if width <= 0 {
             return;
         }
 
-        let height = bar_config.height;
+        let bar_height = bar_config.height;
         let pill_pad = if uses_pills { bar_config.padding_x.max(0) } else { 0 };
 
-        // Draw pill background
+        // Draw pill background (symmetric vertical inset)
         if uses_pills {
-            let box_y = bar_config.content_margin_y.max(0);
-            let box_h = height - bar_config.padding_y.max(0);
             let radius = bar_config.radius.max(0) as f32;
-            draw_pill(pixmap, x as f32, box_y as f32, width as f32, box_h as f32, radius, theme);
+            draw_pill(pixmap, x as f32, content_y as f32, width as f32, content_h as f32, radius, theme);
         }
 
         let text_x = x + pill_pad;
 
+        // Vertical centering: compute the center line for all content
+        // In pill mode, center within the pill; in flat mode, center within full bar
+        let center_y = if uses_pills {
+            content_y as f32 + content_h as f32 / 2.0
+        } else {
+            bar_height as f32 / 2.0
+        };
+
         // Special: Workspaces
         if module.kind == BarModuleKind::Workspaces {
-            self.draw_workspaces(pixmap, text_x, height, ctx, theme, ws_ctx);
+            self.draw_workspaces(pixmap, text_x, center_y, ctx, theme, ws_ctx);
             return;
         }
 
@@ -210,8 +224,8 @@ impl BarRenderer {
             return;
         }
 
-        // Draw text
-        let text_y = (height as f32 - self.text.font_size) / 2.0;
+        // Draw text — use center_y_offset to vertically center glyphs
+        let text_y = self.text.center_y_offset(center_y);
         self.text.draw(pixmap, &content.text, text_x as f32, text_y, content.color);
 
         // Volume bar
@@ -220,11 +234,11 @@ impl BarRenderer {
             let bar_x = text_x + text_w + 8;
             let bar_w = bar_config.volume_bar_width.max(0);
             let bar_h = bar_config.volume_bar_height.max(0);
-            let bar_y = (height - bar_h) / 2;
+            let bar_y = center_y - bar_h as f32 / 2.0;
             let bar_r = bar_config.volume_bar_radius.max(0) as f32;
             draw_volume_bar(
                 pixmap,
-                bar_x as f32, bar_y as f32, bar_w as f32, bar_h as f32, bar_r,
+                bar_x as f32, bar_y, bar_w as f32, bar_h as f32, bar_r,
                 &ctx.status.volume, theme,
             );
         }
@@ -235,7 +249,7 @@ impl BarRenderer {
         &mut self,
         pixmap: &mut Pixmap,
         x: i32,
-        bar_height: i32,
+        center_y: f32,
         ctx: &ModuleContext,
         theme: &Theme,
         ws_ctx: &WorkspaceContext,
@@ -247,7 +261,6 @@ impl BarRenderer {
             self.text.font_size * 0.3
         };
 
-        let y_center = bar_height as f32 / 2.0;
         let mut cx = x as f32;
 
         for i in 0..9 {
@@ -263,13 +276,12 @@ impl BarRenderer {
             };
 
             if ctx.icons {
-                let cy = y_center;
                 let radius = if is_current { dot_size * 0.6 } else { dot_size * 0.45 };
-                fill_circle(pixmap, cx + dot_size / 2.0, cy, radius, color_from_u32(color));
+                fill_circle(pixmap, cx + dot_size / 2.0, center_y, radius, color_from_u32(color));
                 cx += dot_size + gap;
             } else {
                 let digit = format!("{}", i + 1);
-                let text_y = (bar_height as f32 - self.text.font_size) / 2.0;
+                let text_y = self.text.center_y_offset(center_y);
                 self.text.draw(pixmap, &digit, cx, text_y, color);
                 let digit_w = self.text.measure(&digit) as f32;
                 cx += digit_w + gap;

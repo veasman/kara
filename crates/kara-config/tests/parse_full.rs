@@ -96,7 +96,7 @@ binds {
 
     // Write to a temp file
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("vwm.conf");
+    let path = dir.path().join("kara-gate.conf");
     let mut f = std::fs::File::create(&path).unwrap();
     f.write_all(config_text.as_bytes()).unwrap();
     drop(f);
