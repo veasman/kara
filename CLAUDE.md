@@ -94,11 +94,30 @@ kara-glimpse    -> kara-ipc
 - **M7**: Production backend — pending (udev/DRM, libinput, libseat)
 - **M8**: First-party tools — pending (kara-summon, kara-whisper, kara-glimpse)
 
-## Current State
+## Picking Up Where We Left Off
 
-**Last session**: 2026-04-04. M1-M5 complete. Phases 0-5 of restructure complete. loom-rs migrated. IPC, layer-shell, wallpaper, kara-ui all done. NOT runtime-tested yet.
+**Last session**: 2026-04-04. Massive restructure session. NOT runtime-tested yet.
 
-**Next**: M6 (multi-monitor + animations) or M7 (production backend) or runtime testing.
+**What was done this session**:
+1. Restructured vwm-wl → kara monorepo (11 crates, all `kara-*` naming)
+2. Migrated loom-rs into kara-color, kara-theme, kara-beautify
+3. Built kara-ipc (Unix socket, JSON framing, client/server)
+4. Extracted kara-ui (shared canvas + text rendering)
+5. Added wlr-layer-shell protocol support
+6. Added wallpaper rendering (image load → GPU texture)
+7. Implemented all M5 features: environment, autostart, rules, floating, fullscreen, borders, cursor theme, scratchpad
+
+**Themes**: 4 shipped — cloud (light/airy), moonlight (dark/red/sharp), natural (gruvbox/warm), vague (muted purple)
+
+**NOT tested at runtime.** Charlton prefers building solid before testing.
+
+**Next priorities** (ask Charlton):
+1. Runtime test with winit backend
+2. M6: Multi-monitor + animations (per-output workspaces, hotplug, animation system)
+3. M7: Production backend (udev/DRM, libinput, libseat — boot from TTY)
+4. M8: First-party tools (kara-summon, kara-whisper, kara-glimpse — need UI/architecture discussion before building)
+
+**Repo**: git@github.com:veasman/kara.git (local dir may be ~/repos/kara/)
 
 **Full plan**: `~/.claude/plans/twinkly-prancing-moon.md`
 
