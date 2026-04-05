@@ -3,6 +3,7 @@ mod input;
 mod ipc;
 mod layout;
 mod state;
+mod wallpaper;
 mod workspace;
 
 use std::time::{Duration, Instant};
@@ -104,6 +105,9 @@ fn main() {
 
     tracing::info!("kara-gate ready ({}x{})", size.w, size.h);
 
+    // Run autostart commands
+    state.run_autostart();
+
     loop {
         // Winit events
         winit_evt.dispatch_new_events(|event| match event {
@@ -155,8 +159,32 @@ fn main() {
         // Render
         let (renderer, mut framebuffer) = backend.bind().expect("failed to bind");
 
-        // Render bar to texture
-        let bar_elements = render_bar(&mut state, renderer);
+        // Build custom elements: wallpaper (bottom) + bar (top)
+        let mut custom_elements: Vec<TextureRenderElement<GlesTexture>> = Vec::new();
+
+        // Wallpaper (rendered behind everything)
+        if let Some(ref wp) = state.wallpaper {
+            if let Some(tex_buf) = wp.upload(renderer) {
+                custom_elements.push(TextureRenderElement::from_texture_buffer(
+                    Point::from((0.0, 0.0)),
+                    &tex_buf,
+                    None,
+                    None,
+                    None,
+                    Kind::Unspecified,
+                ));
+            }
+        }
+
+        // Borders (rendered between wallpaper and windows)
+        if state.fullscreen_window.is_none() {
+            custom_elements.extend(render_borders(&state, renderer));
+        }
+
+        // Bar (rendered on top, hidden during fullscreen)
+        if state.fullscreen_window.is_none() {
+            custom_elements.extend(render_bar(&mut state, renderer));
+        }
 
         render_output::<_, TextureRenderElement<GlesTexture>, _, _>(
             &output,
@@ -165,7 +193,7 @@ fn main() {
             1.0,
             0,
             [&state.space],
-            &bar_elements,
+            &custom_elements,
             &mut damage_tracker,
             [0.05, 0.05, 0.05, 1.0],
         )
@@ -242,4 +270,95 @@ fn render_bar(
     );
 
     vec![element]
+}
+
+/// Render border quads for all visible windows.
+/// Each border is a solid-color rectangle rendered behind the window.
+fn render_borders(
+    state: &Gate,
+    renderer: &mut GlesRenderer,
+) -> Vec<TextureRenderElement<GlesTexture>> {
+    let border_px = state.config.general.border_px;
+    if border_px <= 0 {
+        return Vec::new();
+    }
+
+    let accent = state.config.theme.accent;
+    let border_color = state.config.theme.border;
+
+    let mut elements = Vec::new();
+
+    for &(rect, is_focused) in &state.border_rects {
+        let color = if is_focused { accent } else { border_color };
+
+        // Create a solid-color pixmap for the border rect
+        let w = rect.size.w.max(1) as u32;
+        let h = rect.size.h.max(1) as u32;
+
+        let r = ((color >> 16) & 0xFF) as u8;
+        let g = ((color >> 8) & 0xFF) as u8;
+        let b = (color & 0xFF) as u8;
+
+        let mut pixmap = match tiny_skia::Pixmap::new(w, h) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        // Fill entire rect with border color
+        let paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::from_rgba8(r, g, b, 255)),
+            ..Default::default()
+        };
+        let skia_rect = match tiny_skia::Rect::from_xywh(0.0, 0.0, w as f32, h as f32) {
+            Some(r) => r,
+            None => continue,
+        };
+        pixmap.fill_rect(skia_rect, &paint, tiny_skia::Transform::identity(), None);
+
+        // Clear the inner area (where the window content will be)
+        // The inner area is inset by border_px on all sides
+        let inner_x = border_px as f32;
+        let inner_y = border_px as f32;
+        let inner_w = (w as i32 - border_px * 2).max(0) as f32;
+        let inner_h = (h as i32 - border_px * 2).max(0) as f32;
+
+        if inner_w > 0.0 && inner_h > 0.0 {
+            let clear_paint = tiny_skia::Paint {
+                shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::from_rgba8(0, 0, 0, 0)),
+                blend_mode: tiny_skia::BlendMode::Source,
+                ..Default::default()
+            };
+            if let Some(inner_rect) = tiny_skia::Rect::from_xywh(inner_x, inner_y, inner_w, inner_h) {
+                pixmap.fill_rect(inner_rect, &clear_paint, tiny_skia::Transform::identity(), None);
+            }
+        }
+
+        let texture_buffer = match TextureBuffer::from_memory(
+            renderer,
+            pixmap.data(),
+            Fourcc::Abgr8888,
+            Size::from((w as i32, h as i32)),
+            false,
+            1,
+            Transform::Normal,
+            None,
+        ) {
+            Ok(buf) => buf,
+            Err(e) => {
+                tracing::error!("failed to upload border texture: {e:?}");
+                continue;
+            }
+        };
+
+        elements.push(TextureRenderElement::from_texture_buffer(
+            Point::from((rect.loc.x as f64, rect.loc.y as f64)),
+            &texture_buffer,
+            None,
+            None,
+            None,
+            Kind::Unspecified,
+        ));
+    }
+
+    elements
 }

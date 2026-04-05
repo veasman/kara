@@ -170,7 +170,7 @@ impl Gate {
 
             Request::WallpaperChanged { path } => {
                 tracing::info!("IPC: wallpaper changed to '{path}'");
-                // TODO: load wallpaper image and render as background
+                self.wallpaper = crate::wallpaper::Wallpaper::load(std::path::Path::new(&path));
                 Response::Ok
             }
 

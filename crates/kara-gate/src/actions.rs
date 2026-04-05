@@ -16,6 +16,8 @@ pub enum Action {
     ZoomMaster,
     ToggleMonocle,
     ToggleFullscreen,
+    ToggleFloat,
+    ToggleScratchpad(Option<String>),
     DecreaseMfact,
     IncreaseMfact,
     ViewWs(usize),
@@ -36,6 +38,8 @@ impl Gate {
             Action::ZoomMaster => self.do_zoom_master(),
             Action::ToggleMonocle => self.do_toggle_monocle(),
             Action::ToggleFullscreen => self.do_toggle_fullscreen(),
+            Action::ToggleFloat => self.do_toggle_float(),
+            Action::ToggleScratchpad(name) => self.do_toggle_scratchpad(name),
             Action::DecreaseMfact => self.do_adjust_mfact(-MFACT_STEP),
             Action::IncreaseMfact => self.do_adjust_mfact(MFACT_STEP),
             Action::ViewWs(idx) => self.do_view_ws(idx),
@@ -56,17 +60,16 @@ impl Gate {
         }
     }
 
-    /// Spawn a raw command string.
+    /// Spawn a raw command string via sh -c (supports pipes, redirects, etc.)
     fn spawn_raw(&self, cmd: &str) {
-        let parts: Vec<&str> = cmd.split_whitespace().collect();
-        if parts.is_empty() {
+        if cmd.is_empty() {
             return;
         }
 
         tracing::info!("spawning: {}", cmd);
 
-        if let Err(e) = Command::new(parts[0])
-            .args(&parts[1..])
+        if let Err(e) = Command::new("sh")
+            .args(["-c", cmd])
             .spawn()
         {
             tracing::error!("failed to spawn '{}': {}", cmd, e);
@@ -105,8 +108,98 @@ impl Gate {
     }
 
     fn do_toggle_fullscreen(&mut self) {
-        // TODO: implement fullscreen toggle
-        tracing::debug!("fullscreen toggle not yet implemented");
+        if let Some(ref _fw) = self.fullscreen_window {
+            // Restore from fullscreen
+            self.fullscreen_window = None;
+            self.recompute_workarea();
+            self.apply_layout();
+            self.apply_focus();
+            tracing::debug!("exited fullscreen");
+        } else {
+            // Enter fullscreen with the focused window
+            let ws = &self.workspaces[self.current_ws];
+            if let Some(window) = ws.focused() {
+                let window = window.clone();
+                self.fullscreen_window = Some(window.clone());
+
+                // Give the window the full output size
+                let (w, h) = self.output_size;
+                if let Some(toplevel) = window.toplevel() {
+                    toplevel.with_pending_state(|state| {
+                        state.size = Some((w, h).into());
+                    });
+                    toplevel.send_configure();
+                }
+                self.space.map_element(window, (0, 0), false);
+                tracing::debug!("entered fullscreen");
+            }
+        }
+    }
+
+    fn do_toggle_float(&mut self) {
+        self.workspaces[self.current_ws].toggle_focused_floating();
+        self.apply_layout();
+        self.apply_focus();
+    }
+
+    fn do_toggle_scratchpad(&mut self, name: Option<String>) {
+        if self.scratchpad_visible {
+            // Hide scratchpad
+            for window in &self.scratchpad_windows {
+                self.space.unmap_elem(window);
+            }
+            self.scratchpad_visible = false;
+            self.apply_layout();
+            self.apply_focus();
+            tracing::debug!("scratchpad hidden");
+            return;
+        }
+
+        // Autostart scratchpad processes on first toggle
+        if !self.scratchpad_started {
+            self.scratchpad_started = true;
+
+            // Run main scratchpad command
+            if let Some(ref cmd) = self.config.scratchpad.command.clone() {
+                self.spawn_raw(cmd);
+            }
+
+            // Run scratchpad autostart entries
+            for cmd in self.config.scratchpad.autostart.clone() {
+                self.spawn_raw(&cmd);
+            }
+
+            // Run named scratchpad commands
+            for define in self.config.scratchpad.defines.clone() {
+                self.spawn_raw(&define.command);
+            }
+        }
+
+        // Show scratchpad
+        self.scratchpad_visible = true;
+
+        // Map scratchpad windows centered
+        let (ow, oh) = self.output_size;
+        let sp_w = (ow as f32 * self.config.scratchpad.width_pct as f32 / 100.0) as i32;
+        let sp_h = (oh as f32 * self.config.scratchpad.height_pct as f32 / 100.0) as i32;
+        let sp_x = (ow - sp_w) / 2;
+        let sp_y = (oh - sp_h) / 2;
+
+        for window in &self.scratchpad_windows {
+            if let Some(toplevel) = window.toplevel() {
+                toplevel.with_pending_state(|state| {
+                    state.size = Some((sp_w, sp_h).into());
+                });
+                toplevel.send_configure();
+            }
+            self.space.map_element(window.clone(), (sp_x, sp_y), false);
+        }
+
+        tracing::debug!(
+            "scratchpad shown ({} windows, name={:?})",
+            self.scratchpad_windows.len(),
+            name,
+        );
     }
 
     fn do_adjust_mfact(&mut self, delta: f32) {
@@ -159,5 +252,127 @@ impl Gate {
         // Re-layout current workspace
         self.apply_layout();
         self.apply_focus();
+    }
+
+    // ── Environment ────────────────────────────────────────────────
+
+    /// Apply environment directives from config.
+    pub fn apply_environment(&self) {
+        for directive in &self.config.environment {
+            match directive {
+                kara_config::EnvDirective::Set { key, value } => {
+                    tracing::debug!("env set: {key}={value}");
+                    unsafe { std::env::set_var(key, value) };
+                }
+                kara_config::EnvDirective::Source { path } => {
+                    let expanded = if path.starts_with('~') {
+                        if let Some(home) = dirs::home_dir() {
+                            home.join(&path[2..]).to_string_lossy().to_string()
+                        } else {
+                            path.clone()
+                        }
+                    } else {
+                        path.clone()
+                    };
+
+                    tracing::debug!("env source: {expanded}");
+                    match std::fs::read_to_string(&expanded) {
+                        Ok(contents) => {
+                            for line in contents.lines() {
+                                let trimmed = line.trim();
+                                if trimmed.is_empty() || trimmed.starts_with('#') {
+                                    continue;
+                                }
+                                if let Some((key, value)) = trimmed.split_once('=') {
+                                    let key = key.trim();
+                                    let value = value.trim().trim_matches('"').trim_matches('\'');
+                                    if !key.is_empty() {
+                                        unsafe { std::env::set_var(key, value) };
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to source '{expanded}': {e}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Cursor theme ───────────────────────────────────────────────
+
+    /// Set cursor theme environment variables from config.
+    pub fn apply_cursor_theme(&self) {
+        if let Some(ref theme) = self.config.general.cursor_theme {
+            tracing::info!("cursor theme: {theme}, size: {}", self.config.general.cursor_size);
+            unsafe {
+                std::env::set_var("XCURSOR_THEME", theme);
+                std::env::set_var("XCURSOR_SIZE", self.config.general.cursor_size.to_string());
+            }
+        }
+    }
+
+    // ── Autostart ──────────────────────────────────────────────────
+
+    /// Run autostart commands from config (only once, skipped on reload).
+    pub fn run_autostart(&mut self) {
+        if self.autostart_done {
+            return;
+        }
+        self.autostart_done = true;
+
+        for entry in &self.config.autostart {
+            tracing::info!("autostart: {}", entry.command);
+            if let Err(e) = Command::new("sh")
+                .args(["-c", &entry.command])
+                .spawn()
+            {
+                tracing::error!("autostart failed '{}': {}", entry.command, e);
+            }
+        }
+    }
+
+    // ── Window rules helpers ───────────────────────────────────────
+
+    /// Check window rules for a given app_id. Returns (should_float, target_workspace).
+    pub fn check_rules(&self, app_id: &str) -> (bool, Option<usize>) {
+        let mut should_float = false;
+        let mut target_ws = None;
+
+        for rule in &self.config.rules {
+            match rule {
+                kara_config::Rule::Float { app_id: rule_id } => {
+                    if rule_id == app_id {
+                        should_float = true;
+                    }
+                }
+                kara_config::Rule::Workspace {
+                    workspace,
+                    app_id: rule_id,
+                    ..
+                } => {
+                    if rule_id == app_id {
+                        target_ws = Some(*workspace);
+                    }
+                }
+            }
+        }
+
+        (should_float, target_ws)
+    }
+
+    /// Check if a window belongs to a scratchpad define and should be captured.
+    pub fn check_scratchpad_capture(&self, app_id: &str) -> bool {
+        // Check named scratchpads
+        for define in &self.config.scratchpad.defines {
+            if let Some(ref sp_app_id) = define.app_id {
+                if sp_app_id == app_id {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }

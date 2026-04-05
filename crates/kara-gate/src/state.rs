@@ -15,13 +15,14 @@ use smithay::reexports::wayland_server::protocol::wl_buffer;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Clock, Logical, Monotonic, Rectangle, Serial, SERIAL_COUNTER};
 use smithay::wayland::buffer::BufferHandler;
-use smithay::wayland::compositor::{CompositorClientState, CompositorHandler, CompositorState};
+use smithay::wayland::compositor::{self, CompositorClientState, CompositorHandler, CompositorState};
 use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::selection::data_device::{
     ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
 };
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+    XdgToplevelSurfaceData,
 };
 use smithay::wayland::shell::wlr_layer::{
     Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState,
@@ -79,8 +80,27 @@ pub struct Gate {
     pub output_size: (i32, i32),
     pub workarea: Rectangle<i32, Logical>,
 
+    // Wallpaper
+    pub wallpaper: Option<crate::wallpaper::Wallpaper>,
+
     // IPC
     pub ipc_listener: Option<std::os::unix::net::UnixListener>,
+
+    // Fullscreen
+    pub fullscreen_window: Option<Window>,
+
+    // Floating (no extra state beyond workspace.floating)
+
+    // Scratchpad
+    pub scratchpad_visible: bool,
+    pub scratchpad_windows: Vec<Window>,
+    pub scratchpad_started: bool,
+
+    // Autostart
+    pub autostart_done: bool,
+
+    // Border rendering: cached geometry from last apply_layout
+    pub border_rects: Vec<(smithay::utils::Rectangle<i32, Logical>, bool)>, // (rect, is_focused)
 }
 
 impl Gate {
@@ -123,7 +143,7 @@ impl Gate {
             config.rules.len(),
         );
 
-        Self {
+        let mut gate = Self {
             display_handle: dh,
             loop_signal,
             running: true,
@@ -144,10 +164,23 @@ impl Gate {
             current_ws: 0,
             previous_ws: 0,
             keybinds,
+            wallpaper: None,
             output_size: (800, 600),
             workarea: Rectangle::from_loc_and_size((0, 0), (800, 600)),
             ipc_listener: kara_ipc::server::bind_socket().ok(),
-        }
+            fullscreen_window: None,
+            scratchpad_visible: false,
+            scratchpad_windows: Vec::new(),
+            scratchpad_started: false,
+            autostart_done: false,
+            border_rects: Vec::new(),
+        };
+
+        // Apply environment variables and cursor theme
+        gate.apply_environment();
+        gate.apply_cursor_theme();
+
+        gate
     }
 
     /// Reload config from disk and apply changes.
@@ -155,6 +188,10 @@ impl Gate {
         tracing::info!("reloading config");
         self.config = kara_config::load_default_config();
         self.keybinds = crate::input::keybinds_from_config(&self.config);
+
+        // Re-apply environment and cursor theme
+        self.apply_environment();
+        self.apply_cursor_theme();
 
         // Apply general config to workspaces
         for ws in &mut self.workspaces {
@@ -187,7 +224,7 @@ impl Gate {
     }
 
     /// Recompute work area from output size and bar config.
-    fn recompute_workarea(&mut self) {
+    pub fn recompute_workarea(&mut self) {
         let (w, h) = self.output_size;
         let bar_h = if self.config.bar.enabled {
             self.config.bar.height
@@ -236,10 +273,36 @@ impl Gate {
         }
     }
 
-    /// Apply the tiling layout for the current workspace and map windows in the Space
+    /// Apply the tiling layout for the current workspace and map windows in the Space.
+    /// If a window is fullscreen, only that window is mapped at full output size.
     pub fn apply_layout(&mut self) {
+        // Fullscreen mode: only the fullscreen window is visible
+        if let Some(ref fs_window) = self.fullscreen_window {
+            let fs_window = fs_window.clone();
+            // Unmap everything else
+            let ws = &self.workspaces[self.current_ws];
+            for w in &ws.clients {
+                if *w != fs_window {
+                    self.space.unmap_elem(w);
+                }
+            }
+            // Map fullscreen window at full output
+            let (w, h) = self.output_size;
+            if let Some(toplevel) = fs_window.toplevel() {
+                toplevel.with_pending_state(|state| {
+                    state.size = Some((w, h).into());
+                });
+                toplevel.send_configure();
+            }
+            self.space.map_element(fs_window, (0, 0), false);
+            return;
+        }
+
         let ws = &self.workspaces[self.current_ws];
-        let geometries = layout_workspace(ws, self.workarea);
+        let border_px = self.config.general.border_px;
+        let geometries = layout_workspace(ws, self.workarea, border_px);
+
+        self.border_rects.clear();
 
         for geom in &geometries {
             if geom.visible {
@@ -252,6 +315,11 @@ impl Gate {
                 }
                 // Map in the space at the layout position
                 self.space.map_element(geom.window.clone(), geom.rect.loc, false);
+
+                // Store border rect for rendering
+                if let Some(br) = geom.border_rect {
+                    self.border_rects.push((br, geom.is_focused));
+                }
             } else {
                 self.space.unmap_elem(&geom.window);
             }
@@ -345,10 +413,44 @@ impl XdgShellHandler for Gate {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        let window = Window::new_wayland_window(surface);
+        let window = Window::new_wayland_window(surface.clone());
 
-        // Add to current workspace
-        self.workspaces[self.current_ws].add_client(window);
+        // Get app_id for rule matching
+        let app_id = compositor::with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|d| d.lock().ok())
+                .and_then(|attrs| attrs.app_id.clone())
+        })
+        .unwrap_or_default();
+
+        tracing::debug!("new toplevel: app_id={:?}", app_id);
+
+        // Check if this window should be captured by scratchpad
+        if !app_id.is_empty() && self.check_scratchpad_capture(&app_id) {
+            tracing::debug!("captured scratchpad window: {app_id}");
+            self.scratchpad_windows.push(window);
+            // If scratchpad is currently visible, map it; otherwise leave unmapped
+            if self.scratchpad_visible {
+                // Re-trigger scratchpad display
+                self.scratchpad_visible = false;
+                self.dispatch_action(crate::actions::Action::ToggleScratchpad(None));
+            }
+            return;
+        }
+
+        // Check window rules
+        let (should_float, target_ws) = if app_id.is_empty() {
+            (false, None)
+        } else {
+            self.check_rules(&app_id)
+        };
+
+        let ws_idx = target_ws.unwrap_or(self.current_ws);
+
+        // Add to workspace with floating state
+        self.workspaces[ws_idx].add_client_floating(window, should_float);
 
         // Re-layout and focus
         self.apply_layout();
@@ -363,6 +465,17 @@ impl XdgShellHandler for Gate {
 
         if let Some(window) = target {
             self.space.unmap_elem(&window);
+
+            // Check scratchpad windows
+            if let Some(pos) = self.scratchpad_windows.iter().position(|w| w == &window) {
+                self.scratchpad_windows.remove(pos);
+            }
+
+            // Check fullscreen
+            if self.fullscreen_window.as_ref() == Some(&window) {
+                self.fullscreen_window = None;
+                self.recompute_workarea();
+            }
 
             for ws in &mut self.workspaces {
                 if ws.remove_client(&window) {

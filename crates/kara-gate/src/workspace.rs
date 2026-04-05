@@ -16,6 +16,7 @@ pub struct Workspace {
     pub nmaster: usize,
     pub gap_px: i32,
     pub clients: Vec<Window>,
+    pub floating: Vec<bool>,
     pub focused_idx: Option<usize>,
     pub last_focused_idx: Option<usize>,
 }
@@ -29,6 +30,7 @@ impl Workspace {
             nmaster: 1,
             gap_px: 8,
             clients: Vec::new(),
+            floating: Vec::new(),
             focused_idx: None,
             last_focused_idx: None,
         }
@@ -43,7 +45,12 @@ impl Workspace {
     }
 
     pub fn add_client(&mut self, window: Window) {
+        self.add_client_floating(window, false);
+    }
+
+    pub fn add_client_floating(&mut self, window: Window, is_floating: bool) {
         self.clients.push(window);
+        self.floating.push(is_floating);
         let idx = self.clients.len() - 1;
         // Save previous focus as last_focused
         if let Some(old) = self.focused_idx {
@@ -59,6 +66,7 @@ impl Workspace {
 
         let was_focused = self.focused_idx == Some(pos);
         self.clients.remove(pos);
+        self.floating.remove(pos);
 
         // Fix up indices after removal
         if let Some(ref mut fi) = self.focused_idx {
@@ -120,6 +128,7 @@ impl Workspace {
             _ => return,
         };
         self.clients.swap(0, cur);
+        self.floating.swap(0, cur);
         self.last_focused_idx = self.focused_idx;
         self.focused_idx = Some(0);
     }
@@ -137,5 +146,30 @@ impl Workspace {
 
     pub fn is_empty(&self) -> bool {
         self.clients.is_empty()
+    }
+
+    pub fn is_floating(&self, idx: usize) -> bool {
+        self.floating.get(idx).copied().unwrap_or(false)
+    }
+
+    pub fn set_floating(&mut self, idx: usize, val: bool) {
+        if let Some(f) = self.floating.get_mut(idx) {
+            *f = val;
+        }
+    }
+
+    pub fn toggle_focused_floating(&mut self) {
+        if let Some(idx) = self.focused_idx {
+            if let Some(f) = self.floating.get_mut(idx) {
+                *f = !*f;
+            }
+        }
+    }
+
+    /// Returns indices of tiled (non-floating) clients.
+    pub fn tiled_indices(&self) -> Vec<usize> {
+        (0..self.clients.len())
+            .filter(|&i| !self.is_floating(i))
+            .collect()
     }
 }

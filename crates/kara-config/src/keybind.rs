@@ -67,6 +67,7 @@ pub fn parse_action(verb: &str, arg: Option<&str>) -> Result<BindAction, String>
         "monocle" | "toggle_monocle" => Ok(BindAction::Monocle),
         "fullscreen" | "toggle_fullscreen" => Ok(BindAction::Fullscreen),
         "toggle_sync" | "sync" => Ok(BindAction::ToggleSync),
+        "toggle_float" | "float" => Ok(BindAction::ToggleFloat),
         "kill_client" | "kill" => Ok(BindAction::KillClient),
         "reload" => Ok(BindAction::Reload),
         "quit" => Ok(BindAction::Quit),

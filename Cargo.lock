@@ -1175,11 +1175,14 @@ dependencies = [
 name = "kara-gate"
 version = "0.1.0"
 dependencies = [
+ "dirs",
+ "image",
  "kara-config",
  "kara-ipc",
  "kara-sight",
  "signal-hook",
  "smithay",
+ "tiny-skia",
  "tracing",
  "tracing-subscriber",
 ]

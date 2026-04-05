@@ -56,7 +56,7 @@ fn convert_action(action: &kara_config::BindAction) -> Action {
     use kara_config::BindAction;
     match action {
         BindAction::Spawn(name) => Action::Spawn(name.clone()),
-        BindAction::Scratchpad(_) => Action::None, // TODO: M5
+        BindAction::Scratchpad(name) => Action::ToggleScratchpad(name.clone()),
         BindAction::FocusNext => Action::FocusNext,
         BindAction::FocusPrev => Action::FocusPrev,
         BindAction::FocusMonitorPrev => Action::None, // TODO: M5
@@ -68,7 +68,8 @@ fn convert_action(action: &kara_config::BindAction) -> Action {
         BindAction::ZoomMaster => Action::ZoomMaster,
         BindAction::Monocle => Action::ToggleMonocle,
         BindAction::Fullscreen => Action::ToggleFullscreen,
-        BindAction::ToggleSync => Action::None, // TODO: M5
+        BindAction::ToggleFloat => Action::ToggleFloat,
+        BindAction::ToggleSync => Action::None, // TODO: M6 (multi-monitor)
         BindAction::KillClient => Action::KillClient,
         BindAction::Reload => Action::Reload,
         BindAction::Quit => Action::Quit,

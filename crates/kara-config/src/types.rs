@@ -332,6 +332,7 @@ pub enum BindAction {
     Monocle,
     Fullscreen,
     ToggleSync,
+    ToggleFloat,
     KillClient,
     Reload,
     Quit,
