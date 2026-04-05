@@ -5,7 +5,6 @@ use crate::workspace::MFACT_STEP;
 
 #[derive(Debug, Clone)]
 pub enum Action {
-    None,
     /// Spawn a named command (looked up in config commands map)
     Spawn(String),
     /// Spawn a raw command string (no lookup)
@@ -20,6 +19,11 @@ pub enum Action {
     ToggleScratchpad(Option<String>),
     DecreaseMfact,
     IncreaseMfact,
+    FocusMonitorNext,
+    FocusMonitorPrev,
+    SendMonitorNext,
+    SendMonitorPrev,
+    ToggleSync,
     ViewWs(usize),
     SendWs(usize),
     Reload,
@@ -29,7 +33,6 @@ pub enum Action {
 impl Gate {
     pub fn dispatch_action(&mut self, action: Action) {
         match action {
-            Action::None => {}
             Action::Spawn(name) => self.spawn_named(&name),
             Action::SpawnRaw(cmd) => self.spawn_raw(&cmd),
             Action::KillClient => self.kill_focused(),
@@ -42,6 +45,11 @@ impl Gate {
             Action::ToggleScratchpad(name) => self.do_toggle_scratchpad(name),
             Action::DecreaseMfact => self.do_adjust_mfact(-MFACT_STEP),
             Action::IncreaseMfact => self.do_adjust_mfact(MFACT_STEP),
+            Action::FocusMonitorNext => self.do_focus_monitor(1),
+            Action::FocusMonitorPrev => self.do_focus_monitor(-1),
+            Action::SendMonitorNext => self.do_send_monitor(1),
+            Action::SendMonitorPrev => self.do_send_monitor(-1),
+            Action::ToggleSync => self.do_toggle_sync(),
             Action::ViewWs(idx) => self.do_view_ws(idx),
             Action::SendWs(idx) => self.do_send_ws(idx),
             Action::Reload => self.reload_config(),
@@ -77,7 +85,8 @@ impl Gate {
     }
 
     fn kill_focused(&mut self) {
-        let ws = &self.workspaces[self.current_ws];
+        let ws_idx = self.effective_ws(self.focused_output);
+        let ws = &self.workspaces[ws_idx];
         if let Some(window) = ws.focused() {
             let window = window.clone();
             window.toplevel().unwrap().send_close();
@@ -85,59 +94,72 @@ impl Gate {
     }
 
     fn do_focus_next(&mut self) {
-        self.workspaces[self.current_ws].focus_next();
+        let ws_idx = self.effective_ws(self.focused_output);
+        self.workspaces[ws_idx].focus_next();
         self.apply_focus();
         self.apply_layout();
     }
 
     fn do_focus_prev(&mut self) {
-        self.workspaces[self.current_ws].focus_prev();
+        let ws_idx = self.effective_ws(self.focused_output);
+        self.workspaces[ws_idx].focus_prev();
         self.apply_focus();
         self.apply_layout();
     }
 
     fn do_zoom_master(&mut self) {
-        self.workspaces[self.current_ws].zoom_master();
+        let ws_idx = self.effective_ws(self.focused_output);
+        self.workspaces[ws_idx].zoom_master();
         self.apply_layout();
         self.apply_focus();
     }
 
     fn do_toggle_monocle(&mut self) {
-        self.workspaces[self.current_ws].toggle_layout();
+        let ws_idx = self.effective_ws(self.focused_output);
+        self.workspaces[ws_idx].toggle_layout();
         self.apply_layout();
     }
 
     fn do_toggle_fullscreen(&mut self) {
-        if let Some(ref _fw) = self.fullscreen_window {
-            // Restore from fullscreen
-            self.fullscreen_window = None;
-            self.recompute_workarea();
+        let out_idx = self.focused_output;
+        let has_fs = self.outputs.get(out_idx)
+            .map(|o| o.fullscreen_window.is_some())
+            .unwrap_or(false);
+
+        if has_fs {
+            if let Some(out) = self.outputs.get_mut(out_idx) {
+                out.fullscreen_window = None;
+            }
             self.apply_layout();
             self.apply_focus();
             tracing::debug!("exited fullscreen");
         } else {
-            // Enter fullscreen with the focused window
-            let ws = &self.workspaces[self.current_ws];
+            let ws_idx = self.effective_ws(out_idx);
+            let ws = &self.workspaces[ws_idx];
             if let Some(window) = ws.focused() {
                 let window = window.clone();
-                self.fullscreen_window = Some(window.clone());
+                let (w, h) = self.output_size();
+                let loc = self.outputs[out_idx].location;
 
-                // Give the window the full output size
-                let (w, h) = self.output_size;
+                if let Some(out) = self.outputs.get_mut(out_idx) {
+                    out.fullscreen_window = Some(window.clone());
+                }
+
                 if let Some(toplevel) = window.toplevel() {
                     toplevel.with_pending_state(|state| {
                         state.size = Some((w, h).into());
                     });
                     toplevel.send_configure();
                 }
-                self.space.map_element(window, (0, 0), false);
+                self.space.map_element(window, loc, false);
                 tracing::debug!("entered fullscreen");
             }
         }
     }
 
     fn do_toggle_float(&mut self) {
-        self.workspaces[self.current_ws].toggle_focused_floating();
+        let ws_idx = self.effective_ws(self.focused_output);
+        self.workspaces[ws_idx].toggle_focused_floating();
         self.apply_layout();
         self.apply_focus();
     }
@@ -178,8 +200,8 @@ impl Gate {
         // Show scratchpad
         self.scratchpad_visible = true;
 
-        // Map scratchpad windows centered
-        let (ow, oh) = self.output_size;
+        // Map scratchpad windows centered on focused output
+        let (ow, oh) = self.output_size();
         let sp_w = (ow as f32 * self.config.scratchpad.width_pct as f32 / 100.0) as i32;
         let sp_h = (oh as f32 * self.config.scratchpad.height_pct as f32 / 100.0) as i32;
         let sp_x = (ow - sp_w) / 2;
@@ -203,36 +225,61 @@ impl Gate {
     }
 
     fn do_adjust_mfact(&mut self, delta: f32) {
-        self.workspaces[self.current_ws].adjust_mfact(delta);
+        let ws_idx = self.effective_ws(self.focused_output);
+        self.workspaces[ws_idx].adjust_mfact(delta);
         self.apply_layout();
     }
 
     fn do_view_ws(&mut self, idx: usize) {
-        if idx >= self.workspaces.len() || idx == self.current_ws {
+        if idx >= self.workspaces.len() {
+            return;
+        }
+
+        let current = self.effective_ws(self.focused_output);
+        if idx == current {
             return;
         }
 
         tracing::debug!("switching to workspace {}", idx + 1);
 
-        // Hide current workspace windows
-        for window in &self.workspaces[self.current_ws].clients {
-            self.space.unmap_elem(window);
+        if self.config.general.sync_workspaces {
+            // Sync mode: all outputs switch together
+            self.previous_ws = self.current_ws;
+            self.current_ws = idx;
+        } else {
+            // Independent mode: only focused output switches
+            // If target ws is visible on another output, swap
+            let mut swap_output = None;
+            for (i, out) in self.outputs.iter().enumerate() {
+                if i != self.focused_output && out.current_ws == idx {
+                    swap_output = Some(i);
+                    break;
+                }
+            }
+
+            let old_ws = self.outputs[self.focused_output].current_ws;
+            self.previous_ws = old_ws;
+
+            if let Some(other) = swap_output {
+                // Swap: other output gets our old workspace
+                self.outputs[other].current_ws = old_ws;
+            }
+
+            self.outputs[self.focused_output].current_ws = idx;
+            self.current_ws = idx; // keep in sync for focused output
         }
 
-        self.previous_ws = self.current_ws;
-        self.current_ws = idx;
-
-        // Show new workspace windows via layout
         self.apply_layout();
         self.apply_focus();
     }
 
     fn do_send_ws(&mut self, idx: usize) {
-        if idx >= self.workspaces.len() || idx == self.current_ws {
+        let current = self.effective_ws(self.focused_output);
+        if idx >= self.workspaces.len() || idx == current {
             return;
         }
 
-        let ws = &mut self.workspaces[self.current_ws];
+        let ws = &mut self.workspaces[current];
         let window = match ws.focused() {
             Some(w) => w.clone(),
             None => return,
@@ -250,6 +297,84 @@ impl Gate {
         self.workspaces[idx].add_client(window);
 
         // Re-layout current workspace
+        self.apply_layout();
+        self.apply_focus();
+    }
+
+    // ── Multi-monitor actions ────────────────────────────────────────
+
+    fn do_focus_monitor(&mut self, direction: i32) {
+        if self.outputs.len() <= 1 {
+            return;
+        }
+        let count = self.outputs.len() as i32;
+        let new_idx = ((self.focused_output as i32 + direction).rem_euclid(count)) as usize;
+        self.focused_output = new_idx;
+
+        // Warp pointer to center of new output
+        let out = &self.outputs[new_idx];
+        self.pointer_location = (
+            out.location.x as f64 + out.size.0 as f64 / 2.0,
+            out.location.y as f64 + out.size.1 as f64 / 2.0,
+        ).into();
+
+        self.apply_focus();
+        tracing::debug!("focused monitor {new_idx}");
+    }
+
+    fn do_send_monitor(&mut self, direction: i32) {
+        if self.outputs.len() <= 1 {
+            return;
+        }
+        let count = self.outputs.len() as i32;
+        let target = ((self.focused_output as i32 + direction).rem_euclid(count)) as usize;
+
+        let src_ws = self.effective_ws(self.focused_output);
+        let dst_ws = self.effective_ws(target);
+
+        let window = match self.workspaces[src_ws].focused() {
+            Some(w) => w.clone(),
+            None => return,
+        };
+
+        tracing::debug!("sending window to monitor {target}");
+
+        self.workspaces[src_ws].remove_client(&window);
+        self.space.unmap_elem(&window);
+        self.workspaces[dst_ws].add_client(window);
+
+        self.apply_layout();
+        self.apply_focus();
+    }
+
+    fn do_toggle_sync(&mut self) {
+        let was_sync = self.config.general.sync_workspaces;
+        self.config.general.sync_workspaces = !was_sync;
+
+        if self.config.general.sync_workspaces {
+            // Entering sync mode: all outputs show focused output's workspace
+            let ws = self.outputs.get(self.focused_output)
+                .map(|o| o.current_ws)
+                .unwrap_or(0);
+            self.current_ws = ws;
+        } else {
+            // Entering independent mode: spread outputs across workspaces
+            for (i, out) in self.outputs.iter_mut().enumerate() {
+                if i == self.focused_output {
+                    out.current_ws = self.current_ws;
+                } else {
+                    // Assign a different workspace if possible
+                    let candidate = (self.current_ws + i) % self.workspaces.len();
+                    out.current_ws = candidate;
+                }
+            }
+        }
+
+        tracing::info!(
+            "workspace sync: {}",
+            if self.config.general.sync_workspaces { "on" } else { "off" }
+        );
+
         self.apply_layout();
         self.apply_focus();
     }

@@ -58,7 +58,7 @@ pub fn run(
     // Compositor state
     let mut state = Gate::new(display, event_loop.get_signal());
     state.space.map_output(&output, (0, 0));
-    state.set_output_size(size.w as i32, size.h as i32);
+    state.add_output(output.clone(), (size.w as i32, size.h as i32), (0, 0).into());
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
     let mut last_status_refresh = Instant::now();
@@ -78,7 +78,7 @@ pub fn run(
                 let new_mode = Mode { size, refresh: 60_000 };
                 output.change_current_state(Some(new_mode), None, None, None);
                 damage_tracker = OutputDamageTracker::from_output(&output);
-                state.set_output_size(size.w as i32, size.h as i32);
+                state.set_output_size(0, size.w as i32, size.h as i32);
                 state.apply_layout();
             }
             WinitEvent::CloseRequested => {
@@ -122,7 +122,7 @@ pub fn run(
         // Render
         let (renderer, mut framebuffer) = backend.bind().expect("failed to bind");
 
-        let custom_elements = build_custom_elements(&mut state, renderer);
+        let custom_elements = build_custom_elements(&mut state, renderer, 0);
 
         render_output::<_, TextureRenderElement<GlesTexture>, _, _>(
             &output,

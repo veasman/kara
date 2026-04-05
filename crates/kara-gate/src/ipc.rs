@@ -102,7 +102,7 @@ impl Gate {
             }
 
             Request::GetOutputs => {
-                let (w, h) = self.output_size;
+                let (w, h) = self.output_size();
                 Response::Outputs {
                     outputs: vec![kara_ipc::OutputInfo {
                         name: "winit".to_string(),

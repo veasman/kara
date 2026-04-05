@@ -59,17 +59,17 @@ fn convert_action(action: &kara_config::BindAction) -> Action {
         BindAction::Scratchpad(name) => Action::ToggleScratchpad(name.clone()),
         BindAction::FocusNext => Action::FocusNext,
         BindAction::FocusPrev => Action::FocusPrev,
-        BindAction::FocusMonitorPrev => Action::None, // TODO: M5
-        BindAction::FocusMonitorNext => Action::None, // TODO: M5
-        BindAction::SendMonitorPrev => Action::None, // TODO: M5
-        BindAction::SendMonitorNext => Action::None, // TODO: M5
+        BindAction::FocusMonitorPrev => Action::FocusMonitorPrev,
+        BindAction::FocusMonitorNext => Action::FocusMonitorNext,
+        BindAction::SendMonitorPrev => Action::SendMonitorPrev,
+        BindAction::SendMonitorNext => Action::SendMonitorNext,
         BindAction::DecreaseMfact => Action::DecreaseMfact,
         BindAction::IncreaseMfact => Action::IncreaseMfact,
         BindAction::ZoomMaster => Action::ZoomMaster,
         BindAction::Monocle => Action::ToggleMonocle,
         BindAction::Fullscreen => Action::ToggleFullscreen,
         BindAction::ToggleFloat => Action::ToggleFloat,
-        BindAction::ToggleSync => Action::None, // TODO: M6 (multi-monitor)
+        BindAction::ToggleSync => Action::ToggleSync,
         BindAction::KillClient => Action::KillClient,
         BindAction::Reload => Action::Reload,
         BindAction::Quit => Action::Quit,
@@ -136,10 +136,19 @@ impl Gate {
         event: B::PointerMotionEvent,
     ) {
         let delta = event.delta();
-        let (ow, oh) = self.output_size;
-        let new_x = (self.pointer_location.x + delta.x).clamp(0.0, ow as f64 - 1.0);
-        let new_y = (self.pointer_location.y + delta.y).clamp(0.0, oh as f64 - 1.0);
+        // Clamp to global bounding box of all outputs
+        let (max_x, max_y) = self.outputs.iter().fold((0i32, 0i32), |(mx, my), out| {
+            (mx.max(out.location.x + out.size.0), my.max(out.location.y + out.size.1))
+        });
+        let new_x = (self.pointer_location.x + delta.x).clamp(0.0, max_x as f64 - 1.0);
+        let new_y = (self.pointer_location.y + delta.y).clamp(0.0, max_y as f64 - 1.0);
         self.pointer_location = (new_x, new_y).into();
+
+        // Update focused output based on pointer position
+        let new_output = self.output_for_point(self.pointer_location);
+        if new_output != self.focused_output {
+            self.focused_output = new_output;
+        }
 
         let pos = self.pointer_location;
         let serial = SERIAL_COUNTER.next_serial();

@@ -10,17 +10,21 @@ use smithay::utils::{Point, Size, Transform};
 
 use crate::state::Gate;
 
-/// Render the bar to a texture and return it as a render element.
+/// Render the bar to a texture for a specific output.
 pub fn render_bar(
     state: &mut Gate,
     renderer: &mut GlesRenderer,
+    output_idx: usize,
 ) -> Vec<TextureRenderElement<GlesTexture>> {
     if !state.config.bar.enabled {
         return Vec::new();
     }
 
-    let (output_w, _output_h) = state.output_size;
-    let ws_ctx = state.bar_workspace_context();
+    let (output_w, output_h) = state.outputs.get(output_idx)
+        .map(|o| o.size)
+        .unwrap_or((800, 600));
+
+    let ws_ctx = state.bar_workspace_context(output_idx);
 
     let pixmap = match state.bar_renderer.render(
         output_w as u32,
@@ -33,15 +37,14 @@ pub fn render_bar(
         None => return Vec::new(),
     };
 
+    // Bar position in output-local coordinates
     let bar_y = match state.config.bar.position {
         kara_config::BarPosition::Top => 0.0,
         kara_config::BarPosition::Bottom => {
-            (state.output_size.1 - state.config.bar.height) as f64
+            (output_h - state.config.bar.height) as f64
         }
     };
 
-    // Upload pixmap as GLES texture
-    // tiny-skia Pixmap data is premultiplied RGBA → Fourcc::Abgr8888 in DRM terms
     let texture_buffer = match TextureBuffer::from_memory(
         renderer,
         pixmap.data(),
@@ -71,16 +74,25 @@ pub fn render_bar(
     vec![element]
 }
 
-/// Render border quads for all visible windows.
-/// Each border is a solid-color rectangle rendered behind the window.
+/// Render border quads for windows visible on a specific output.
 pub fn render_borders(
     state: &Gate,
     renderer: &mut GlesRenderer,
+    output_idx: usize,
 ) -> Vec<TextureRenderElement<GlesTexture>> {
     let border_px = state.config.general.border_px;
     if border_px <= 0 {
         return Vec::new();
     }
+
+    let out = match state.outputs.get(output_idx) {
+        Some(o) => o,
+        None => return Vec::new(),
+    };
+    let out_rect = smithay::utils::Rectangle::new(
+        out.location,
+        (out.size.0, out.size.1).into(),
+    );
 
     let accent = state.config.theme.accent;
     let border_color = state.config.theme.border;
@@ -88,6 +100,10 @@ pub fn render_borders(
     let mut elements = Vec::new();
 
     for &(rect, is_focused) in &state.border_rects {
+        // Only render borders that overlap this output
+        if !out_rect.overlaps(rect) {
+            continue;
+        }
         let color = if is_focused { accent } else { border_color };
 
         let w = rect.size.w.max(1) as u32;
@@ -146,8 +162,9 @@ pub fn render_borders(
             }
         };
 
+        // Position relative to output's local coordinate space
         elements.push(TextureRenderElement::from_texture_buffer(
-            Point::from((rect.loc.x as f64, rect.loc.y as f64)),
+            Point::from(((rect.loc.x - out.location.x) as f64, (rect.loc.y - out.location.y) as f64)),
             &texture_buffer,
             None,
             None,
@@ -159,14 +176,19 @@ pub fn render_borders(
     elements
 }
 
-/// Build all custom render elements (wallpaper + borders + bar).
+/// Build all custom render elements for a specific output (wallpaper + borders + bar).
 pub fn build_custom_elements(
     state: &mut Gate,
     renderer: &mut GlesRenderer,
+    output_idx: usize,
 ) -> Vec<TextureRenderElement<GlesTexture>> {
     let mut elements: Vec<TextureRenderElement<GlesTexture>> = Vec::new();
 
-    // Wallpaper (rendered behind everything)
+    let has_fullscreen = state.outputs.get(output_idx)
+        .map(|o| o.fullscreen_window.is_some())
+        .unwrap_or(false);
+
+    // Wallpaper (rendered behind everything, at output-local origin)
     if let Some(ref wp) = state.wallpaper {
         if let Some(tex_buf) = wp.upload(renderer) {
             elements.push(TextureRenderElement::from_texture_buffer(
@@ -180,14 +202,14 @@ pub fn build_custom_elements(
         }
     }
 
-    // Borders (between wallpaper and windows)
-    if state.fullscreen_window.is_none() {
-        elements.extend(render_borders(state, renderer));
+    // Borders (between wallpaper and windows, hidden during fullscreen)
+    if !has_fullscreen {
+        elements.extend(render_borders(state, renderer, output_idx));
     }
 
     // Bar (on top, hidden during fullscreen)
-    if state.fullscreen_window.is_none() {
-        elements.extend(render_bar(state, renderer));
+    if !has_fullscreen {
+        elements.extend(render_bar(state, renderer, output_idx));
     }
 
     elements
