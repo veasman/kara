@@ -1,0 +1,11 @@
+[package]
+name = "kara-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared rendering primitives for the kara desktop environment"
+authors = ["Charlton Moren"]
+
+[dependencies]
+tiny-skia = { workspace = true }
+cosmic-text = { workspace = true }
