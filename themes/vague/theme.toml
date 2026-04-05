@@ -1,0 +1,44 @@
+[meta]
+name = "vague"
+mode = "dark"
+
+[wallpaper]
+
+[palette]
+primary = "#8f729b"
+accent_strategy = "muted"
+contrast = "medium"
+
+[style]
+radius = "medium"
+density = "normal"
+surface_style = "soft"
+transparency = 0.93
+blur = true
+
+[fonts]
+ui_family = "FiraCode Nerd Font"
+ui_size = 11
+mono_family = "FiraCode Nerd Font"
+mono_size = 13
+
+[cursor]
+theme = "Bibata-Modern-Classic"
+size = 24
+
+[nvim]
+preset = "vague"
+transparent = true
+
+[vwm_bar]
+style = "floating"
+background = false
+modules = "pill"
+icons = true
+colors = true
+minimal = false
+height = 26
+radius = 10
+margin_x = 10
+margin_y = 8
+padding_y = 3

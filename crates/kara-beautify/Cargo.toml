@@ -1,0 +1,21 @@
+[package]
+name = "kara-beautify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Appearance manager for the kara desktop environment"
+authors = ["Charlton Moren"]
+
+[[bin]]
+name = "kara-beautify"
+path = "src/main.rs"
+
+[dependencies]
+kara-color = { path = "../kara-color" }
+kara-theme = { path = "../kara-theme" }
+kara-ipc = { path = "../kara-ipc" }
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "tiff"] }
+serde_json = { workspace = true }
+toml = "0.8"

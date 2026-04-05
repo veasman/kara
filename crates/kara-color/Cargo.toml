@@ -1,0 +1,10 @@
+[package]
+name = "kara-color"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Color math library for the kara desktop environment"
+authors = ["Charlton Moren"]
+
+[dependencies]
+anyhow = "1.0"

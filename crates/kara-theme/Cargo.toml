@@ -1,0 +1,13 @@
+[package]
+name = "kara-theme"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Theme specification and rendering for the kara desktop environment"
+authors = ["Charlton Moren"]
+
+[dependencies]
+kara-color = { path = "../kara-color" }
+serde = { workspace = true }
+toml = "0.8"
+anyhow = "1.0"
