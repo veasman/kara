@@ -3,12 +3,12 @@ use smithay::backend::input::{
     PointerButtonEvent,
 };
 use smithay::desktop::WindowSurfaceType;
-use smithay::input::keyboard::{FilterResult, keysyms, ModifiersState};
+use smithay::input::keyboard::{FilterResult, ModifiersState};
 use smithay::input::pointer::{ButtonEvent, MotionEvent};
 use smithay::utils::SERIAL_COUNTER;
 
 use crate::actions::Action;
-use crate::state::Vwm;
+use crate::state::Gate;
 
 #[derive(Debug, Clone)]
 pub struct Keybind {
@@ -34,51 +34,50 @@ impl ModMask {
     }
 }
 
-pub fn default_keybinds() -> Vec<Keybind> {
-    let m = |sym: u32, action: Action| Keybind {
-        mods: ModMask { logo: true, shift: false, ctrl: false, alt: false },
-        sym,
-        action,
-    };
-    let ms = |sym: u32, action: Action| Keybind {
-        mods: ModMask { logo: true, shift: true, ctrl: false, alt: false },
-        sym,
-        action,
-    };
-
-    vec![
-        m(keysyms::KEY_Return, Action::Spawn("foot".into())),
-        m(keysyms::KEY_j, Action::FocusNext),
-        m(keysyms::KEY_k, Action::FocusPrev),
-        m(keysyms::KEY_q, Action::KillClient),
-        ms(keysyms::KEY_Return, Action::ZoomMaster),
-        m(keysyms::KEY_f, Action::ToggleMonocle),
-        ms(keysyms::KEY_f, Action::ToggleFullscreen),
-        m(keysyms::KEY_bracketleft, Action::DecreaseMfact),
-        m(keysyms::KEY_bracketright, Action::IncreaseMfact),
-        ms(keysyms::KEY_q, Action::Quit),
-        m(keysyms::KEY_1, Action::ViewWs(0)),
-        m(keysyms::KEY_2, Action::ViewWs(1)),
-        m(keysyms::KEY_3, Action::ViewWs(2)),
-        m(keysyms::KEY_4, Action::ViewWs(3)),
-        m(keysyms::KEY_5, Action::ViewWs(4)),
-        m(keysyms::KEY_6, Action::ViewWs(5)),
-        m(keysyms::KEY_7, Action::ViewWs(6)),
-        m(keysyms::KEY_8, Action::ViewWs(7)),
-        m(keysyms::KEY_9, Action::ViewWs(8)),
-        ms(keysyms::KEY_1, Action::SendWs(0)),
-        ms(keysyms::KEY_2, Action::SendWs(1)),
-        ms(keysyms::KEY_3, Action::SendWs(2)),
-        ms(keysyms::KEY_4, Action::SendWs(3)),
-        ms(keysyms::KEY_5, Action::SendWs(4)),
-        ms(keysyms::KEY_6, Action::SendWs(5)),
-        ms(keysyms::KEY_7, Action::SendWs(6)),
-        ms(keysyms::KEY_8, Action::SendWs(7)),
-        ms(keysyms::KEY_9, Action::SendWs(8)),
-    ]
+/// Convert config keybinds to compositor keybinds.
+pub fn keybinds_from_config(config: &kara_config::Config) -> Vec<Keybind> {
+    config
+        .keybinds
+        .iter()
+        .map(|kb| Keybind {
+            mods: ModMask {
+                logo: kb.mods.logo,
+                shift: kb.mods.shift,
+                ctrl: kb.mods.ctrl,
+                alt: kb.mods.alt,
+            },
+            sym: kb.keysym,
+            action: convert_action(&kb.action),
+        })
+        .collect()
 }
 
-impl Vwm {
+fn convert_action(action: &kara_config::BindAction) -> Action {
+    use kara_config::BindAction;
+    match action {
+        BindAction::Spawn(name) => Action::Spawn(name.clone()),
+        BindAction::Scratchpad(_) => Action::None, // TODO: M5
+        BindAction::FocusNext => Action::FocusNext,
+        BindAction::FocusPrev => Action::FocusPrev,
+        BindAction::FocusMonitorPrev => Action::None, // TODO: M5
+        BindAction::FocusMonitorNext => Action::None, // TODO: M5
+        BindAction::SendMonitorPrev => Action::None, // TODO: M5
+        BindAction::SendMonitorNext => Action::None, // TODO: M5
+        BindAction::DecreaseMfact => Action::DecreaseMfact,
+        BindAction::IncreaseMfact => Action::IncreaseMfact,
+        BindAction::ZoomMaster => Action::ZoomMaster,
+        BindAction::Monocle => Action::ToggleMonocle,
+        BindAction::Fullscreen => Action::ToggleFullscreen,
+        BindAction::ToggleSync => Action::None, // TODO: M5
+        BindAction::KillClient => Action::KillClient,
+        BindAction::Reload => Action::Reload,
+        BindAction::Quit => Action::Quit,
+        BindAction::ViewWs(idx) => Action::ViewWs(*idx),
+        BindAction::SendWs(idx) => Action::SendWs(*idx),
+    }
+}
+
+impl Gate {
     pub fn handle_input_event<B: smithay::backend::input::InputBackend>(
         &mut self,
         event: InputEvent<B>,

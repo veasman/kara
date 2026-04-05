@@ -1,12 +1,30 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/vwm-wl",
-    "crates/vwm-config",
-    "crates/vwm-bar",
+    "crates/kara-gate",
+    "crates/kara-sight",
+    "crates/kara-config",
+    "crates/kara-ipc",
+    "crates/kara-color",
+    "crates/kara-theme",
+    "crates/kara-ui",
+    "crates/kara-beautify",
+    "crates/kara-summon",
+    "crates/kara-whisper",
+    "crates/kara-glimpse",
 ]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
 
 [workspace.dependencies]
 smithay = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tiny-skia = "0.12"
+cosmic-text = "0.18"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = "0.4"

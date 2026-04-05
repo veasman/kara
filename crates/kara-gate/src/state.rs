@@ -24,8 +24,8 @@ use smithay::wayland::shell::xdg::{
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
-use crate::input::{Keybind, default_keybinds};
-use crate::layout::{layout_workspace, ClientGeometry};
+use crate::input::Keybind;
+use crate::layout::layout_workspace;
 use crate::workspace::{Workspace, WORKSPACE_COUNT};
 
 pub struct ClientState {
@@ -37,7 +37,7 @@ impl ClientData for ClientState {
     fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
 }
 
-pub struct Vwm {
+pub struct Gate {
     pub display_handle: DisplayHandle,
     pub loop_signal: LoopSignal,
     pub running: bool,
@@ -54,17 +54,28 @@ pub struct Vwm {
     pub space: Space<Window>,
     pub clock: Clock<Monotonic>,
 
+    // Config
+    pub config: kara_config::Config,
+
+    // Bar
+    pub bar_renderer: kara_sight::BarRenderer,
+    pub status_cache: kara_sight::StatusCache,
+
     // Window management
     pub workspaces: Vec<Workspace>,
     pub current_ws: usize,
     pub previous_ws: usize,
     pub keybinds: Vec<Keybind>,
 
-    // Cached work area (set from output geometry)
+    // Output geometry (full size) and work area (minus bar)
+    pub output_size: (i32, i32),
     pub workarea: Rectangle<i32, Logical>,
+
+    // IPC
+    pub ipc_listener: Option<std::os::unix::net::UnixListener>,
 }
 
-impl Vwm {
+impl Gate {
     pub fn new(display: &Display<Self>, loop_signal: LoopSignal) -> Self {
         let dh = display.handle();
 
@@ -78,7 +89,30 @@ impl Vwm {
         seat.add_keyboard(Default::default(), 200, 25).unwrap();
         seat.add_pointer();
 
-        let workspaces = (0..WORKSPACE_COUNT).map(Workspace::new).collect();
+        let config = kara_config::load_default_config();
+        let keybinds = crate::input::keybinds_from_config(&config);
+
+        let workspaces: Vec<Workspace> = (0..WORKSPACE_COUNT)
+            .map(|id| {
+                let mut ws = Workspace::new(id);
+                ws.gap_px = config.general.gap_px;
+                ws.mfact = config.general.default_mfact;
+                ws
+            })
+            .collect();
+
+        let bar_renderer = kara_sight::BarRenderer::new(
+            &config.general.font,
+            config.general.font_size,
+        );
+        let status_cache = kara_sight::StatusCache::new();
+
+        tracing::info!(
+            "loaded config: {} keybinds, {} commands, {} rules",
+            keybinds.len(),
+            config.commands.len(),
+            config.rules.len(),
+        );
 
         Self {
             display_handle: dh,
@@ -92,17 +126,103 @@ impl Vwm {
             seat,
             space: Space::default(),
             clock: Clock::new(),
+            config,
+            bar_renderer,
+            status_cache,
             workspaces,
             current_ws: 0,
             previous_ws: 0,
-            keybinds: default_keybinds(),
+            keybinds,
+            output_size: (800, 600),
             workarea: Rectangle::from_loc_and_size((0, 0), (800, 600)),
+            ipc_listener: kara_ipc::server::bind_socket().ok(),
         }
     }
 
-    /// Set the work area from the output geometry
-    pub fn set_workarea(&mut self, rect: Rectangle<i32, Logical>) {
-        self.workarea = rect;
+    /// Reload config from disk and apply changes.
+    pub fn reload_config(&mut self) {
+        tracing::info!("reloading config");
+        self.config = kara_config::load_default_config();
+        self.keybinds = crate::input::keybinds_from_config(&self.config);
+
+        // Apply general config to workspaces
+        for ws in &mut self.workspaces {
+            ws.gap_px = self.config.general.gap_px;
+        }
+
+        // Update bar font
+        self.bar_renderer.set_font(
+            &self.config.general.font,
+            self.config.general.font_size,
+        );
+
+        // Recompute workarea for bar height changes
+        self.recompute_workarea();
+
+        tracing::info!(
+            "config reloaded: {} keybinds, {} commands, {} rules",
+            self.keybinds.len(),
+            self.config.commands.len(),
+            self.config.rules.len(),
+        );
+
+        self.apply_layout();
+    }
+
+    /// Set the output size and recompute work area (accounting for bar).
+    pub fn set_output_size(&mut self, w: i32, h: i32) {
+        self.output_size = (w, h);
+        self.recompute_workarea();
+    }
+
+    /// Recompute work area from output size and bar config.
+    fn recompute_workarea(&mut self) {
+        let (w, h) = self.output_size;
+        let bar_h = if self.config.bar.enabled {
+            self.config.bar.height
+        } else {
+            0
+        };
+
+        let (y, area_h) = match self.config.bar.position {
+            kara_config::BarPosition::Top => (bar_h, h - bar_h),
+            kara_config::BarPosition::Bottom => (0, h - bar_h),
+        };
+
+        self.workarea = Rectangle::from_loc_and_size((0, y), (w, area_h.max(0)));
+    }
+
+    /// Build the workspace context for bar rendering.
+    pub fn bar_workspace_context(&self) -> kara_sight::WorkspaceContext {
+        let mut occupied = [false; 9];
+        for (i, ws) in self.workspaces.iter().enumerate() {
+            if i < 9 {
+                occupied[i] = !ws.clients.is_empty();
+            }
+        }
+
+        let focused_title = self.workspaces[self.current_ws]
+            .focused()
+            .and_then(|w| w.toplevel())
+            .map(|t| {
+                smithay::wayland::compositor::with_states(t.wl_surface(), |states| {
+                    states
+                        .data_map
+                        .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                        .and_then(|data| data.lock().ok())
+                        .and_then(|attrs| attrs.title.clone())
+                        .unwrap_or_default()
+                })
+            })
+            .unwrap_or_default();
+
+        kara_sight::WorkspaceContext {
+            current_ws: self.current_ws,
+            occupied_workspaces: occupied,
+            focused_title,
+            monitor_id: 0,
+            sync_enabled: self.config.general.sync_workspaces,
+        }
     }
 
     /// Apply the tiling layout for the current workspace and map windows in the Space
@@ -169,7 +289,7 @@ impl Vwm {
 
 // --- Smithay handler implementations ---
 
-impl CompositorHandler for Vwm {
+impl CompositorHandler for Gate {
     fn compositor_state(&mut self) -> &mut CompositorState {
         &mut self.compositor_state
     }
@@ -190,17 +310,17 @@ impl CompositorHandler for Vwm {
     }
 }
 
-impl BufferHandler for Vwm {
+impl BufferHandler for Gate {
     fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
 }
 
-impl ShmHandler for Vwm {
+impl ShmHandler for Gate {
     fn shm_state(&self) -> &ShmState {
         &self.shm_state
     }
 }
 
-impl XdgShellHandler for Vwm {
+impl XdgShellHandler for Gate {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state
     }
@@ -255,7 +375,7 @@ impl XdgShellHandler for Vwm {
     }
 }
 
-impl SeatHandler for Vwm {
+impl SeatHandler for Gate {
     type KeyboardFocus = WlSurface;
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
@@ -268,23 +388,23 @@ impl SeatHandler for Vwm {
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
 }
 
-impl SelectionHandler for Vwm {
+impl SelectionHandler for Gate {
     type SelectionUserData = ();
 }
 
-impl DataDeviceHandler for Vwm {
+impl DataDeviceHandler for Gate {
     fn data_device_state(&self) -> &DataDeviceState {
         &self.data_device_state
     }
 }
 
-impl ClientDndGrabHandler for Vwm {}
-impl ServerDndGrabHandler for Vwm {}
-impl smithay::wayland::output::OutputHandler for Vwm {}
+impl ClientDndGrabHandler for Gate {}
+impl ServerDndGrabHandler for Gate {}
+impl smithay::wayland::output::OutputHandler for Gate {}
 
-delegate_compositor!(Vwm);
-delegate_xdg_shell!(Vwm);
-delegate_shm!(Vwm);
-delegate_seat!(Vwm);
-delegate_data_device!(Vwm);
-delegate_output!(Vwm);
+delegate_compositor!(Gate);
+delegate_xdg_shell!(Gate);
+delegate_shm!(Gate);
+delegate_seat!(Gate);
+delegate_data_device!(Gate);
+delegate_output!(Gate);

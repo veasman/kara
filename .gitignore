@@ -1,1 +1,7 @@
 target/
+*.log
+*.pkg.tar.*
+*.src.tar.*
+.SRCINFO
+pkg/
+/src/

@@ -1,0 +1,15 @@
+[package]
+name = "kara-whisper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Notification daemon for the kara desktop environment"
+authors = ["Charlton Moren"]
+
+[[bin]]
+name = "kara-whisper"
+path = "src/main.rs"
+
+[dependencies]
+kara-ipc = { path = "../kara-ipc" }
+kara-ui = { path = "../kara-ui" }

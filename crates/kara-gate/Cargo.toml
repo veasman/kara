@@ -1,0 +1,20 @@
+[package]
+name = "kara-gate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Wayland compositor for the kara desktop environment"
+authors = ["Charlton Moren"]
+
+[[bin]]
+name = "kara-gate"
+path = "src/main.rs"
+
+[dependencies]
+smithay = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+kara-config = { path = "../kara-config" }
+kara-sight = { path = "../kara-sight" }
+kara-ipc = { path = "../kara-ipc" }
+signal-hook = "0.3"

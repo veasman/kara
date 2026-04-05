@@ -1,12 +1,15 @@
 use std::process::Command;
 
-use crate::state::Vwm;
+use crate::state::Gate;
 use crate::workspace::MFACT_STEP;
 
 #[derive(Debug, Clone)]
 pub enum Action {
     None,
+    /// Spawn a named command (looked up in config commands map)
     Spawn(String),
+    /// Spawn a raw command string (no lookup)
+    SpawnRaw(String),
     KillClient,
     FocusNext,
     FocusPrev,
@@ -17,14 +20,16 @@ pub enum Action {
     IncreaseMfact,
     ViewWs(usize),
     SendWs(usize),
+    Reload,
     Quit,
 }
 
-impl Vwm {
+impl Gate {
     pub fn dispatch_action(&mut self, action: Action) {
         match action {
             Action::None => {}
-            Action::Spawn(cmd) => self.spawn(&cmd),
+            Action::Spawn(name) => self.spawn_named(&name),
+            Action::SpawnRaw(cmd) => self.spawn_raw(&cmd),
             Action::KillClient => self.kill_focused(),
             Action::FocusNext => self.do_focus_next(),
             Action::FocusPrev => self.do_focus_prev(),
@@ -35,6 +40,7 @@ impl Vwm {
             Action::IncreaseMfact => self.do_adjust_mfact(MFACT_STEP),
             Action::ViewWs(idx) => self.do_view_ws(idx),
             Action::SendWs(idx) => self.do_send_ws(idx),
+            Action::Reload => self.reload_config(),
             Action::Quit => {
                 self.running = false;
                 self.loop_signal.stop();
@@ -42,7 +48,16 @@ impl Vwm {
         }
     }
 
-    fn spawn(&self, cmd: &str) {
+    /// Spawn a named command from the config commands map.
+    fn spawn_named(&self, name: &str) {
+        match self.config.commands.get(name) {
+            Some(cmd) => self.spawn_raw(cmd),
+            None => tracing::error!("unknown command name '{name}'"),
+        }
+    }
+
+    /// Spawn a raw command string.
+    fn spawn_raw(&self, cmd: &str) {
         let parts: Vec<&str> = cmd.split_whitespace().collect();
         if parts.is_empty() {
             return;

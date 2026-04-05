@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=kara
+Comment=kara desktop environment
+Exec=kara-gate
+Type=Application
+DesktopNames=kara
