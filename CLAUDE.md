@@ -89,16 +89,16 @@ kara-glimpse    -> kara-ipc
 - **M2**: Tiling — done
 - **M3**: Config — done (19 tests passing)
 - **M4**: Bar — done
-- **M5**: Single-monitor daily driver — pending
+- **M5**: Single-monitor daily driver — done (environment, autostart, rules, floating, fullscreen, borders, cursor, scratchpad)
 - **M6**: Multi-monitor + animations — pending
 - **M7**: Production backend — pending (udev/DRM, libinput, libseat)
-- **M8**: First-party tools — pending (kara-beautify, kara-summon, kara-whisper, kara-glimpse)
+- **M8**: First-party tools — pending (kara-summon, kara-whisper, kara-glimpse)
 
 ## Current State
 
-**Last session**: 2026-04-04. Monorepo restructure complete. All 11 crates renamed and building. 19 tests passing.
+**Last session**: 2026-04-04. M1-M5 complete. Phases 0-5 of restructure complete. loom-rs migrated. IPC, layer-shell, wallpaper, kara-ui all done. NOT runtime-tested yet.
 
-**Next**: Continue with M5 features, then Phase 1 (bring loom-rs code into kara-beautify/kara-color/kara-theme).
+**Next**: M6 (multi-monitor + animations) or M7 (production backend) or runtime testing.
 
 **Full plan**: `~/.claude/plans/twinkly-prancing-moon.md`
 
