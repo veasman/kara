@@ -90,30 +90,32 @@ kara-glimpse    -> kara-ipc
 - **M3**: Config — done (19 tests passing)
 - **M4**: Bar — done
 - **M5**: Single-monitor daily driver — done (environment, autostart, rules, floating, fullscreen, borders, cursor, scratchpad)
-- **M6**: Multi-monitor + animations — pending
-- **M7**: Production backend — pending (udev/DRM, libinput, libseat)
+- **M6**: Multi-monitor — done (per-output workspaces, hybrid sync, monitor actions). Animations pending.
+- **M7**: Production backend — done (udev/DRM, libinput, libseat, xdg-decoration)
 - **M8**: First-party tools — pending (kara-summon, kara-whisper, kara-glimpse)
 
 ## Picking Up Where We Left Off
 
-**Last session**: 2026-04-05. Runtime testing and bug fixing.
+**Last session**: 2026-04-05. M7 production backend + M6 multi-monitor.
 
 **What was done this session**:
-1. Fixed winit deadlock — WAYLAND_DISPLAY was set before winit::init(), causing self-connection
-2. Fixed bar vertical centering — cosmic-text glyph placement offset was not accounted for
-3. Wired font family through to TextRenderer (was hardcoded to SansSerif)
-4. Eliminated all build warnings across all crates (0 warnings)
-5. Cleaned up all stale vwm references → kara naming
-6. Updated example config, README, env vars (VWM_* → KARA_*)
-7. Runtime-tested with winit backend — compositor launches, bar renders, config loads
+1. Fixed winit deadlock, bar centering, font family wiring, all warnings
+2. Cleaned up vwm→kara naming, updated example config/README
+3. M7: Production udev/DRM backend (libseat, libinput, GBM, DrmCompositor)
+4. Backend selection via KARA_BACKEND env var (auto-detects winit vs udev)
+5. xdg-decoration protocol (ServerSide — no client title bars)
+6. M6: Multi-monitor with OutputState per-output model
+7. Hybrid workspace model (sync/independent like vwm, mod+s toggle)
+8. Monitor focus/send actions (mod+h/l, mod+Shift+h/l)
+9. Per-output rendering with local coordinate spaces
 
-**Themes**: 4 shipped — cloud (light/airy), moonlight (dark/red/sharp), natural (gruvbox/warm), vague (muted purple)
+**Runtime tested**: Both winit (nested X11) and udev (TTY). Dual monitor tested (laptop + TV).
 
-**Runtime tested**: Yes (winit backend on X11). Bar renders correctly, config loads (43 keybinds, 9 commands, 2 rules).
+**Known issue**: Multi-monitor coordinate space may need further testing — borders/windows showing correctly on each output after last fix (output-local coords) but not yet verified.
 
 **Next priorities**:
-1. M6: Multi-monitor + animations (per-output workspaces, hotplug, animation system)
-2. M7: Production backend (udev/DRM, libinput, libseat — boot from TTY)
+1. Test dual-monitor thoroughly (workspace switching, sync toggle, window placement)
+2. Animations (window open/close, workspace switch, scratchpad, focus transitions)
 3. M8: First-party tools (kara-summon, kara-whisper, kara-glimpse)
 
 **Repo**: git@github.com:veasman/kara.git (local dir may be ~/repos/kara/)
