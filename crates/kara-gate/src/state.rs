@@ -125,9 +125,12 @@ pub struct Gate {
 
     // Border rendering: cached geometry from last apply_layout
     pub border_rects: Vec<(smithay::utils::Rectangle<i32, Logical>, bool)>, // (rect, is_focused)
+    pub scratchpad_border_rects: Vec<(smithay::utils::Rectangle<i32, Logical>, bool)>,
     pub layout_dirty: bool,
+    pub scratchpad_layout_dirty: bool,
     // Cached border pixmap data per rect: (rgba_bytes, width, height)
     pub border_cache: Vec<(Vec<u8>, u32, u32)>,
+    pub scratchpad_border_cache: Vec<(Vec<u8>, u32, u32)>,
     pub border_offsets: Vec<(f64, f64)>,
 
     // Animation
@@ -244,8 +247,11 @@ impl Gate {
             focused_scratchpad: None,
             autostart_done: false,
             border_rects: Vec::new(),
+            scratchpad_border_rects: Vec::new(),
             layout_dirty: true,
+            scratchpad_layout_dirty: false,
             border_cache: Vec::new(),
+            scratchpad_border_cache: Vec::new(),
             border_offsets: Vec::new(),
             animations: crate::animation::AnimationManager::new(),
             pending_sends: Vec::new(),
@@ -591,11 +597,18 @@ impl Gate {
         let sp_h = (workarea.size.h as f32 * sc.height_pct as f32 / 100.0) as i32;
         let sp_x = workarea.loc.x + (workarea.size.w - sp_w) / 2;
         let sp_y = workarea.loc.y + (workarea.size.h - sp_h) / 2;
-        let sp_rect = Rectangle::new((sp_x, sp_y).into(), (sp_w, sp_h).into());
+
+        // Expand rect by gap so layout_workspace's outer gap inset brings it back to intended size
+        let gap = self.scratchpads[sp_idx].workspace.gap_px;
+        let sp_rect = Rectangle::new(
+            (sp_x - gap, sp_y - gap).into(),
+            (sp_w + gap * 2, sp_h + gap * 2).into(),
+        );
 
         let border_px = self.config.general.border_px;
         let geometries = layout_workspace(&self.scratchpads[sp_idx].workspace, sp_rect, border_px);
 
+        self.scratchpad_border_rects.clear();
         for geom in &geometries {
             if geom.visible {
                 if let Some(toplevel) = geom.window.toplevel() {
@@ -609,14 +622,14 @@ impl Gate {
                 self.window_base_positions.push((geom.window.clone(), geom.rect.loc));
 
                 if let Some(br) = geom.border_rect {
-                    self.border_rects.push((br, geom.is_focused));
+                    self.scratchpad_border_rects.push((br, geom.is_focused));
                 }
             } else {
                 self.space.unmap_elem(&geom.window);
             }
         }
 
-        self.layout_dirty = true;
+        self.scratchpad_layout_dirty = true;
         self.bar_dirty = true;
     }
 

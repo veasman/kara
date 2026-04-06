@@ -83,20 +83,23 @@ pub fn render_bar(
     )]
 }
 
-/// Rasterize border pixmaps (CPU-side) — only when layout has changed.
-fn rasterize_borders(state: &mut Gate) {
-    if !state.layout_dirty {
+/// Rasterize a set of border pixmaps (CPU-side) — only when dirty.
+fn rasterize_border_set(
+    rects: &[(smithay::utils::Rectangle<i32, smithay::utils::Logical>, bool)],
+    cache: &mut Vec<(Vec<u8>, u32, u32)>,
+    dirty: bool,
+    border_px: i32,
+    radius: f32,
+    accent: u32,
+    border_color: u32,
+) {
+    if !dirty {
         return;
     }
 
-    let border_px = state.config.general.border_px;
-    let accent = state.config.theme.accent;
-    let border_color = state.config.theme.border;
-    let radius = state.config.general.border_radius as f32;
+    cache.clear();
 
-    state.border_cache.clear();
-
-    for &(rect, is_focused) in &state.border_rects {
+    for &(rect, is_focused) in rects {
         let color = if is_focused { accent } else { border_color };
         let w = rect.size.w.max(1) as u32;
         let h = rect.size.h.max(1) as u32;
@@ -108,7 +111,7 @@ fn rasterize_borders(state: &mut Gate) {
         let mut pixmap = match tiny_skia::Pixmap::new(w, h) {
             Some(p) => p,
             None => {
-                state.border_cache.push((Vec::new(), 0, 0));
+                cache.push((Vec::new(), 0, 0));
                 continue;
             }
         };
@@ -141,22 +144,23 @@ fn rasterize_borders(state: &mut Gate) {
             }
         }
 
-        state.border_cache.push((pixmap.data().to_vec(), w, h));
+        cache.push((pixmap.data().to_vec(), w, h));
     }
 }
 
 /// Upload cached border pixmaps to GPU and position for a specific output.
-fn render_borders(
-    state: &Gate,
+fn render_border_set(
+    rects: &[(smithay::utils::Rectangle<i32, smithay::utils::Logical>, bool)],
+    cache: &[(Vec<u8>, u32, u32)],
+    offsets: &[(f64, f64)],
+    output: Option<&crate::state::OutputState>,
     renderer: &mut GlesRenderer,
-    output_idx: usize,
 ) -> Vec<TextureRenderElement<GlesTexture>> {
-    let border_px = state.config.general.border_px;
-    if border_px <= 0 || state.border_cache.len() != state.border_rects.len() {
+    if cache.len() != rects.len() {
         return Vec::new();
     }
 
-    let out = match state.outputs.get(output_idx) {
+    let out = match output {
         Some(o) => o,
         None => return Vec::new(),
     };
@@ -167,12 +171,12 @@ fn render_borders(
 
     let mut elements = Vec::new();
 
-    for (i, &(rect, _is_focused)) in state.border_rects.iter().enumerate() {
+    for (i, &(rect, _)) in rects.iter().enumerate() {
         if !out_rect.overlaps(rect) {
             continue;
         }
 
-        let (ref data, w, h) = state.border_cache[i];
+        let (ref data, w, h) = cache[i];
         if data.is_empty() {
             continue;
         }
@@ -194,7 +198,7 @@ fn render_borders(
             }
         };
 
-        let (off_x, off_y) = state.border_offsets.get(i).copied().unwrap_or((0.0, 0.0));
+        let (off_x, off_y) = offsets.get(i).copied().unwrap_or((0.0, 0.0));
         elements.push(TextureRenderElement::from_texture_buffer(
             Point::from((
                 (rect.loc.x - out.location.x) as f64 + off_x,
@@ -237,12 +241,15 @@ pub fn build_custom_elements(
         }
     }
 
-    // Borders (between wallpaper and windows, hidden during fullscreen)
-    // Rasterize only when layout changed (CPU-side caching)
+    // Workspace borders (behind dim overlay)
     if !has_fullscreen {
-        rasterize_borders(state);
+        rasterize_border_set(
+            &state.border_rects, &mut state.border_cache, state.layout_dirty,
+            state.config.general.border_px, state.config.general.border_radius as f32,
+            state.config.theme.accent, state.config.theme.border,
+        );
         state.layout_dirty = false;
-        elements.extend(render_borders(state, renderer, output_idx));
+        elements.extend(render_border_set(&state.border_rects, &state.border_cache, &state.border_offsets, state.outputs.get(output_idx), renderer));
     }
 
     // Bar (on top, hidden during fullscreen)
@@ -250,8 +257,20 @@ pub fn build_custom_elements(
         elements.extend(render_bar(state, renderer, output_idx));
     }
 
-    // Dim overlay for visible scratchpads (behind scratchpad windows, above bar)
+    // Dim overlay for visible scratchpads
     elements.extend(render_dim_overlay(state, renderer, output_idx));
+
+    // Scratchpad borders (above dim overlay)
+    if !has_fullscreen {
+        rasterize_border_set(
+            &state.scratchpad_border_rects, &mut state.scratchpad_border_cache,
+            state.scratchpad_layout_dirty,
+            state.config.general.border_px, state.config.general.border_radius as f32,
+            state.config.theme.accent, state.config.theme.border,
+        );
+        state.scratchpad_layout_dirty = false;
+        elements.extend(render_border_set(&state.scratchpad_border_rects, &state.scratchpad_border_cache, &[], state.outputs.get(output_idx), renderer));
+    }
 
     elements
 }
