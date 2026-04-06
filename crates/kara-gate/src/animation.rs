@@ -159,36 +159,6 @@ impl AnimationManager {
         });
     }
 
-    /// Start a "window out" animation without auto-unmap.
-    /// Used for scratchpad hide where batch cleanup is needed.
-    pub fn animate_out_no_unmap(
-        &mut self,
-        window: Window,
-        preset: AnimationPreset,
-        duration_ms: u32,
-        window_x: i32, window_y: i32, window_w: i32, window_h: i32,
-        area_x: i32, area_y: i32, area_w: i32, area_h: i32,
-        direction: SlideDirection,
-    ) {
-        if preset == AnimationPreset::Instant || duration_ms == 0 {
-            return;
-        }
-        self.cancel(&window);
-        let target_offset = compute_in_offset(
-            preset, window_x, window_y, window_w, window_h,
-            area_x, area_y, area_w, area_h, direction,
-        );
-        self.active.push(ActiveAnimation {
-            window,
-            start: Instant::now(),
-            duration: Duration::from_millis(duration_ms as u64),
-            from_offset: (0.0, 0.0),
-            to_offset: target_offset,
-            easing: easing_for_preset(preset),
-            unmap_on_complete: false,
-        });
-    }
-
     /// Start a "window out" animation (send to ws).
     /// The window will be unmapped when the animation completes.
     pub fn animate_out(

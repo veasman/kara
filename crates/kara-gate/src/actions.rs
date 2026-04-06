@@ -211,41 +211,17 @@ impl Gate {
 
         if self.scratchpads[sp_idx].visible {
             // Hide this scratchpad
-            let preset = self.config.animations.preset;
-            let duration = self.config.animations.duration_ms;
             let windows: Vec<_> = self.scratchpads[sp_idx].workspace.clients.clone();
 
-            if preset != kara_config::AnimationPreset::Instant && duration > 0 {
-                let wa = self.workarea();
-                for window in &windows {
-                    if let Some(loc) = self.space.element_location(window) {
-                        let geom = window.geometry();
-                        // Don't auto-unmap — scratchpad handles batch cleanup
-                        self.animations.animate_out_no_unmap(
-                            window.clone(), preset, duration,
-                            loc.x, loc.y, geom.size.w, geom.size.h,
-                            wa.loc.x, wa.loc.y, wa.size.w, wa.size.h,
-                            crate::animation::SlideDirection::Auto,
-                        );
-                    }
-                }
-                self.scratchpads[sp_idx].hiding = true;
-                // Keep visible=true so dim/borders stay during animation.
-                // process_completed_animations will batch-unmap everything.
-                if self.focused_scratchpad == Some(sp_idx) {
-                    self.focused_scratchpad = None;
-                }
-                self.apply_layout();
-                self.apply_focus();
-                tracing::debug!("scratchpad '{sp_name}' hiding (animated)");
-                return;
-            } else {
-                for window in &windows {
-                    self.space.unmap_elem(window);
-                }
-                self.scratchpad_border_rects.clear();
-                self.scratchpad_border_cache.clear();
+            // Instant hide — windows, borders, dim all disappear in the same frame.
+            // Animated hide causes visual desync (content smaller than border).
+            for window in &windows {
+                self.animations.cancel(window);
+                self.space.unmap_elem(window);
             }
+            self.scratchpad_border_rects.clear();
+            self.scratchpad_border_cache.clear();
+            self.scratchpad_border_offsets.clear();
 
             self.scratchpads[sp_idx].visible = false;
             if self.focused_scratchpad == Some(sp_idx) {
