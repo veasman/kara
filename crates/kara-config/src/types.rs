@@ -152,6 +152,7 @@ pub enum BarModuleKind {
     Brightness,
     Media,
     Memory,
+    Cpu,
     Weather,
     Script(String),
 }

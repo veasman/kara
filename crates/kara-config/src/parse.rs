@@ -471,6 +471,7 @@ fn parse_bar_module_kind(name: &str) -> Option<BarModuleKind> {
         "brightness" => Some(BarModuleKind::Brightness),
         "media" => Some(BarModuleKind::Media),
         "memory" | "ram" => Some(BarModuleKind::Memory),
+        "cpu" => Some(BarModuleKind::Cpu),
         "weather" => Some(BarModuleKind::Weather),
         _ => {
             if let Some(script_name) = name.strip_prefix("script:") {

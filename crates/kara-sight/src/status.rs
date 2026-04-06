@@ -57,6 +57,12 @@ pub struct MemoryState {
     pub total_mb: i64,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct CpuState {
+    pub valid: bool,
+    pub usage_percent: i32,
+}
+
 // ── Status cache with throttled refresh ─────────────────────────────
 
 pub struct StatusCache {
@@ -66,6 +72,7 @@ pub struct StatusCache {
     pub brightness: BrightnessState,
     pub media: MediaState,
     pub memory: MemoryState,
+    pub cpu: CpuState,
 
     last_volume: Option<Instant>,
     last_network: Option<Instant>,
@@ -73,6 +80,10 @@ pub struct StatusCache {
     last_brightness: Option<Instant>,
     last_media: Option<Instant>,
     last_memory: Option<Instant>,
+    last_cpu: Option<Instant>,
+    // Previous CPU jiffies for delta calculation
+    prev_cpu_total: u64,
+    prev_cpu_idle: u64,
 }
 
 impl StatusCache {
@@ -84,12 +95,16 @@ impl StatusCache {
             brightness: BrightnessState::default(),
             media: MediaState::default(),
             memory: MemoryState::default(),
+            cpu: CpuState::default(),
             last_volume: None,
             last_network: None,
             last_battery: None,
             last_brightness: None,
             last_media: None,
             last_memory: None,
+            last_cpu: None,
+            prev_cpu_total: 0,
+            prev_cpu_idle: 0,
         }
     }
 
@@ -125,6 +140,11 @@ impl StatusCache {
         if force || self.should_update(&self.last_memory, now, 1000) {
             self.memory = poll_memory();
             self.last_memory = Some(now);
+        }
+
+        if force || self.should_update(&self.last_cpu, now, 2000) {
+            self.cpu = poll_cpu(&mut self.prev_cpu_total, &mut self.prev_cpu_idle);
+            self.last_cpu = Some(now);
         }
     }
 
@@ -382,5 +402,52 @@ fn read_wireless_ssid(ifname: &str) -> String {
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         }
         _ => String::new(),
+    }
+}
+
+/// Read CPU usage from /proc/stat as delta between samples.
+fn poll_cpu(prev_total: &mut u64, prev_idle: &mut u64) -> CpuState {
+    let content = match fs::read_to_string("/proc/stat") {
+        Ok(c) => c,
+        Err(_) => return CpuState::default(),
+    };
+
+    let first_line = match content.lines().next() {
+        Some(l) if l.starts_with("cpu ") => l,
+        _ => return CpuState::default(),
+    };
+
+    // cpu  user nice system idle iowait irq softirq steal
+    let fields: Vec<u64> = first_line
+        .split_whitespace()
+        .skip(1)
+        .filter_map(|s| s.parse().ok())
+        .collect();
+
+    if fields.len() < 4 {
+        return CpuState::default();
+    }
+
+    let total: u64 = fields.iter().sum();
+    let idle = fields[3] + fields.get(4).copied().unwrap_or(0); // idle + iowait
+
+    let usage = if *prev_total > 0 {
+        let dtotal = total.saturating_sub(*prev_total);
+        let didle = idle.saturating_sub(*prev_idle);
+        if dtotal > 0 {
+            (((dtotal - didle) as f64 / dtotal as f64) * 100.0) as i32
+        } else {
+            0
+        }
+    } else {
+        0 // first sample, no delta yet
+    };
+
+    *prev_total = total;
+    *prev_idle = idle;
+
+    CpuState {
+        valid: *prev_total > 0,
+        usage_percent: usage.clamp(0, 100),
     }
 }

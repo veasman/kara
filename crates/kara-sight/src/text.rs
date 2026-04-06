@@ -33,6 +33,7 @@ pub fn build_module_text(kind: &BarModuleKind, arg: Option<&str>, ctx: &ModuleCo
         BarModuleKind::Brightness => build_brightness(ctx),
         BarModuleKind::Media => build_media(ctx),
         BarModuleKind::Memory => build_memory(ctx),
+        BarModuleKind::Cpu => build_cpu(ctx),
         BarModuleKind::Title => build_title(ctx),
         BarModuleKind::Monitor => build_monitor(ctx),
         BarModuleKind::Sync => build_sync(ctx),
@@ -53,7 +54,7 @@ fn build_clock(arg: Option<&str>, ctx: &ModuleContext) -> ModuleContent {
     let now = chrono::Local::now();
     let text = now.format(fmt).to_string();
     let display = if ctx.icons {
-        format!("\u{f0331} {text}") // 󰃱 calendar icon
+        format!("\u{f0954} {text}") // 󰥔 clock icon
     } else {
         text
     };
@@ -233,6 +234,27 @@ fn build_memory(ctx: &ModuleContext) -> ModuleContent {
     ModuleContent { text, color }
 }
 
+fn build_cpu(ctx: &ModuleContext) -> ModuleContent {
+    let st = &ctx.status.cpu;
+    if !st.valid {
+        return ModuleContent { text: String::new(), color: ctx.theme.text };
+    }
+
+    let text = if ctx.icons {
+        format!("\u{f4bc} {}%", st.usage_percent) // 󰒼 cpu/chip icon
+    } else {
+        format!("cpu {}%", st.usage_percent)
+    };
+
+    let color = if ctx.colors && st.usage_percent >= 90 {
+        ctx.theme.accent
+    } else {
+        ctx.theme.text
+    };
+
+    ModuleContent { text, color }
+}
+
 fn build_title(ctx: &ModuleContext) -> ModuleContent {
     let text = if ctx.focused_title.is_empty() {
         "kara".to_string()
@@ -250,7 +272,7 @@ fn build_title(ctx: &ModuleContext) -> ModuleContent {
 
 fn build_monitor(ctx: &ModuleContext) -> ModuleContent {
     let sync_indicator = if ctx.sync_enabled {
-        if ctx.icons { " \u{f0c2}" } else { " sync" } // 󰰂 link icon
+        if ctx.icons { " \u{f0b38}" } else { " sync" } // 󰬸 sync arrows
     } else {
         ""
     };
