@@ -475,15 +475,15 @@ fn render_frame(
     let sp_borders = crate::render::build_scratchpad_borders(state, renderer, output_idx);
     let sp_dim = crate::render::build_scratchpad_dim(state, renderer, output_idx);
 
-    let space_elements = match state.space.render_elements_for_output(
-        renderer, &instance.output, 1.0,
-    ) {
-        Ok(e) => e,
-        Err(e) => {
-            tracing::error!("failed to get space render elements: {e:?}");
-            return;
-        }
+    // Use render_elements_for_region to get ONLY window elements (no layer surfaces).
+    // Layer surfaces are rendered separately with correct positions from LayerMap.
+    let output_geo = match state.space.output_geometry(&instance.output) {
+        Some(g) => g,
+        None => return,
     };
+    let space_elements: Vec<_> = state.space.render_elements_for_region(
+        renderer, &output_geo, 1.0, 1.0,
+    );
 
     // Element order (front-to-back for DrmCompositor):
     // cursor > sp borders > space windows > dim (around sp hole) > custom
@@ -517,7 +517,7 @@ fn render_frame(
     elements.extend(sp_borders.into_iter().map(DrmRenderElement::Texture));
 
     // Space windows (scratchpad raised to top, regular behind)
-    elements.extend(space_elements.into_iter().map(DrmRenderElement::Space));
+    elements.extend(space_elements.into_iter().map(DrmRenderElement::Surface));
 
     // Dim rects around scratchpad area (dims background, not scratchpad content)
     elements.extend(sp_dim.into_iter().map(DrmRenderElement::Texture));

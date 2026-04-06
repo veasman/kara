@@ -837,6 +837,7 @@ impl CompositorHandler for Gate {
         smithay::backend::renderer::utils::on_commit_buffer_handler::<Self>(surface);
 
         // Handle layer surface commits
+        let mut layer_needs_focus = false;
         for out in &self.outputs {
             let mut map = layer_map_for_output(&out.output);
             for layer in map.layers().cloned().collect::<Vec<_>>() {
@@ -849,16 +850,31 @@ impl CompositorHandler for Gate {
                             .unwrap_or(false)
                     });
                     if initial {
-                        // First commit — send initial configure with arranged size
                         map.arrange();
                         layer.layer_surface().send_configure();
                     } else {
                         map.arrange();
+                        let wants_kb = compositor::with_states(surface, |states| {
+                            states.cached_state
+                                .get::<smithay::wayland::shell::wlr_layer::LayerSurfaceCachedState>()
+                                .current()
+                                .keyboard_interactivity
+                        });
+                        if wants_kb == smithay::wayland::shell::wlr_layer::KeyboardInteractivity::Exclusive {
+                            layer_needs_focus = true;
+                        }
                     }
                     drop(map);
-                    return;
+                    break;
                 }
             }
+            if layer_needs_focus { break; }
+        }
+        if layer_needs_focus {
+            let serial = SERIAL_COUNTER.next_serial();
+            let keyboard = self.seat.get_keyboard().unwrap();
+            keyboard.set_focus(self, Some(surface.clone()), serial);
+            return;
         }
 
         // If this commit is for a mapped window, refresh the space
