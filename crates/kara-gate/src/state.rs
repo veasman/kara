@@ -577,6 +577,16 @@ impl Gate {
                 }
             }
         }
+
+        // If any scratchpad is visible, unmap workspace windows from Space
+        // so they don't render above the dim overlay.
+        if self.any_scratchpad_active() {
+            for (ws_idx, _, _, _, _) in &output_ws {
+                for w in &self.workspaces[*ws_idx].clients {
+                    self.space.unmap_elem(w);
+                }
+            }
+        }
     }
 
     /// Apply tiling layout for a scratchpad within its floating rect.

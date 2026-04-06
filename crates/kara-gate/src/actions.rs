@@ -250,13 +250,9 @@ impl Gate {
         self.scratchpads[sp_idx].output_idx = self.focused_output;
         self.focused_scratchpad = Some(sp_idx);
 
-        // Layout regular workspace (populates border_rects), then unmap workspace windows
-        // so they don't render above the dim overlay. Scratchpad windows render alone.
+        // Layout regular workspace (populates border_rects — apply_layout auto-unmaps
+        // workspace windows when scratchpad is active), then layout scratchpad on top.
         self.apply_layout();
-        let ws_idx = self.effective_ws(self.focused_output);
-        for w in &self.workspaces[ws_idx].clients {
-            self.space.unmap_elem(w);
-        }
         self.apply_scratchpad_layout(sp_idx);
 
         // Animate windows in
