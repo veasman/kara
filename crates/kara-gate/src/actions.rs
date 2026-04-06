@@ -270,7 +270,8 @@ impl Gate {
         self.scratchpads[sp_idx].output_idx = self.focused_output;
         self.focused_scratchpad = Some(sp_idx);
 
-        // Layout windows within scratchpad rect
+        // Layout regular workspace first (populates border_rects), then scratchpad on top
+        self.apply_layout();
         self.apply_scratchpad_layout(sp_idx);
 
         // Animate windows in
