@@ -459,6 +459,7 @@ fn render_frame(
     output_idx: usize,
 ) {
     let custom_elements = build_custom_elements(state, renderer, output_idx);
+    let scratchpad_overlay = crate::render::build_scratchpad_overlay(state, renderer, output_idx);
 
     let space_elements = match state.space.render_elements_for_output(
         renderer, &instance.output, 1.0,
@@ -470,16 +471,28 @@ fn render_frame(
         }
     };
 
+    // Element order (front-to-back for DrmCompositor):
+    // cursor > space windows > scratchpad overlay (dim + sp borders) > custom (wallpaper, ws borders, bar)
+    //
+    // Scratchpad windows are raised to top of Space stacking, so they render
+    // in front of regular windows. The dim overlay sits between all windows
+    // and the wallpaper/bar, darkening the background.
     let mut elements: Vec<DrmRenderElement> =
-        Vec::with_capacity(custom_elements.len() + space_elements.len() + 1);
-    elements.extend(custom_elements.into_iter().map(DrmRenderElement::Texture));
+        Vec::with_capacity(custom_elements.len() + scratchpad_overlay.len() + space_elements.len() + 1);
+
+    // Cursor (frontmost)
+    if let Some(cursor_elem) = crate::cursor::build_cursor_element(state, renderer, output_idx) {
+        elements.push(DrmRenderElement::Texture(cursor_elem));
+    }
+
+    // Space windows (scratchpad windows raised to front via Space stacking)
     elements.extend(space_elements.into_iter().map(DrmRenderElement::Space));
 
-    // Software cursor — rendered on top of everything.
-    // Using Kind::Cursor allows DRM compositor to use cursor plane if available.
-    if let Some(cursor_elem) = crate::cursor::build_cursor_element(state, renderer, output_idx) {
-        elements.insert(0, DrmRenderElement::Texture(cursor_elem));
-    }
+    // Scratchpad overlay: dim + scratchpad borders (behind windows, in front of wallpaper/bar)
+    elements.extend(scratchpad_overlay.into_iter().map(DrmRenderElement::Texture));
+
+    // Custom elements: wallpaper, workspace borders, bar (behind everything)
+    elements.extend(custom_elements.into_iter().map(DrmRenderElement::Texture));
 
     match instance.drm_compositor.render_frame(
         renderer,

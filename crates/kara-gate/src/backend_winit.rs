@@ -124,7 +124,8 @@ pub fn run(
         // Render
         let (renderer, mut framebuffer) = backend.bind().expect("failed to bind");
 
-        let custom_elements = build_custom_elements(&mut state, renderer, 0);
+        let mut custom_elements = build_custom_elements(&mut state, renderer, 0);
+        custom_elements.extend(crate::render::build_scratchpad_overlay(&mut state, renderer, 0));
 
         render_output::<_, TextureRenderElement<GlesTexture>, _, _>(
             &output,

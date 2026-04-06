@@ -257,10 +257,25 @@ pub fn build_custom_elements(
         elements.extend(render_bar(state, renderer, output_idx));
     }
 
-    // Dim overlay for visible scratchpads
+    elements
+}
+
+/// Build scratchpad overlay elements (dim + scratchpad borders).
+/// These render IN FRONT of space windows in the DRM element vec.
+pub fn build_scratchpad_overlay(
+    state: &mut Gate,
+    renderer: &mut GlesRenderer,
+    output_idx: usize,
+) -> Vec<TextureRenderElement<GlesTexture>> {
+    let mut elements = Vec::new();
+
+    // Dim overlay
     elements.extend(render_dim_overlay(state, renderer, output_idx));
 
-    // Scratchpad borders (above dim overlay)
+    // Scratchpad borders
+    let has_fullscreen = state.outputs.get(output_idx)
+        .map(|o| o.fullscreen_window.is_some())
+        .unwrap_or(false);
     if !has_fullscreen {
         rasterize_border_set(
             &state.scratchpad_border_rects, &mut state.scratchpad_border_cache,

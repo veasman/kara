@@ -247,6 +247,9 @@ impl Gate {
             if self.focused_scratchpad == Some(sp_idx) {
                 self.focused_scratchpad = None;
             }
+            self.scratchpad_border_rects.clear();
+            self.scratchpad_border_cache.clear();
+            self.scratchpad_layout_dirty = false;
             self.apply_layout();
             self.apply_focus();
             tracing::debug!("scratchpad '{sp_name}' hidden");

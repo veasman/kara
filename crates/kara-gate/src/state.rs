@@ -878,8 +878,10 @@ impl XdgShellHandler for Gate {
             self.space.unmap_elem(&window);
 
             // Check scratchpad windows
-            for sp in &mut self.scratchpads {
+            let mut sp_removed = None;
+            for (i, sp) in self.scratchpads.iter_mut().enumerate() {
                 if sp.workspace.remove_client(&window) {
+                    sp_removed = Some(i);
                     break;
                 }
             }
@@ -898,6 +900,14 @@ impl XdgShellHandler for Gate {
             }
 
             self.apply_layout();
+            if let Some(sp_idx) = sp_removed {
+                if self.scratchpads[sp_idx].visible {
+                    self.apply_scratchpad_layout(sp_idx);
+                } else {
+                    self.scratchpad_border_rects.clear();
+                    self.scratchpad_border_cache.clear();
+                }
+            }
             self.apply_focus();
         }
     }
