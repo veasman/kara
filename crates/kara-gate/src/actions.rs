@@ -84,43 +84,79 @@ impl Gate {
         }
     }
 
+    /// Re-layout after a scratchpad or regular workspace mutation.
+    fn relayout_active(&mut self) {
+        if let Some(sp_idx) = self.focused_scratchpad {
+            self.apply_scratchpad_layout(sp_idx);
+        } else {
+            self.apply_layout();
+        }
+        self.apply_focus();
+    }
+
     fn kill_focused(&mut self) {
-        let ws_idx = self.effective_ws(self.focused_output);
-        let ws = &self.workspaces[ws_idx];
-        if let Some(window) = ws.focused() {
-            let window = window.clone();
-            window.toplevel().unwrap().send_close();
+        if let Some(sp_idx) = self.focused_scratchpad {
+            let ws = &self.scratchpads[sp_idx].workspace;
+            if let Some(window) = ws.focused() {
+                window.clone().toplevel().unwrap().send_close();
+            }
+        } else {
+            let ws_idx = self.effective_ws(self.focused_output);
+            let ws = &self.workspaces[ws_idx];
+            if let Some(window) = ws.focused() {
+                window.clone().toplevel().unwrap().send_close();
+            }
         }
     }
 
     fn do_focus_next(&mut self) {
-        let ws_idx = self.effective_ws(self.focused_output);
-        self.workspaces[ws_idx].focus_next();
-        self.apply_focus();
-        self.apply_layout();
+        if let Some(sp_idx) = self.focused_scratchpad {
+            self.scratchpads[sp_idx].workspace.focus_next();
+        } else {
+            let ws_idx = self.effective_ws(self.focused_output);
+            self.workspaces[ws_idx].focus_next();
+        }
+        self.relayout_active();
     }
 
     fn do_focus_prev(&mut self) {
-        let ws_idx = self.effective_ws(self.focused_output);
-        self.workspaces[ws_idx].focus_prev();
-        self.apply_focus();
-        self.apply_layout();
+        if let Some(sp_idx) = self.focused_scratchpad {
+            self.scratchpads[sp_idx].workspace.focus_prev();
+        } else {
+            let ws_idx = self.effective_ws(self.focused_output);
+            self.workspaces[ws_idx].focus_prev();
+        }
+        self.relayout_active();
     }
 
     fn do_zoom_master(&mut self) {
-        let ws_idx = self.effective_ws(self.focused_output);
-        self.workspaces[ws_idx].zoom_master();
-        self.apply_layout();
-        self.apply_focus();
+        if let Some(sp_idx) = self.focused_scratchpad {
+            self.scratchpads[sp_idx].workspace.zoom_master();
+        } else {
+            let ws_idx = self.effective_ws(self.focused_output);
+            self.workspaces[ws_idx].zoom_master();
+        }
+        self.relayout_active();
     }
 
     fn do_toggle_monocle(&mut self) {
-        let ws_idx = self.effective_ws(self.focused_output);
-        self.workspaces[ws_idx].toggle_layout();
-        self.apply_layout();
+        if let Some(sp_idx) = self.focused_scratchpad {
+            self.scratchpads[sp_idx].workspace.toggle_layout();
+            self.apply_scratchpad_layout(sp_idx);
+        } else {
+            let ws_idx = self.effective_ws(self.focused_output);
+            self.workspaces[ws_idx].toggle_layout();
+            self.apply_layout();
+        }
     }
 
     fn do_toggle_fullscreen(&mut self) {
+        // Block fullscreen for scratchpad windows
+        if self.focused_scratchpad.is_some() {
+            tracing::debug!("fullscreen not available in scratchpad");
+            return;
+        }
+
         let out_idx = self.focused_output;
         let has_fs = self.outputs.get(out_idx)
             .map(|o| o.fullscreen_window.is_some())
@@ -158,10 +194,13 @@ impl Gate {
     }
 
     fn do_toggle_float(&mut self) {
-        let ws_idx = self.effective_ws(self.focused_output);
-        self.workspaces[ws_idx].toggle_focused_floating();
-        self.apply_layout();
-        self.apply_focus();
+        if let Some(sp_idx) = self.focused_scratchpad {
+            self.scratchpads[sp_idx].workspace.toggle_focused_floating();
+        } else {
+            let ws_idx = self.effective_ws(self.focused_output);
+            self.workspaces[ws_idx].toggle_focused_floating();
+        }
+        self.relayout_active();
     }
 
     fn do_toggle_scratchpad(&mut self, name: Option<String>) {
@@ -258,9 +297,14 @@ impl Gate {
     }
 
     fn do_adjust_mfact(&mut self, delta: f32) {
-        let ws_idx = self.effective_ws(self.focused_output);
-        self.workspaces[ws_idx].adjust_mfact(delta);
-        self.apply_layout();
+        if let Some(sp_idx) = self.focused_scratchpad {
+            self.scratchpads[sp_idx].workspace.adjust_mfact(delta);
+            self.apply_scratchpad_layout(sp_idx);
+        } else {
+            let ws_idx = self.effective_ws(self.focused_output);
+            self.workspaces[ws_idx].adjust_mfact(delta);
+            self.apply_layout();
+        }
     }
 
     fn do_view_ws(&mut self, idx: usize) {

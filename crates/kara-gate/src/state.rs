@@ -682,14 +682,25 @@ impl Gate {
 
     /// Set keyboard focus to the currently focused window on the focused output's workspace.
     pub fn apply_focus(&mut self) {
-        let ws_idx = self.effective_ws(self.focused_output);
-        let ws = &self.workspaces[ws_idx];
         let serial = SERIAL_COUNTER.next_serial();
 
-        if let Some(window) = ws.focused() {
-            let window = window.clone();
-            // Deactivate all, activate focused
-            for w in &ws.clients {
+        // If a scratchpad is focused, use its workspace for focus
+        let focused_window = if let Some(sp_idx) = self.focused_scratchpad {
+            self.scratchpads[sp_idx].workspace.focused().cloned()
+        } else {
+            let ws_idx = self.effective_ws(self.focused_output);
+            self.workspaces[ws_idx].focused().cloned()
+        };
+
+        if let Some(window) = focused_window {
+            // Deactivate all windows in the active workspace
+            if let Some(sp_idx) = self.focused_scratchpad {
+                for w in &self.scratchpads[sp_idx].workspace.clients {
+                    w.set_activated(false);
+                }
+            }
+            let ws_idx = self.effective_ws(self.focused_output);
+            for w in &self.workspaces[ws_idx].clients {
                 w.set_activated(false);
             }
             window.set_activated(true);
@@ -700,7 +711,6 @@ impl Gate {
                 keyboard.set_focus(self, Some(wl_surface), serial);
             }
 
-            // Raise focused window
             self.space.raise_element(&window, true);
         } else {
             let keyboard = self.seat.get_keyboard().unwrap();
