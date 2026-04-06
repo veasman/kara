@@ -473,7 +473,11 @@ fn render_frame(
     };
 
     // Element order (front-to-back for DrmCompositor):
-    // cursor > sp borders > space windows > dim > custom (wallpaper, ws borders, bar)
+    // cursor > sp borders > dim > space windows > custom (wallpaper, ws borders, bar)
+    //
+    // Dim is in front of all windows — it darkens everything behind it.
+    // Scratchpad borders render on top of the dim, framing the scratchpad area.
+    // Scratchpad window content is slightly dimmed but usable (use low alpha).
     let mut elements: Vec<DrmRenderElement> =
         Vec::with_capacity(custom_elements.len() + sp_borders.len() + sp_dim.len() + space_elements.len() + 1);
 
@@ -482,14 +486,14 @@ fn render_frame(
         elements.push(DrmRenderElement::Texture(cursor_elem));
     }
 
-    // Scratchpad borders (in front of windows — frames around scratchpad content)
+    // Scratchpad borders (in front of dim — bright frames)
     elements.extend(sp_borders.into_iter().map(DrmRenderElement::Texture));
+
+    // Dim overlay (in front of all windows)
+    elements.extend(sp_dim.into_iter().map(DrmRenderElement::Texture));
 
     // Space windows (scratchpad raised to top, regular behind)
     elements.extend(space_elements.into_iter().map(DrmRenderElement::Space));
-
-    // Dim overlay (behind all windows, in front of wallpaper/bar)
-    elements.extend(sp_dim.into_iter().map(DrmRenderElement::Texture));
 
     // Custom elements: wallpaper, workspace borders, bar (behind everything)
     elements.extend(custom_elements.into_iter().map(DrmRenderElement::Texture));
