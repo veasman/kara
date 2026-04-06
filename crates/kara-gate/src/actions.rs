@@ -220,7 +220,8 @@ impl Gate {
                 for window in &windows {
                     if let Some(loc) = self.space.element_location(window) {
                         let geom = window.geometry();
-                        self.animations.animate_out(
+                        // Don't auto-unmap — scratchpad handles batch cleanup
+                        self.animations.animate_out_no_unmap(
                             window.clone(), preset, duration,
                             loc.x, loc.y, geom.size.w, geom.size.h,
                             wa.loc.x, wa.loc.y, wa.size.w, wa.size.h,
@@ -228,8 +229,9 @@ impl Gate {
                         );
                     }
                 }
+                self.scratchpads[sp_idx].hiding = true;
                 // Keep visible=true so dim/borders stay during animation.
-                // process_completed_animations will set visible=false and clean up.
+                // process_completed_animations will batch-unmap everything.
                 if self.focused_scratchpad == Some(sp_idx) {
                     self.focused_scratchpad = None;
                 }

@@ -41,6 +41,7 @@ pub struct ScratchpadState {
     pub config_idx: usize,
     pub workspace: Workspace,
     pub visible: bool,
+    pub hiding: bool, // out-animation in progress, waiting to fully hide
     pub started: bool,
     pub output_idx: usize,
     /// When true, the next new window is captured into this scratchpad (autostart capture).
@@ -189,6 +190,7 @@ impl Gate {
                     config_idx: i,
                     workspace: ws,
                     visible: false,
+                    hiding: false,
                     started: false,
                     output_idx: 0,
                     pending_capture: false,
@@ -687,24 +689,27 @@ impl Gate {
 
         let mut needs_relayout = false;
 
-        for window in &to_unmap {
-            self.space.unmap_elem(window);
-
-            // Check if this was a scratchpad window — if all scratchpad windows
-            // are done animating out, clean up the scratchpad state
-            for sp in &mut self.scratchpads {
-                if sp.workspace.clients.contains(window) && sp.visible {
-                    // Check if all windows in this scratchpad are done animating
-                    let all_done = sp.workspace.clients.iter()
-                        .all(|w| !self.animations.active.iter().any(|a| &a.window == w));
-                    if all_done {
-                        sp.visible = false;
-                        self.scratchpad_border_rects.clear();
-                        self.scratchpad_border_cache.clear();
+        // Check if any hiding scratchpad's animations are all done
+        for sp in &mut self.scratchpads {
+            if sp.hiding {
+                let all_done = sp.workspace.clients.iter()
+                    .all(|w| !self.animations.active.iter().any(|a| &a.window == w));
+                if all_done {
+                    // Batch unmap all scratchpad windows + clear borders/dim together
+                    for w in &sp.workspace.clients {
+                        self.space.unmap_elem(w);
                     }
-                    break;
+                    sp.visible = false;
+                    sp.hiding = false;
+                    self.scratchpad_border_rects.clear();
+                    self.scratchpad_border_cache.clear();
+                    self.scratchpad_border_offsets.clear();
                 }
             }
+        }
+
+        for window in &to_unmap {
+            self.space.unmap_elem(window);
 
             // Check if this window has a pending send
             if let Some(pos) = self.pending_sends.iter().position(|(w, _)| w == window) {
