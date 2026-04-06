@@ -643,11 +643,27 @@ impl Gate {
         self.bar_dirty = true;
     }
 
+    /// Check if a window belongs to any scratchpad.
+    fn is_scratchpad_window(&self, window: &Window) -> bool {
+        self.scratchpads.iter().any(|sp| sp.workspace.clients.contains(window))
+    }
+
+    /// Check if any scratchpad is visible or hiding (animated).
+    fn any_scratchpad_active(&self) -> bool {
+        self.scratchpads.iter().any(|sp| sp.visible || sp.hiding)
+    }
+
     /// Re-position windows and borders with current animation offsets.
     /// Uses stored base positions from apply_layout() — no compounding.
     pub fn apply_animation_offsets(&mut self) {
+        let sp_active = self.any_scratchpad_active();
+
         // Re-map windows from their base positions + current animation offset
         for (window, base_pos) in &self.window_base_positions {
+            // Skip workspace windows when a scratchpad is visible
+            if sp_active && !self.is_scratchpad_window(window) {
+                continue;
+            }
             if let Some((dx, dy)) = self.animations.offset_for(window) {
                 let offset_loc: Point<i32, Logical> =
                     (base_pos.x + dx as i32, base_pos.y + dy as i32).into();
@@ -726,7 +742,12 @@ impl Gate {
         }
 
         // Snap all non-animated windows back to their base positions
+        // Skip workspace windows when a scratchpad is active
+        let sp_active = self.any_scratchpad_active();
         for (window, base_pos) in &self.window_base_positions {
+            if sp_active && !self.is_scratchpad_window(window) {
+                continue;
+            }
             if self.animations.offset_for(window).is_none() {
                 self.space.map_element(window.clone(), *base_pos, false);
             }
