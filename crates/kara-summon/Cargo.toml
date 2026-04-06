@@ -13,3 +13,8 @@ path = "src/main.rs"
 [dependencies]
 kara-ipc = { path = "../kara-ipc" }
 kara-ui = { path = "../kara-ui" }
+smithay-client-toolkit = "0.19"
+wayland-client = "0.31"
+tiny-skia = { workspace = true }
+dirs = "6"
+xkbcommon = "0.8"

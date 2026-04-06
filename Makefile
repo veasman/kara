@@ -49,6 +49,8 @@ install:
 	@test -f "target/release/$(TARGET)" || { echo "error: run 'make' first to build"; exit 1; }
 	install -d "$(DESTDIR)$(BINDIR)"
 	install -m 0755 "target/release/$(TARGET)" "$(DESTDIR)$(BINDIR)/$(TARGET)"
+	@test -f "target/release/kara-summon" && \
+		install -m 0755 "target/release/kara-summon" "$(DESTDIR)$(BINDIR)/kara-summon" || true
 	install -d "$(DESTDIR)$(APPDIR)"
 	install -m 0644 example/kara-gate.conf "$(DESTDIR)$(APPDIR)/kara-gate.conf.example"
 	install -d "$(DESTDIR)$(DATADIR)/wayland-sessions"

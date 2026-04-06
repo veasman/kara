@@ -13,6 +13,7 @@ pub mod server;
 
 pub use message::*;
 pub use frame::{read_message, write_message};
+pub use client::IpcClient;
 
 use std::env;
 use std::path::PathBuf;
