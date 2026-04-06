@@ -40,10 +40,11 @@ use crate::state::Gate;
 
 type SpaceElement = SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>;
 
-/// Combined render element for DRM output: window surfaces + custom textures.
+/// Combined render element for DRM output: window surfaces + custom textures + layer surfaces.
 pub enum DrmRenderElement {
     Space(SpaceElement),
     Texture(TextureRenderElement<GlesTexture>),
+    Surface(WaylandSurfaceRenderElement<GlesRenderer>),
 }
 
 impl Element for DrmRenderElement {
@@ -51,6 +52,7 @@ impl Element for DrmRenderElement {
         match self {
             Self::Space(e) => e.id(),
             Self::Texture(e) => e.id(),
+            Self::Surface(e) => e.id(),
         }
     }
 
@@ -58,6 +60,7 @@ impl Element for DrmRenderElement {
         match self {
             Self::Space(e) => e.current_commit(),
             Self::Texture(e) => e.current_commit(),
+            Self::Surface(e) => e.current_commit(),
         }
     }
 
@@ -65,6 +68,7 @@ impl Element for DrmRenderElement {
         match self {
             Self::Space(e) => e.geometry(scale),
             Self::Texture(e) => e.geometry(scale),
+            Self::Surface(e) => e.geometry(scale),
         }
     }
 
@@ -72,6 +76,7 @@ impl Element for DrmRenderElement {
         match self {
             Self::Space(e) => e.src(),
             Self::Texture(e) => e.src(),
+            Self::Surface(e) => e.src(),
         }
     }
 }
@@ -88,6 +93,7 @@ impl RenderElement<GlesRenderer> for DrmRenderElement {
         match self {
             Self::Space(e) => RenderElement::<GlesRenderer>::draw(e, frame, src, dst, damage, opaque_regions),
             Self::Texture(e) => RenderElement::<GlesRenderer>::draw(e, frame, src, dst, damage, opaque_regions),
+            Self::Surface(e) => RenderElement::<GlesRenderer>::draw(e, frame, src, dst, damage, opaque_regions),
         }
     }
 }
@@ -489,6 +495,22 @@ fn render_frame(
     // Cursor (frontmost)
     if let Some(cursor_elem) = crate::cursor::build_cursor_element(state, renderer, output_idx) {
         elements.push(DrmRenderElement::Texture(cursor_elem));
+    }
+
+    // Overlay/Top layer surfaces (e.g., kara-summon) — with correct arranged positions
+    {
+        use smithay::backend::renderer::element::AsRenderElements;
+        let map = smithay::desktop::layer_map_for_output(&instance.output);
+        for layer in map.layers().rev() {
+            if matches!(layer.layer(), smithay::wayland::shell::wlr_layer::Layer::Top | smithay::wayland::shell::wlr_layer::Layer::Overlay) {
+                if let Some(geo) = map.layer_geometry(layer) {
+                    let layer_elements = AsRenderElements::<GlesRenderer>::render_elements::<
+                        WaylandSurfaceRenderElement<GlesRenderer>,
+                    >(layer, renderer, geo.loc.to_physical_precise_round(1.0), smithay::utils::Scale::from(1.0), 1.0);
+                    elements.extend(layer_elements.into_iter().map(DrmRenderElement::Surface));
+                }
+            }
+        }
     }
 
     // Scratchpad borders (in front of windows)

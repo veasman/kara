@@ -102,6 +102,7 @@ fn main() {
         scroll_offset: 0,
         ui: launcher_ui,
         launch_command: None,
+        ctrl_held: false,
     };
 
     loop {
@@ -141,6 +142,7 @@ struct Launcher {
     scroll_offset: usize,
     ui: LauncherUI,
     launch_command: Option<String>,
+    ctrl_held: bool,
 }
 
 impl Launcher {
@@ -254,53 +256,54 @@ impl KeyboardHandler for Launcher {
     fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: &wl_surface::WlSurface, _: u32) {}
 
     fn press_key(&mut self, _: &Connection, qh: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
-        match event.keysym {
-            Keysym::Escape => {
-                self.exit = true;
-            }
-            Keysym::Return | Keysym::KP_Enter => {
-                self.launch_command = self.selected_command();
-                self.exit = true;
-            }
-            Keysym::BackSpace => {
-                self.query.pop();
-                self.update_filter();
-                self.draw(qh);
-            }
-            Keysym::Up => {
-                if self.selected > 0 {
-                    self.selected -= 1;
-                    if self.selected < self.scroll_offset {
-                        self.scroll_offset = self.selected;
-                    }
+        // Check for Ctrl+key combos
+        let is_nav_up = event.keysym == Keysym::Up
+            || (self.ctrl_held && (event.keysym == Keysym::p || event.keysym == Keysym::k));
+        let is_nav_down = event.keysym == Keysym::Down || event.keysym == Keysym::Tab
+            || (self.ctrl_held && (event.keysym == Keysym::n || event.keysym == Keysym::j));
+
+        if event.keysym == Keysym::Escape {
+            self.exit = true;
+        } else if event.keysym == Keysym::Return || event.keysym == Keysym::KP_Enter {
+            self.launch_command = self.selected_command();
+            self.exit = true;
+        } else if event.keysym == Keysym::BackSpace {
+            self.query.pop();
+            self.update_filter();
+            self.draw(qh);
+        } else if is_nav_up {
+            if self.selected > 0 {
+                self.selected -= 1;
+                if self.selected < self.scroll_offset {
+                    self.scroll_offset = self.selected;
                 }
-                self.draw(qh);
             }
-            Keysym::Down | Keysym::Tab => {
-                let max = self.filtered.len()
-                    + if !self.query.is_empty() && (filter::is_command(&self.query) || self.filtered.is_empty()) { 1 } else { 0 };
-                if max > 0 && self.selected + 1 < max {
-                    self.selected += 1;
-                    if self.selected >= self.scroll_offset + 10 {
-                        self.scroll_offset = self.selected.saturating_sub(9);
-                    }
+            self.draw(qh);
+        } else if is_nav_down {
+            let max = self.filtered.len()
+                + if !self.query.is_empty() && (filter::is_command(&self.query) || self.filtered.is_empty()) { 1 } else { 0 };
+            if max > 0 && self.selected + 1 < max {
+                self.selected += 1;
+                if self.selected >= self.scroll_offset + 10 {
+                    self.scroll_offset = self.selected.saturating_sub(9);
                 }
-                self.draw(qh);
             }
-            _ => {
-                if let Some(text) = event.utf8 {
-                    if !text.is_empty() && text.chars().all(|c| !c.is_control()) {
-                        self.query.push_str(&text);
-                        self.update_filter();
-                        self.draw(qh);
-                    }
+            self.draw(qh);
+        } else if !self.ctrl_held {
+            if let Some(text) = event.utf8 {
+                if !text.is_empty() && text.chars().all(|c| !c.is_control()) {
+                    self.query.push_str(&text);
+                    self.update_filter();
+                    self.draw(qh);
                 }
             }
         }
     }
 
     fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: KeyEvent) {}
-    fn update_modifiers(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: Modifiers, _: u32) {}
+    fn update_modifiers(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, modifiers: Modifiers, _: u32) {
+        self.ctrl_held = modifiers.ctrl;
+    }
 }
 
 impl ShmHandler for Launcher {
