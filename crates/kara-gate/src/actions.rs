@@ -228,19 +228,27 @@ impl Gate {
                         );
                     }
                 }
+                // Keep visible=true so dim/borders stay during animation.
+                // process_completed_animations will set visible=false and clean up.
+                if self.focused_scratchpad == Some(sp_idx) {
+                    self.focused_scratchpad = None;
+                }
+                self.apply_layout();
+                self.apply_focus();
+                tracing::debug!("scratchpad '{sp_name}' hiding (animated)");
+                return;
             } else {
                 for window in &windows {
                     self.space.unmap_elem(window);
                 }
+                self.scratchpad_border_rects.clear();
+                self.scratchpad_border_cache.clear();
             }
 
             self.scratchpads[sp_idx].visible = false;
             if self.focused_scratchpad == Some(sp_idx) {
                 self.focused_scratchpad = None;
             }
-            self.scratchpad_border_rects.clear();
-            self.scratchpad_border_cache.clear();
-            self.scratchpad_layout_dirty = false;
             self.apply_layout();
             self.apply_focus();
             tracing::debug!("scratchpad '{sp_name}' hidden");

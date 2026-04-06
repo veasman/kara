@@ -676,6 +676,22 @@ impl Gate {
         for window in &to_unmap {
             self.space.unmap_elem(window);
 
+            // Check if this was a scratchpad window — if all scratchpad windows
+            // are done animating out, clean up the scratchpad state
+            for sp in &mut self.scratchpads {
+                if sp.workspace.clients.contains(window) && sp.visible {
+                    // Check if all windows in this scratchpad are done animating
+                    let all_done = sp.workspace.clients.iter()
+                        .all(|w| !self.animations.active.iter().any(|a| &a.window == w));
+                    if all_done {
+                        sp.visible = false;
+                        self.scratchpad_border_rects.clear();
+                        self.scratchpad_border_cache.clear();
+                    }
+                    break;
+                }
+            }
+
             // Check if this window has a pending send
             if let Some(pos) = self.pending_sends.iter().position(|(w, _)| w == window) {
                 let (window, target_ws) = self.pending_sends.remove(pos);

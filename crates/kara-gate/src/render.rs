@@ -293,58 +293,97 @@ pub fn build_scratchpad_borders(
     elements
 }
 
-/// Render dim overlay for visible scratchpads on this output.
-fn render_dim_overlay(
-    state: &Gate,
+/// Helper: create a dim rect texture at a position.
+fn make_dim_rect(
     renderer: &mut GlesRenderer,
-    output_idx: usize,
-) -> Vec<TextureRenderElement<GlesTexture>> {
-    let max_alpha = state.scratchpads.iter()
-        .filter(|sp| sp.visible && sp.output_idx == output_idx)
-        .filter_map(|sp| state.config.scratchpads.get(sp.config_idx))
-        .map(|sc| sc.dim_alpha)
-        .max();
-
-    let alpha = match max_alpha {
-        Some(a) if a > 0 => a as u8,
-        _ => return Vec::new(),
-    };
-
-    let (w, h) = match state.outputs.get(output_idx) {
-        Some(o) => o.size,
-        None => return Vec::new(),
-    };
-
-    // Single-pixel black with alpha, stretched to output size
+    x: i32, y: i32, w: i32, h: i32,
+    alpha: u8,
+) -> Option<TextureRenderElement<GlesTexture>> {
+    if w <= 0 || h <= 0 {
+        return None;
+    }
     let pixel: [u8; 4] = [0, 0, 0, alpha];
     let mut data = vec![0u8; (w * h * 4) as usize];
     for chunk in data.chunks_exact_mut(4) {
         chunk.copy_from_slice(&pixel);
     }
+    let texture_buffer = TextureBuffer::from_memory(
+        renderer, &data, Fourcc::Abgr8888,
+        Size::from((w, h)), false, 1, Transform::Normal, None,
+    ).ok()?;
+    Some(TextureRenderElement::from_texture_buffer(
+        Point::from((x as f64, y as f64)),
+        &texture_buffer, None, None, None, Kind::Unspecified,
+    ))
+}
 
-    let texture_buffer = match TextureBuffer::from_memory(
-        renderer,
-        &data,
-        Fourcc::Abgr8888,
-        Size::from((w, h)),
-        false,
-        1,
-        Transform::Normal,
-        None,
-    ) {
-        Ok(buf) => buf,
-        Err(_) => return Vec::new(),
+/// Render dim overlay as four rects AROUND the scratchpad area.
+/// This dims the background without affecting scratchpad window content.
+fn render_dim_overlay(
+    state: &Gate,
+    renderer: &mut GlesRenderer,
+    output_idx: usize,
+) -> Vec<TextureRenderElement<GlesTexture>> {
+    // Find the visible scratchpad on this output with highest dim
+    let mut best_alpha = 0i32;
+    let mut sp_rect: Option<(i32, i32, i32, i32)> = None;
+
+    for sp in &state.scratchpads {
+        if !sp.visible || sp.output_idx != output_idx {
+            continue;
+        }
+        if let Some(sc) = state.config.scratchpads.get(sp.config_idx) {
+            if sc.dim_alpha > best_alpha {
+                best_alpha = sc.dim_alpha;
+                let workarea = state.outputs.get(sp.output_idx)
+                    .map(|o| o.workarea)
+                    .unwrap_or_else(|| smithay::utils::Rectangle::new((0, 0).into(), (800, 600).into()));
+                let sw = (workarea.size.w as f32 * sc.width_pct as f32 / 100.0) as i32;
+                let sh = (workarea.size.h as f32 * sc.height_pct as f32 / 100.0) as i32;
+                let sx = workarea.loc.x + (workarea.size.w - sw) / 2;
+                let sy = workarea.loc.y + (workarea.size.h - sh) / 2;
+                sp_rect = Some((sx, sy, sw, sh));
+            }
+        }
+    }
+
+    let alpha = match best_alpha {
+        a if a > 0 => a as u8,
+        _ => return Vec::new(),
     };
 
-    vec![TextureRenderElement::from_texture_buffer(
-        Point::from((0.0, 0.0)),
-        &texture_buffer,
-        None,
-        None,
-        None,
-        Kind::Unspecified,
-    )]
+    let out = match state.outputs.get(output_idx) {
+        Some(o) => o,
+        None => return Vec::new(),
+    };
+    let ow = out.size.0;
+    let oh = out.size.1;
+
+    let (sx, sy, sw, sh) = sp_rect.unwrap_or((0, 0, ow, oh));
+
+    // Four rects around the scratchpad hole (output-local coords)
+    let mut elements = Vec::new();
+
+    // Top bar (full width, from top to scratchpad top)
+    if let Some(e) = make_dim_rect(renderer, 0, 0, ow, sy, alpha) {
+        elements.push(e);
+    }
+    // Bottom bar (full width, from scratchpad bottom to output bottom)
+    if let Some(e) = make_dim_rect(renderer, 0, sy + sh, ow, oh - sy - sh, alpha) {
+        elements.push(e);
+    }
+    // Left bar (scratchpad height, from left edge to scratchpad left)
+    if let Some(e) = make_dim_rect(renderer, 0, sy, sx, sh, alpha) {
+        elements.push(e);
+    }
+    // Right bar (scratchpad height, from scratchpad right to right edge)
+    if let Some(e) = make_dim_rect(renderer, sx + sw, sy, ow - sx - sw, sh, alpha) {
+        elements.push(e);
+    }
+
+    elements
 }
+
 
 /// Build a rounded rectangle path with quadratic bezier corners.
 fn rounded_rect_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Path> {
