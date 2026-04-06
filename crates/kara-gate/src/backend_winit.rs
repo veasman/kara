@@ -125,7 +125,9 @@ pub fn run(
         let (renderer, mut framebuffer) = backend.bind().expect("failed to bind");
 
         let mut custom_elements = build_custom_elements(&mut state, renderer, 0);
-        custom_elements.extend(crate::render::build_scratchpad_overlay(&mut state, renderer, 0));
+        custom_elements.extend(crate::render::build_scratchpad_dim(&state, renderer, 0));
+        // Note: scratchpad borders render with custom elements in winit (no split rendering)
+        custom_elements.extend(crate::render::build_scratchpad_borders(&mut state, renderer, 0));
 
         render_output::<_, TextureRenderElement<GlesTexture>, _, _>(
             &output,

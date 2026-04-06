@@ -459,7 +459,8 @@ fn render_frame(
     output_idx: usize,
 ) {
     let custom_elements = build_custom_elements(state, renderer, output_idx);
-    let scratchpad_overlay = crate::render::build_scratchpad_overlay(state, renderer, output_idx);
+    let sp_borders = crate::render::build_scratchpad_borders(state, renderer, output_idx);
+    let sp_dim = crate::render::build_scratchpad_dim(state, renderer, output_idx);
 
     let space_elements = match state.space.render_elements_for_output(
         renderer, &instance.output, 1.0,
@@ -472,24 +473,23 @@ fn render_frame(
     };
 
     // Element order (front-to-back for DrmCompositor):
-    // cursor > space windows > scratchpad overlay (dim + sp borders) > custom (wallpaper, ws borders, bar)
-    //
-    // Scratchpad windows are raised to top of Space stacking, so they render
-    // in front of regular windows. The dim overlay sits between all windows
-    // and the wallpaper/bar, darkening the background.
+    // cursor > sp borders > space windows > dim > custom (wallpaper, ws borders, bar)
     let mut elements: Vec<DrmRenderElement> =
-        Vec::with_capacity(custom_elements.len() + scratchpad_overlay.len() + space_elements.len() + 1);
+        Vec::with_capacity(custom_elements.len() + sp_borders.len() + sp_dim.len() + space_elements.len() + 1);
 
     // Cursor (frontmost)
     if let Some(cursor_elem) = crate::cursor::build_cursor_element(state, renderer, output_idx) {
         elements.push(DrmRenderElement::Texture(cursor_elem));
     }
 
-    // Space windows (scratchpad windows raised to front via Space stacking)
+    // Scratchpad borders (in front of windows — frames around scratchpad content)
+    elements.extend(sp_borders.into_iter().map(DrmRenderElement::Texture));
+
+    // Space windows (scratchpad raised to top, regular behind)
     elements.extend(space_elements.into_iter().map(DrmRenderElement::Space));
 
-    // Scratchpad overlay: dim + scratchpad borders (behind windows, in front of wallpaper/bar)
-    elements.extend(scratchpad_overlay.into_iter().map(DrmRenderElement::Texture));
+    // Dim overlay (behind all windows, in front of wallpaper/bar)
+    elements.extend(sp_dim.into_iter().map(DrmRenderElement::Texture));
 
     // Custom elements: wallpaper, workspace borders, bar (behind everything)
     elements.extend(custom_elements.into_iter().map(DrmRenderElement::Texture));
