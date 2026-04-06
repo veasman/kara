@@ -836,12 +836,25 @@ impl CompositorHandler for Gate {
     fn commit(&mut self, surface: &WlSurface) {
         smithay::backend::renderer::utils::on_commit_buffer_handler::<Self>(surface);
 
-        // Handle layer surface commits — re-arrange the layer map
+        // Handle layer surface commits
         for out in &self.outputs {
             let mut map = layer_map_for_output(&out.output);
             for layer in map.layers().cloned().collect::<Vec<_>>() {
                 if layer.wl_surface() == surface {
-                    map.arrange();
+                    let initial = compositor::with_states(surface, |states| {
+                        states
+                            .data_map
+                            .get::<smithay::wayland::shell::wlr_layer::LayerSurfaceData>()
+                            .map(|d| !d.lock().unwrap().initial_configure_sent)
+                            .unwrap_or(false)
+                    });
+                    if initial {
+                        // First commit — send initial configure with arranged size
+                        map.arrange();
+                        layer.layer_surface().send_configure();
+                    } else {
+                        map.arrange();
+                    }
                     drop(map);
                     return;
                 }
@@ -1068,16 +1081,8 @@ impl WlrLayerShellHandler for Gate {
         if let Some(ref output) = output {
             let mut map = layer_map_for_output(output);
             map.map_layer(&desktop_surface).ok();
-            // arrange() was called by map_layer, now send configure with computed size
-            if let Some(geo) = map.layer_geometry(&desktop_surface) {
-                desktop_surface.layer_surface().with_pending_state(|state| {
-                    state.size = Some(geo.size);
-                });
-            }
         }
-
-        // Send initial configure so the client can start rendering
-        desktop_surface.layer_surface().send_configure();
+        // Initial configure is sent on the client's first commit (see commit handler)
     }
 
     fn layer_destroyed(&mut self, surface: LayerSurface) {
