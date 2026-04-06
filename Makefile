@@ -45,7 +45,8 @@ deps-check:
 	}
 	@echo "build dependencies OK"
 
-install: release
+install:
+	@test -f "target/release/$(TARGET)" || { echo "error: run 'make' first to build"; exit 1; }
 	install -d "$(DESTDIR)$(BINDIR)"
 	install -m 0755 "target/release/$(TARGET)" "$(DESTDIR)$(BINDIR)/$(TARGET)"
 	install -d "$(DESTDIR)$(APPDIR)"
