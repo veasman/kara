@@ -6,7 +6,7 @@ use smithay::delegate_seat;
 use smithay::delegate_shm;
 use smithay::delegate_xdg_decoration;
 use smithay::delegate_xdg_shell;
-use smithay::desktop::{Space, Window};
+use smithay::desktop::{Space, Window, layer_map_for_output};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::input::pointer::CursorImageStatus;
 use smithay::reexports::calloop::LoopSignal;
@@ -85,7 +85,8 @@ pub struct Gate {
     pub seat: Seat<Self>,
 
     // Layer surfaces (kara-summon, kara-whisper, etc.)
-    pub layer_surfaces: Vec<LayerSurface>,
+    #[allow(dead_code)]
+    pub layer_surfaces: Vec<LayerSurface>, // kept for backward compat, LayerMap is primary
 
     // Desktop
     pub space: Space<Window>,
@@ -836,10 +837,13 @@ impl CompositorHandler for Gate {
         smithay::backend::renderer::utils::on_commit_buffer_handler::<Self>(surface);
 
         // Handle layer surface initial configure
-        for layer in &self.layer_surfaces {
-            if layer.wl_surface() == surface {
-                layer.ensure_configured();
-                return;
+        for out in &self.outputs {
+            let map = layer_map_for_output(&out.output);
+            for layer in map.layers() {
+                if layer.wl_surface() == surface {
+                    layer.layer_surface().ensure_configured();
+                    return;
+                }
             }
         }
 
@@ -1049,24 +1053,40 @@ impl WlrLayerShellHandler for Gate {
         &mut self,
         surface: LayerSurface,
         _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
-        layer: Layer,
+        _layer: Layer,
         namespace: String,
     ) {
-        tracing::info!("new layer surface: namespace={namespace}, layer={layer:?}");
+        tracing::info!("new layer surface: namespace={namespace}, layer={_layer:?}");
 
-        // Configure with the full output width, let the client choose height
-        let (w, _h) = self.output_size();
-        surface.with_pending_state(|state| {
-            state.size = Some((w, 0).into());
-        });
-        surface.send_configure();
+        // Wrap in desktop LayerSurface and map to focused output's LayerMap
+        let desktop_surface = smithay::desktop::LayerSurface::new(surface, namespace);
 
-        self.layer_surfaces.push(surface);
+        let output = self.outputs.get(self.focused_output)
+            .map(|o| o.output.clone());
+
+        if let Some(output) = output {
+            let mut map = layer_map_for_output(&output);
+            map.map_layer(&desktop_surface).ok();
+        }
     }
 
     fn layer_destroyed(&mut self, surface: LayerSurface) {
         tracing::info!("layer surface destroyed");
-        self.layer_surfaces.retain(|s| s != &surface);
+
+        // Find and unmap the desktop LayerSurface from all outputs
+        for out in &self.outputs {
+            let mut map = layer_map_for_output(&out.output);
+            // Find by matching wl_surface
+            let to_remove: Vec<_> = map.layers()
+                .filter(|l| l.layer_surface().wl_surface() == surface.wl_surface())
+                .cloned()
+                .collect();
+            for l in &to_remove {
+                map.unmap_layer(l);
+            }
+        }
+
+        self.apply_focus();
     }
 }
 

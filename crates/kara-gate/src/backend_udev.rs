@@ -440,6 +440,13 @@ pub fn run(
                     Some(output.clone())
                 });
             });
+            // Layer surfaces also need frame callbacks
+            let map = smithay::desktop::layer_map_for_output(output);
+            for layer in map.layers() {
+                layer.send_frame(output, time, Some(Duration::ZERO), |_, _| {
+                    Some(output.clone())
+                });
+            }
         }
 
         // 6. Render outputs not waiting for a pending frame

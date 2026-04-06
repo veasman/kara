@@ -113,13 +113,21 @@ pub fn run(
             last_status_refresh = now;
         }
 
-        // Send frame callbacks to visible windows
+        // Send frame callbacks to visible windows and layer surfaces
         let time = state.clock.now();
         state.space.elements().for_each(|window| {
             window.send_frame(&output, time, Some(Duration::ZERO), |_, _| {
                 Some(output.clone())
             });
         });
+        {
+            let map = smithay::desktop::layer_map_for_output(&output);
+            for layer in map.layers() {
+                layer.send_frame(&output, time, Some(Duration::ZERO), |_, _| {
+                    Some(output.clone())
+                });
+            }
+        }
 
         // Render
         let (renderer, mut framebuffer) = backend.bind().expect("failed to bind");
