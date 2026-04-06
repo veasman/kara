@@ -192,7 +192,7 @@ enum Block {
     Animations,
     Bar,
     BarModules,
-    Scratchpad,
+    Scratchpad(usize),
     Rules,
     Autostart,
     Commands,
@@ -208,7 +208,7 @@ fn root_block_name(name: &str) -> Option<Block> {
         "theme" => Some(Block::Theme),
         "animations" => Some(Block::Animations),
         "bar" => Some(Block::Bar),
-        "scratchpad" => Some(Block::Scratchpad),
+        // scratchpad is handled specially (has a name argument)
         "rules" => Some(Block::Rules),
         "autostart" => Some(Block::Autostart),
         "commands" => Some(Block::Commands),
@@ -512,7 +512,7 @@ fn parse_bar_modules_line(tokens: &[String], bar: &mut Bar, ctx: &ParseContext) 
     bar.modules.push(BarModule { section, kind, arg });
 }
 
-fn parse_scratchpad_line(tokens: &[String], scratch: &mut Scratchpad, ctx: &ParseContext) {
+fn parse_scratchpad_line(tokens: &[String], scratch: &mut ScratchpadConfig, ctx: &ParseContext) {
     if tokens.len() < 2 {
         return;
     }
@@ -535,24 +535,14 @@ fn parse_scratchpad_line(tokens: &[String], scratch: &mut Scratchpad, ctx: &Pars
                 scratch.dim_alpha = v;
             }
         }
-        "command" => scratch.command = Some(val.clone()),
-        "autostart" => scratch.autostart.push(val.clone()),
-        "define" => {
-            if tokens.len() >= 3 {
-                let name = val.clone();
-                let cmd = tokens[2].clone();
-                let mut app_id = None;
-                // Look for app_id "value" pair
-                let mut i = 3;
-                while i + 1 < tokens.len() {
-                    if tokens[i] == "app_id" {
-                        app_id = Some(tokens[i + 1].clone());
-                    }
-                    i += 2;
-                }
-                scratch.defines.push(ScratchpadDefine { name, command: cmd, app_id });
+        "blur" => scratch.blur = parse_bool(val).unwrap_or(false),
+        "overlay" => scratch.overlay = Some(val.clone()),
+        "autostart" => scratch.autostart = Some(val.clone()),
+        "capture" => {
+            if tokens.len() >= 3 && val == "app_id" {
+                scratch.captures.push(tokens[2].clone());
             } else {
-                ctx.warn("scratchpad define requires name and command");
+                ctx.warn("capture requires: capture app_id \"pattern\"");
             }
         }
         _ => ctx.warn(&format!("unknown scratchpad key '{key}'")),
@@ -770,10 +760,11 @@ fn sanitize(config: &mut Config) {
     b.volume_bar_height = b.volume_bar_height.max(0);
     b.volume_bar_radius = b.volume_bar_radius.max(0);
 
-    let s = &mut config.scratchpad;
-    s.width_pct = s.width_pct.clamp(40, 100);
-    s.height_pct = s.height_pct.clamp(40, 100);
-    s.dim_alpha = s.dim_alpha.clamp(0, 255);
+    for s in &mut config.scratchpads {
+        s.width_pct = s.width_pct.clamp(40, 100);
+        s.height_pct = s.height_pct.clamp(40, 100);
+        s.dim_alpha = s.dim_alpha.clamp(0, 255);
+    }
 }
 
 // ── Main parser ─────────────────────────────────────────────────────
@@ -886,11 +877,18 @@ fn load_file_recursive(
             let name = trimmed[..trimmed.len() - 1].trim();
 
             if block == Block::None {
+                // Check for scratchpad "name" { } — named block with argument
+                let block_tokens = split_tokens(name);
+                if block_tokens.first().map(|s| s.as_str()) == Some("scratchpad") {
+                    let sp_name = block_tokens.get(1).cloned().unwrap_or_else(|| "main".to_string());
+                    config.scratchpads.push(ScratchpadConfig::new(&sp_name));
+                    block = Block::Scratchpad(config.scratchpads.len() - 1);
+                    continue;
+                }
+
                 match root_block_name(name) {
                     Some(b) => {
                         block = b;
-                        // Clear bar modules when entering modules sub-block
-                        // (modules are additive within a single modules{} block)
                     }
                     None => ctx.warn(&format!("unknown block '{name}'")),
                 }
@@ -956,7 +954,11 @@ fn load_file_recursive(
             Block::Animations => parse_animations_line(&tokens, &mut config.animations, &ctx),
             Block::Bar => parse_bar_line(&tokens, &mut config.bar, &ctx),
             Block::BarModules => parse_bar_modules_line(&tokens, &mut config.bar, &ctx),
-            Block::Scratchpad => parse_scratchpad_line(&tokens, &mut config.scratchpad, &ctx),
+            Block::Scratchpad(idx) => {
+                if let Some(sp) = config.scratchpads.get_mut(idx) {
+                    parse_scratchpad_line(&tokens, sp, &ctx);
+                }
+            }
             Block::Rules => parse_rules_line(&tokens, &mut config.rules, &ctx),
             Block::Autostart => parse_autostart_line(&tokens, &mut config.autostart, &ctx),
             Block::Commands => parse_commands_line(&tokens, &mut config.commands),

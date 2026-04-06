@@ -165,93 +165,95 @@ impl Gate {
     }
 
     fn do_toggle_scratchpad(&mut self, name: Option<String>) {
-        if self.scratchpad_visible {
-            // Hide scratchpad — animate out if possible
+        // Find scratchpad by name (default: first)
+        let sp_name = name.as_deref().unwrap_or("main");
+        let sp_idx = match self.scratchpads.iter().position(|sp| {
+            self.config.scratchpads.get(sp.config_idx)
+                .map(|sc| sc.name == sp_name)
+                .unwrap_or(false)
+        }) {
+            Some(idx) => idx,
+            None => {
+                tracing::warn!("no scratchpad named '{sp_name}'");
+                return;
+            }
+        };
+
+        if self.scratchpads[sp_idx].visible {
+            // Hide this scratchpad
             let preset = self.config.animations.preset;
-            if preset != kara_config::AnimationPreset::Instant && self.config.animations.duration_ms > 0 {
+            let duration = self.config.animations.duration_ms;
+            let windows: Vec<_> = self.scratchpads[sp_idx].workspace.clients.clone();
+
+            if preset != kara_config::AnimationPreset::Instant && duration > 0 {
                 let wa = self.workarea();
-                for window in self.scratchpad_windows.clone() {
-                    if let Some(loc) = self.space.element_location(&window) {
+                for window in &windows {
+                    if let Some(loc) = self.space.element_location(window) {
                         let geom = window.geometry();
                         self.animations.animate_out(
-                            window, preset, self.config.animations.duration_ms,
+                            window.clone(), preset, duration,
                             loc.x, loc.y, geom.size.w, geom.size.h,
                             wa.loc.x, wa.loc.y, wa.size.w, wa.size.h,
                             crate::animation::SlideDirection::Auto,
                         );
                     }
                 }
-                // Unmap will happen when animations complete via process_completed_animations
             } else {
-                for window in &self.scratchpad_windows {
+                for window in &windows {
                     self.space.unmap_elem(window);
                 }
             }
-            self.scratchpad_visible = false;
+
+            self.scratchpads[sp_idx].visible = false;
+            if self.focused_scratchpad == Some(sp_idx) {
+                self.focused_scratchpad = None;
+            }
             self.apply_layout();
             self.apply_focus();
-            tracing::debug!("scratchpad hidden");
+            tracing::debug!("scratchpad '{sp_name}' hidden");
             return;
         }
 
-        // Autostart scratchpad processes on first toggle
-        if !self.scratchpad_started {
-            self.scratchpad_started = true;
-
-            // Run main scratchpad command
-            if let Some(ref cmd) = self.config.scratchpad.command.clone() {
-                self.spawn_raw(cmd);
-            }
-
-            // Run scratchpad autostart entries
-            for cmd in self.config.scratchpad.autostart.clone() {
+        // Autostart on first toggle
+        if !self.scratchpads[sp_idx].started {
+            self.scratchpads[sp_idx].started = true;
+            if let Some(cmd) = self.config.scratchpads.get(sp_idx)
+                .and_then(|sc| sc.autostart.clone())
+            {
                 self.spawn_raw(&cmd);
-            }
-
-            // Run named scratchpad commands
-            for define in self.config.scratchpad.defines.clone() {
-                self.spawn_raw(&define.command);
             }
         }
 
         // Show scratchpad
-        self.scratchpad_visible = true;
+        self.scratchpads[sp_idx].visible = true;
+        self.scratchpads[sp_idx].output_idx = self.focused_output;
+        self.focused_scratchpad = Some(sp_idx);
 
-        // Map scratchpad windows centered within workarea (respects bar)
-        let workarea = self.workarea();
-        let sp_w = (workarea.size.w as f32 * self.config.scratchpad.width_pct as f32 / 100.0) as i32;
-        let sp_h = (workarea.size.h as f32 * self.config.scratchpad.height_pct as f32 / 100.0) as i32;
-        let sp_x = workarea.loc.x + (workarea.size.w - sp_w) / 2;
-        let sp_y = workarea.loc.y + (workarea.size.h - sp_h) / 2;
+        // Layout windows within scratchpad rect
+        self.apply_scratchpad_layout(sp_idx);
 
-        for window in &self.scratchpad_windows {
-            if let Some(toplevel) = window.toplevel() {
-                toplevel.with_pending_state(|state| {
-                    state.size = Some((sp_w, sp_h).into());
-                });
-                toplevel.send_configure();
-            }
-            self.space.map_element(window.clone(), (sp_x, sp_y), false);
-        }
-
-        // Animate scratchpad windows in
+        // Animate windows in
         let preset = self.config.animations.preset;
         if preset != kara_config::AnimationPreset::Instant {
             let wa = self.workarea();
-            for window in self.scratchpad_windows.clone() {
-                self.animations.animate_in(
-                    window, preset, self.config.animations.duration_ms,
-                    sp_x, sp_y, sp_w, sp_h,
-                    wa.loc.x, wa.loc.y, wa.size.w, wa.size.h,
-                    crate::animation::SlideDirection::Auto,
-                );
+            let windows: Vec<_> = self.scratchpads[sp_idx].workspace.clients.clone();
+            for window in &windows {
+                if let Some(loc) = self.space.element_location(window) {
+                    let geom = window.geometry();
+                    self.animations.animate_in(
+                        window.clone(), preset, self.config.animations.duration_ms,
+                        loc.x, loc.y, geom.size.w, geom.size.h,
+                        wa.loc.x, wa.loc.y, wa.size.w, wa.size.h,
+                        crate::animation::SlideDirection::Auto,
+                    );
+                }
             }
         }
 
+        self.apply_focus();
         tracing::debug!(
-            "scratchpad shown ({} windows, name={:?})",
-            self.scratchpad_windows.len(),
-            name,
+            "scratchpad '{sp_name}' shown ({} windows)",
+            self.scratchpads[sp_idx].workspace.clients.len(),
         );
     }
 
@@ -580,16 +582,13 @@ impl Gate {
         (should_float, target_ws)
     }
 
-    /// Check if a window belongs to a scratchpad define and should be captured.
-    pub fn check_scratchpad_capture(&self, app_id: &str) -> bool {
-        // Check named scratchpads
-        for define in &self.config.scratchpad.defines {
-            if let Some(ref sp_app_id) = define.app_id {
-                if sp_app_id == app_id {
-                    return true;
-                }
+    /// Check if a window belongs to a scratchpad capture and return the scratchpad index.
+    pub fn check_scratchpad_capture(&self, app_id: &str) -> Option<usize> {
+        for (i, sc) in self.config.scratchpads.iter().enumerate() {
+            if sc.captures.iter().any(|pattern| pattern == app_id) {
+                return Some(i);
             }
         }
-        false
+        None
     }
 }

@@ -36,6 +36,15 @@ use crate::input::Keybind;
 use crate::layout::layout_workspace;
 use crate::workspace::{Workspace, WORKSPACE_COUNT};
 
+/// Per-scratchpad runtime state.
+pub struct ScratchpadState {
+    pub config_idx: usize,
+    pub workspace: Workspace,
+    pub visible: bool,
+    pub started: bool,
+    pub output_idx: usize,
+}
+
 /// Per-output state for multi-monitor support.
 #[allow(dead_code)]
 pub struct OutputState {
@@ -105,10 +114,9 @@ pub struct Gate {
 
     // Floating (no extra state beyond workspace.floating)
 
-    // Scratchpad
-    pub scratchpad_visible: bool,
-    pub scratchpad_windows: Vec<Window>,
-    pub scratchpad_started: bool,
+    // Scratchpads — each is an independent floating workspace
+    pub scratchpads: Vec<ScratchpadState>,
+    pub focused_scratchpad: Option<usize>,
 
     // Autostart
     pub autostart_done: bool,
@@ -166,6 +174,20 @@ impl Gate {
         let config = kara_config::load_default_config();
         let keybinds = std::sync::Arc::new(crate::input::keybinds_from_config(&config));
 
+        let scratchpad_states: Vec<ScratchpadState> = config.scratchpads.iter().enumerate()
+            .map(|(i, _sc)| {
+                let mut ws = Workspace::new(100 + i);
+                ws.gap_px = config.general.gap_px;
+                ws.mfact = config.general.default_mfact;
+                ScratchpadState {
+                    config_idx: i,
+                    workspace: ws,
+                    visible: false,
+                    started: false,
+                    output_idx: 0,
+                }
+            }).collect();
+
         let workspaces: Vec<Workspace> = (0..WORKSPACE_COUNT)
             .map(|id| {
                 let mut ws = Workspace::new(id);
@@ -215,9 +237,8 @@ impl Gate {
             output_bounds: (800, 600),
             focused_output: 0,
             ipc_listener: kara_ipc::server::bind_socket().ok(),
-            scratchpad_visible: false,
-            scratchpad_windows: Vec::new(),
-            scratchpad_started: false,
+            scratchpads: scratchpad_states,
+            focused_scratchpad: None,
             autostart_done: false,
             border_rects: Vec::new(),
             layout_dirty: true,
@@ -545,6 +566,57 @@ impl Gate {
         }
     }
 
+    /// Apply tiling layout for a scratchpad within its floating rect.
+    pub fn apply_scratchpad_layout(&mut self, sp_idx: usize) {
+        let sc = match self.config.scratchpads.get(sp_idx) {
+            Some(sc) => sc.clone(),
+            None => return,
+        };
+        let sp = match self.scratchpads.get(sp_idx) {
+            Some(sp) => sp,
+            None => return,
+        };
+        if !sp.visible {
+            return;
+        }
+
+        let workarea = self.outputs.get(sp.output_idx)
+            .map(|o| o.workarea)
+            .unwrap_or_else(|| Rectangle::new((0, 0).into(), (800, 600).into()));
+
+        let sp_w = (workarea.size.w as f32 * sc.width_pct as f32 / 100.0) as i32;
+        let sp_h = (workarea.size.h as f32 * sc.height_pct as f32 / 100.0) as i32;
+        let sp_x = workarea.loc.x + (workarea.size.w - sp_w) / 2;
+        let sp_y = workarea.loc.y + (workarea.size.h - sp_h) / 2;
+        let sp_rect = Rectangle::new((sp_x, sp_y).into(), (sp_w, sp_h).into());
+
+        let border_px = self.config.general.border_px;
+        let geometries = layout_workspace(&self.scratchpads[sp_idx].workspace, sp_rect, border_px);
+
+        for geom in &geometries {
+            if geom.visible {
+                if let Some(toplevel) = geom.window.toplevel() {
+                    toplevel.with_pending_state(|state| {
+                        state.size = Some((geom.rect.size.w, geom.rect.size.h).into());
+                    });
+                    toplevel.send_configure();
+                }
+                self.space.map_element(geom.window.clone(), geom.rect.loc, false);
+                self.space.raise_element(&geom.window, true);
+                self.window_base_positions.push((geom.window.clone(), geom.rect.loc));
+
+                if let Some(br) = geom.border_rect {
+                    self.border_rects.push((br, geom.is_focused));
+                }
+            } else {
+                self.space.unmap_elem(&geom.window);
+            }
+        }
+
+        self.layout_dirty = true;
+        self.bar_dirty = true;
+    }
+
     /// Re-position windows and borders with current animation offsets.
     /// Uses stored base positions from apply_layout() — no compounding.
     pub fn apply_animation_offsets(&mut self) {
@@ -711,17 +783,17 @@ impl XdgShellHandler for Gate {
 
         tracing::debug!("new toplevel: app_id={:?}", app_id);
 
-        // Check if this window should be captured by scratchpad
-        if !app_id.is_empty() && self.check_scratchpad_capture(&app_id) {
-            tracing::debug!("captured scratchpad window: {app_id}");
-            self.scratchpad_windows.push(window);
-            // If scratchpad is currently visible, map it; otherwise leave unmapped
-            if self.scratchpad_visible {
-                // Re-trigger scratchpad display
-                self.scratchpad_visible = false;
-                self.dispatch_action(crate::actions::Action::ToggleScratchpad(None));
+        // Check if this window should be captured by a scratchpad
+        if !app_id.is_empty() {
+            if let Some(sp_idx) = self.check_scratchpad_capture(&app_id) {
+                tracing::debug!("captured scratchpad '{}' window: {app_id}",
+                    self.config.scratchpads.get(sp_idx).map(|s| s.name.as_str()).unwrap_or("?"));
+                self.scratchpads[sp_idx].workspace.add_client(window);
+                if self.scratchpads[sp_idx].visible {
+                    self.apply_scratchpad_layout(sp_idx);
+                }
+                return;
             }
-            return;
         }
 
         // Check window rules
@@ -767,8 +839,10 @@ impl XdgShellHandler for Gate {
             self.space.unmap_elem(&window);
 
             // Check scratchpad windows
-            if let Some(pos) = self.scratchpad_windows.iter().position(|w| w == &window) {
-                self.scratchpad_windows.remove(pos);
+            for sp in &mut self.scratchpads {
+                if sp.workspace.remove_client(&window) {
+                    break;
+                }
             }
 
             // Check fullscreen on all outputs

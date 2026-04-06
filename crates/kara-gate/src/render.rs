@@ -250,7 +250,63 @@ pub fn build_custom_elements(
         elements.extend(render_bar(state, renderer, output_idx));
     }
 
+    // Dim overlay for visible scratchpads (behind scratchpad windows, above bar)
+    elements.extend(render_dim_overlay(state, renderer, output_idx));
+
     elements
+}
+
+/// Render dim overlay for visible scratchpads on this output.
+fn render_dim_overlay(
+    state: &Gate,
+    renderer: &mut GlesRenderer,
+    output_idx: usize,
+) -> Vec<TextureRenderElement<GlesTexture>> {
+    let max_alpha = state.scratchpads.iter()
+        .filter(|sp| sp.visible && sp.output_idx == output_idx)
+        .filter_map(|sp| state.config.scratchpads.get(sp.config_idx))
+        .map(|sc| sc.dim_alpha)
+        .max();
+
+    let alpha = match max_alpha {
+        Some(a) if a > 0 => a as u8,
+        _ => return Vec::new(),
+    };
+
+    let (w, h) = match state.outputs.get(output_idx) {
+        Some(o) => o.size,
+        None => return Vec::new(),
+    };
+
+    // Single-pixel black with alpha, stretched to output size
+    let pixel: [u8; 4] = [0, 0, 0, alpha];
+    let mut data = vec![0u8; (w * h * 4) as usize];
+    for chunk in data.chunks_exact_mut(4) {
+        chunk.copy_from_slice(&pixel);
+    }
+
+    let texture_buffer = match TextureBuffer::from_memory(
+        renderer,
+        &data,
+        Fourcc::Abgr8888,
+        Size::from((w, h)),
+        false,
+        1,
+        Transform::Normal,
+        None,
+    ) {
+        Ok(buf) => buf,
+        Err(_) => return Vec::new(),
+    };
+
+    vec![TextureRenderElement::from_texture_buffer(
+        Point::from((0.0, 0.0)),
+        &texture_buffer,
+        None,
+        None,
+        None,
+        Kind::Unspecified,
+    )]
 }
 
 /// Build a rounded rectangle path with quadratic bezier corners.

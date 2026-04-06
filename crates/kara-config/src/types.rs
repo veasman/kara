@@ -14,7 +14,7 @@ pub struct Config {
     pub theme: Theme,
     pub animations: Animations,
     pub bar: Bar,
-    pub scratchpad: Scratchpad,
+    pub scratchpads: Vec<ScratchpadConfig>,
     pub rules: Vec<Rule>,
     pub autostart: Vec<AutostartEntry>,
     pub commands: HashMap<String, String>,
@@ -30,7 +30,7 @@ impl Default for Config {
             theme: Theme::default(),
             animations: Animations::default(),
             bar: Bar::default(),
-            scratchpad: Scratchpad::default(),
+            scratchpads: Vec::new(),
             rules: Vec::new(),
             autostart: Vec::new(),
             commands: HashMap::new(),
@@ -227,31 +227,28 @@ impl Default for Bar {
 // ── Scratchpad ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
-pub struct ScratchpadDefine {
+pub struct ScratchpadConfig {
     pub name: String,
-    pub command: String,
-    pub app_id: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Scratchpad {
     pub width_pct: i32,
     pub height_pct: i32,
     pub dim_alpha: i32,
-    pub command: Option<String>,
-    pub autostart: Vec<String>,
-    pub defines: Vec<ScratchpadDefine>,
+    pub blur: bool,
+    pub overlay: Option<String>,
+    pub autostart: Option<String>,
+    pub captures: Vec<String>, // app_id patterns
 }
 
-impl Default for Scratchpad {
-    fn default() -> Self {
+impl ScratchpadConfig {
+    pub fn new(name: &str) -> Self {
         Self {
+            name: name.to_string(),
             width_pct: 92,
             height_pct: 92,
             dim_alpha: 48,
-            command: None,
-            autostart: Vec::new(),
-            defines: Vec::new(),
+            blur: false,
+            overlay: None,
+            autostart: None,
+            captures: Vec::new(),
         }
     }
 }

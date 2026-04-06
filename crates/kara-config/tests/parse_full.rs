@@ -48,12 +48,12 @@ bar {
     }
 }
 
-scratchpad {
+scratchpad "main" {
     width_pct 94
     height_pct 94
     dim_alpha 96
     autostart "kitty -e htop"
-    define "term" "$terminal" app_id "kitty"
+    capture app_id "kitty"
 }
 
 rules {
@@ -130,15 +130,13 @@ binds {
     assert_eq!(config.bar.modules[3].arg.as_deref(), Some("%a %d %b %H:%M"));
 
     // Scratchpad
-    assert_eq!(config.scratchpad.width_pct, 94);
-    assert_eq!(config.scratchpad.height_pct, 94);
-    assert_eq!(config.scratchpad.dim_alpha, 96);
-    assert_eq!(config.scratchpad.autostart.len(), 1);
-    assert_eq!(config.scratchpad.autostart[0], "kitty -e htop");
-    assert_eq!(config.scratchpad.defines.len(), 1);
-    assert_eq!(config.scratchpad.defines[0].name, "term");
-    assert_eq!(config.scratchpad.defines[0].command, "kitty"); // $terminal expanded
-    assert_eq!(config.scratchpad.defines[0].app_id.as_deref(), Some("kitty"));
+    assert_eq!(config.scratchpads.len(), 1);
+    assert_eq!(config.scratchpads[0].name, "main");
+    assert_eq!(config.scratchpads[0].width_pct, 94);
+    assert_eq!(config.scratchpads[0].height_pct, 94);
+    assert_eq!(config.scratchpads[0].dim_alpha, 96);
+    assert_eq!(config.scratchpads[0].autostart.as_deref(), Some("kitty -e htop"));
+    assert_eq!(config.scratchpads[0].captures, vec!["kitty"]);
 
     // Rules
     assert_eq!(config.rules.len(), 3);
