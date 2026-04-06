@@ -43,6 +43,8 @@ pub struct ScratchpadState {
     pub visible: bool,
     pub started: bool,
     pub output_idx: usize,
+    /// When true, the next new window is captured into this scratchpad (autostart capture).
+    pub pending_capture: bool,
 }
 
 /// Per-output state for multi-monitor support.
@@ -185,6 +187,7 @@ impl Gate {
                     visible: false,
                     started: false,
                     output_idx: 0,
+                    pending_capture: false,
                 }
             }).collect();
 
@@ -793,7 +796,7 @@ impl XdgShellHandler for Gate {
 
         tracing::debug!("new toplevel: app_id={:?}", app_id);
 
-        // Check if this window should be captured by a scratchpad
+        // Check if this window should be captured by a scratchpad (app_id match)
         if !app_id.is_empty() {
             if let Some(sp_idx) = self.check_scratchpad_capture(&app_id) {
                 tracing::debug!("captured scratchpad '{}' window: {app_id}",
@@ -804,6 +807,19 @@ impl XdgShellHandler for Gate {
                 }
                 return;
             }
+        }
+
+        // Check if any scratchpad is waiting for its autostart window
+        if let Some(sp_idx) = self.scratchpads.iter().position(|sp| sp.pending_capture) {
+            self.scratchpads[sp_idx].pending_capture = false;
+            tracing::debug!("autostart capture for scratchpad '{}'",
+                self.config.scratchpads.get(sp_idx).map(|s| s.name.as_str()).unwrap_or("?"));
+            self.scratchpads[sp_idx].workspace.add_client(window);
+            if self.scratchpads[sp_idx].visible {
+                self.apply_scratchpad_layout(sp_idx);
+                self.apply_focus();
+            }
+            return;
         }
 
         // Check window rules

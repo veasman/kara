@@ -259,6 +259,8 @@ impl Gate {
             if let Some(cmd) = self.config.scratchpads.get(sp_idx)
                 .and_then(|sc| sc.autostart.clone())
             {
+                // Mark pending capture so the spawned window goes to this scratchpad
+                self.scratchpads[sp_idx].pending_capture = true;
                 self.spawn_raw(&cmd);
             }
         }
