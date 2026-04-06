@@ -1064,10 +1064,19 @@ impl WlrLayerShellHandler for Gate {
         let output = self.outputs.get(self.focused_output)
             .map(|o| o.output.clone());
 
-        if let Some(output) = output {
-            let mut map = layer_map_for_output(&output);
+        if let Some(ref output) = output {
+            let mut map = layer_map_for_output(output);
             map.map_layer(&desktop_surface).ok();
+            // arrange() was called by map_layer, now send configure with computed size
+            if let Some(geo) = map.layer_geometry(&desktop_surface) {
+                desktop_surface.layer_surface().with_pending_state(|state| {
+                    state.size = Some(geo.size);
+                });
+            }
         }
+
+        // Send initial configure so the client can start rendering
+        desktop_surface.layer_surface().send_configure();
     }
 
     fn layer_destroyed(&mut self, surface: LayerSurface) {
