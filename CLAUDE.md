@@ -90,33 +90,33 @@ kara-glimpse    -> kara-ipc
 - **M3**: Config — done (19 tests passing)
 - **M4**: Bar — done
 - **M5**: Single-monitor daily driver — done (environment, autostart, rules, floating, fullscreen, borders, cursor, scratchpad)
-- **M6**: Multi-monitor — done (per-output workspaces, hybrid sync, monitor actions). Animations pending.
+- **M6**: Multi-monitor — done (per-output workspaces, hybrid sync, monitor actions, animations)
 - **M7**: Production backend — done (udev/DRM, libinput, libseat, xdg-decoration)
 - **M8**: First-party tools — pending (kara-summon, kara-whisper, kara-glimpse)
 
 ## Picking Up Where We Left Off
 
-**Last session**: 2026-04-05. M7 production backend + M6 multi-monitor.
+**Last session**: 2026-04-05.
 
 **What was done this session**:
-1. Fixed winit deadlock, bar centering, font family wiring, all warnings
-2. Cleaned up vwm→kara naming, updated example config/README
-3. M7: Production udev/DRM backend (libseat, libinput, GBM, DrmCompositor)
-4. Backend selection via KARA_BACKEND env var (auto-detects winit vs udev)
-5. xdg-decoration protocol (ServerSide — no client title bars)
-6. M6: Multi-monitor with OutputState per-output model
-7. Hybrid workspace model (sync/independent like vwm, mod+s toggle)
-8. Monitor focus/send actions (mod+h/l, mod+Shift+h/l)
-9. Per-output rendering with local coordinate spaces
-
-**Runtime tested**: Both winit (nested X11) and udev (TTY). Dual monitor tested (laptop + TV).
-
-**Known issue**: Multi-monitor coordinate space may need further testing — borders/windows showing correctly on each output after last fix (output-local coords) but not yet verified.
+1. `exec` keybind action, `toggle_float` docs, scratchpad workarea centering
+2. Software cursor rendering (xcursor theme, auto-hide 1s/5px jitter)
+3. `mod+Shift+{1-9}` fix (raw_syms), config auto-reload (mtime polling)
+4. Border radius / rounded corners, key repeat tuning (500ms/33ms)
+5. Monitor + sync bar modules merged, CPU bar module added
+6. Clock icon fix, sync icon fix
+7. Animation system: instant/clean/swoosh presets, position-only transforms
+8. Per-CRTC vblank rendering, event-first loop ordering (input latency fix)
+9. Performance: wallpaper/border/bar texture caching, Arc keybinds, output bounds cache
+10. Named scratchpads as independent floating workspaces with own tiling
+11. Scratchpad action routing (focus/zoom/monocle/mfact route to scratchpad workspace)
+12. Dim overlay for visible scratchpads
 
 **Next priorities**:
-1. Test dual-monitor thoroughly (workspace switching, sync toggle, window placement)
-2. Animations (window open/close, workspace switch, scratchpad, focus transitions)
-3. M8: First-party tools (kara-summon, kara-whisper, kara-glimpse)
+1. M8: First-party tools (kara-summon, kara-whisper, kara-glimpse)
+2. GL shader support for opacity/scale animations (kara-beautify)
+3. Input device config wiring to libinput
+4. Scratchpad blur effect (needs GL shaders)
 
 **Repo**: git@github.com:veasman/kara.git (local dir may be ~/repos/kara/)
 
@@ -133,6 +133,7 @@ kara-glimpse    -> kara-ipc
 - `cosmic-text 0.18` — font shaping and glyph rendering
 - `chrono 0.4` — clock module
 - `serde` / `serde_json` — IPC serialization
+- `xcursor 0.3` — cursor theme loading
 
 ## Code Conventions
 
