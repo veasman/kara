@@ -174,20 +174,11 @@ impl Gate {
             let ws = &self.workspaces[ws_idx];
             if let Some(window) = ws.focused() {
                 let window = window.clone();
-                let (w, h) = self.output_size();
-                let loc = self.outputs[out_idx].location;
-
                 if let Some(out) = self.outputs.get_mut(out_idx) {
                     out.fullscreen_window = Some(window.clone());
                 }
-
-                if let Some(toplevel) = window.toplevel() {
-                    toplevel.with_pending_state(|state| {
-                        state.size = Some((w, h).into());
-                    });
-                    toplevel.send_configure();
-                }
-                self.space.map_element(window, loc, false);
+                self.apply_layout();
+                self.apply_focus();
                 tracing::debug!("entered fullscreen");
             }
         }

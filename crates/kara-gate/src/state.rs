@@ -609,6 +609,7 @@ impl Gate {
         let geometries = layout_workspace(&self.scratchpads[sp_idx].workspace, sp_rect, border_px);
 
         self.scratchpad_border_rects.clear();
+        let mut mapped_windows = Vec::new();
         for geom in &geometries {
             if geom.visible {
                 if let Some(toplevel) = geom.window.toplevel() {
@@ -618,8 +619,8 @@ impl Gate {
                     toplevel.send_configure();
                 }
                 self.space.map_element(geom.window.clone(), geom.rect.loc, false);
-                self.space.raise_element(&geom.window, true);
                 self.window_base_positions.push((geom.window.clone(), geom.rect.loc));
+                mapped_windows.push(geom.window.clone());
 
                 if let Some(br) = geom.border_rect {
                     self.scratchpad_border_rects.push((br, geom.is_focused));
@@ -627,6 +628,11 @@ impl Gate {
             } else {
                 self.space.unmap_elem(&geom.window);
             }
+        }
+
+        // Raise all scratchpad windows to top of Space stacking after layout
+        for window in &mapped_windows {
+            self.space.raise_element(window, true);
         }
 
         self.scratchpad_layout_dirty = true;
@@ -833,6 +839,17 @@ impl XdgShellHandler for Gate {
                 self.apply_focus();
             }
             return;
+        }
+
+        // If a scratchpad is focused, new windows go into it
+        if let Some(sp_idx) = self.focused_scratchpad {
+            if self.scratchpads[sp_idx].visible {
+                tracing::debug!("new window routed to focused scratchpad");
+                self.scratchpads[sp_idx].workspace.add_client(window);
+                self.apply_scratchpad_layout(sp_idx);
+                self.apply_focus();
+                return;
+            }
         }
 
         // Check window rules
