@@ -836,12 +836,13 @@ impl CompositorHandler for Gate {
     fn commit(&mut self, surface: &WlSurface) {
         smithay::backend::renderer::utils::on_commit_buffer_handler::<Self>(surface);
 
-        // Handle layer surface initial configure
+        // Handle layer surface commits — re-arrange the layer map
         for out in &self.outputs {
-            let map = layer_map_for_output(&out.output);
-            for layer in map.layers() {
+            let mut map = layer_map_for_output(&out.output);
+            for layer in map.layers().cloned().collect::<Vec<_>>() {
                 if layer.wl_surface() == surface {
-                    layer.layer_surface().ensure_configured();
+                    map.arrange();
+                    drop(map);
                     return;
                 }
             }
