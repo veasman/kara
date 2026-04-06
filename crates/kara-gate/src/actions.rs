@@ -166,9 +166,26 @@ impl Gate {
 
     fn do_toggle_scratchpad(&mut self, name: Option<String>) {
         if self.scratchpad_visible {
-            // Hide scratchpad
-            for window in &self.scratchpad_windows {
-                self.space.unmap_elem(window);
+            // Hide scratchpad — animate out if possible
+            let preset = self.config.animations.preset;
+            if preset != kara_config::AnimationPreset::Instant && self.config.animations.duration_ms > 0 {
+                let wa = self.workarea();
+                for window in self.scratchpad_windows.clone() {
+                    if let Some(loc) = self.space.element_location(&window) {
+                        let geom = window.geometry();
+                        self.animations.animate_out(
+                            window, preset, self.config.animations.duration_ms,
+                            loc.x, loc.y, geom.size.w, geom.size.h,
+                            wa.loc.x, wa.loc.y, wa.size.w, wa.size.h,
+                            crate::animation::SlideDirection::Auto,
+                        );
+                    }
+                }
+                // Unmap will happen when animations complete via process_completed_animations
+            } else {
+                for window in &self.scratchpad_windows {
+                    self.space.unmap_elem(window);
+                }
             }
             self.scratchpad_visible = false;
             self.apply_layout();
@@ -200,12 +217,12 @@ impl Gate {
         // Show scratchpad
         self.scratchpad_visible = true;
 
-        // Map scratchpad windows centered on focused output
-        let (ow, oh) = self.output_size();
-        let sp_w = (ow as f32 * self.config.scratchpad.width_pct as f32 / 100.0) as i32;
-        let sp_h = (oh as f32 * self.config.scratchpad.height_pct as f32 / 100.0) as i32;
-        let sp_x = (ow - sp_w) / 2;
-        let sp_y = (oh - sp_h) / 2;
+        // Map scratchpad windows centered within workarea (respects bar)
+        let workarea = self.workarea();
+        let sp_w = (workarea.size.w as f32 * self.config.scratchpad.width_pct as f32 / 100.0) as i32;
+        let sp_h = (workarea.size.h as f32 * self.config.scratchpad.height_pct as f32 / 100.0) as i32;
+        let sp_x = workarea.loc.x + (workarea.size.w - sp_w) / 2;
+        let sp_y = workarea.loc.y + (workarea.size.h - sp_h) / 2;
 
         for window in &self.scratchpad_windows {
             if let Some(toplevel) = window.toplevel() {
@@ -215,6 +232,20 @@ impl Gate {
                 toplevel.send_configure();
             }
             self.space.map_element(window.clone(), (sp_x, sp_y), false);
+        }
+
+        // Animate scratchpad windows in
+        let preset = self.config.animations.preset;
+        if preset != kara_config::AnimationPreset::Instant {
+            let wa = self.workarea();
+            for window in self.scratchpad_windows.clone() {
+                self.animations.animate_in(
+                    window, preset, self.config.animations.duration_ms,
+                    sp_x, sp_y, sp_w, sp_h,
+                    wa.loc.x, wa.loc.y, wa.size.w, wa.size.h,
+                    crate::animation::SlideDirection::Auto,
+                );
+            }
         }
 
         tracing::debug!(
@@ -271,6 +302,29 @@ impl Gate {
 
         self.apply_layout();
         self.apply_focus();
+
+        // Animate incoming windows
+        let preset = self.config.animations.preset;
+        if preset != kara_config::AnimationPreset::Instant {
+            let direction = if idx > current {
+                crate::animation::SlideDirection::Right
+            } else {
+                crate::animation::SlideDirection::Left
+            };
+            let ws_idx = self.effective_ws(self.focused_output);
+            let wa = self.workarea();
+            for window in self.workspaces[ws_idx].clients.clone() {
+                if let Some(loc) = self.space.element_location(&window) {
+                    let geom = window.geometry();
+                    self.animations.animate_in(
+                        window, preset, self.config.animations.duration_ms,
+                        loc.x, loc.y, geom.size.w, geom.size.h,
+                        wa.loc.x, wa.loc.y, wa.size.w, wa.size.h,
+                        direction,
+                    );
+                }
+            }
+        }
     }
 
     fn do_send_ws(&mut self, idx: usize) {
@@ -287,16 +341,32 @@ impl Gate {
 
         tracing::debug!("sending window to workspace {}", idx + 1);
 
-        // Remove from current workspace
+        let preset = self.config.animations.preset;
+        if preset != kara_config::AnimationPreset::Instant && self.config.animations.duration_ms > 0 {
+            // Animate out, then defer the actual transfer
+            if let Some(loc) = self.space.element_location(&window) {
+                let geom = window.geometry();
+                let wa = self.workarea();
+                let direction = if idx > current {
+                    crate::animation::SlideDirection::Right
+                } else {
+                    crate::animation::SlideDirection::Left
+                };
+                self.animations.animate_out(
+                    window.clone(), preset, self.config.animations.duration_ms,
+                    loc.x, loc.y, geom.size.w, geom.size.h,
+                    wa.loc.x, wa.loc.y, wa.size.w, wa.size.h,
+                    direction,
+                );
+                self.pending_sends.push((window, idx));
+                return;
+            }
+        }
+
+        // Instant path: remove, unmap, transfer immediately
         ws.remove_client(&window);
-
-        // Unmap from space
         self.space.unmap_elem(&window);
-
-        // Add to target workspace
         self.workspaces[idx].add_client(window);
-
-        // Re-layout current workspace
         self.apply_layout();
         self.apply_focus();
     }
@@ -435,6 +505,28 @@ impl Gate {
             unsafe {
                 std::env::set_var("XCURSOR_THEME", theme);
                 std::env::set_var("XCURSOR_SIZE", self.config.general.cursor_size.to_string());
+            }
+        }
+    }
+
+    /// Load cursor theme images into cache for software rendering.
+    pub fn load_cursor_theme(&mut self) {
+        let theme_name = self.config.general.cursor_theme
+            .as_deref()
+            .unwrap_or("default");
+        let size = self.config.general.cursor_size as u32;
+
+        match crate::cursor::load_xcursor(theme_name, "default", size) {
+            Some(cache) => {
+                tracing::info!(
+                    "loaded cursor: {}x{} from theme '{}'",
+                    cache.width, cache.height, theme_name,
+                );
+                self.cursor_cache = Some(cache);
+            }
+            None => {
+                tracing::warn!("failed to load cursor theme '{theme_name}', cursor may not render");
+                self.cursor_cache = None;
             }
         }
     }

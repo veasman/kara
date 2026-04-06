@@ -30,10 +30,8 @@ theme {
 }
 
 animations {
-    level light
-    window_open 150 ease-out
-    window_close 100 ease-out
-    workspace_switch 200 ease-in-out
+    preset swoosh
+    duration 150
 }
 
 bar {
@@ -117,13 +115,8 @@ binds {
     assert_eq!(config.theme.text_muted, 0x5c5c5c);
 
     // Animations
-    assert_eq!(config.animations.level, AnimationLevel::Light);
-    let wo = config.animations.window_open.unwrap();
-    assert_eq!(wo.duration_ms, 150);
-    assert_eq!(wo.easing, Easing::EaseOut);
-    let ws = config.animations.workspace_switch.unwrap();
-    assert_eq!(ws.duration_ms, 200);
-    assert_eq!(ws.easing, Easing::EaseInOut);
+    assert_eq!(config.animations.preset, AnimationPreset::Swoosh);
+    assert_eq!(config.animations.duration_ms, 150);
 
     // Bar
     assert!(config.bar.enabled);

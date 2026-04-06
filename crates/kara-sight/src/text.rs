@@ -249,25 +249,30 @@ fn build_title(ctx: &ModuleContext) -> ModuleContent {
 }
 
 fn build_monitor(ctx: &ModuleContext) -> ModuleContent {
-    let text = if ctx.icons {
-        format!("\u{f0379} {}", ctx.monitor_id + 1) // 󰍹 monitor icon
+    let sync_indicator = if ctx.sync_enabled {
+        if ctx.icons { " \u{f0c2}" } else { " sync" } // 󰰂 link icon
     } else {
-        format!("mon {}", ctx.monitor_id + 1)
+        ""
     };
 
-    ModuleContent { text, color: ctx.theme.text_muted }
-}
-
-fn build_sync(ctx: &ModuleContext) -> ModuleContent {
-    let (text, color) = if ctx.sync_enabled {
-        let t = if ctx.icons { "\u{f04c7}" } else { "sync" }; // 󰓇 sync icon
-        (t.to_string(), if ctx.colors { ctx.theme.accent } else { ctx.theme.text })
+    let text = if ctx.icons {
+        format!("\u{f0379} {}{sync_indicator}", ctx.monitor_id + 1) // 󰍹 monitor icon
     } else {
-        let t = if ctx.icons { "\u{f04c8}" } else { "nosync" }; // 󰓈 sync off
-        (t.to_string(), ctx.theme.text_muted)
+        format!("mon {}{sync_indicator}", ctx.monitor_id + 1)
+    };
+
+    let color = if ctx.sync_enabled && ctx.colors {
+        ctx.theme.accent
+    } else {
+        ctx.theme.text_muted
     };
 
     ModuleContent { text, color }
+}
+
+fn build_sync(ctx: &ModuleContext) -> ModuleContent {
+    // Sync is now part of monitor module — return empty for standalone use
+    build_monitor(ctx)
 }
 
 fn build_weather(ctx: &ModuleContext) -> ModuleContent {

@@ -253,6 +253,11 @@ fn parse_general_line(tokens: &[String], general: &mut General, ctx: &ParseConte
                 general.border_px = v;
             }
         }
+        "border_radius" | "rounding" => {
+            if let Ok(v) = val.parse::<i32>() {
+                general.border_radius = v;
+            }
+        }
         "gap_px" => {
             if let Ok(v) = val.parse::<i32>() {
                 general.gap_px = v;
@@ -305,16 +310,6 @@ fn parse_theme_line(tokens: &[String], theme: &mut Theme, ctx: &ParseContext) {
     }
 }
 
-fn parse_easing(s: &str) -> Option<Easing> {
-    match s {
-        "linear" => Some(Easing::Linear),
-        "ease-in" => Some(Easing::EaseIn),
-        "ease-out" => Some(Easing::EaseOut),
-        "ease-in-out" => Some(Easing::EaseInOut),
-        _ => None,
-    }
-}
-
 fn parse_animations_line(tokens: &[String], anims: &mut Animations, ctx: &ParseContext) {
     if tokens.len() < 2 {
         return;
@@ -322,39 +317,27 @@ fn parse_animations_line(tokens: &[String], anims: &mut Animations, ctx: &ParseC
     let key = tokens[0].as_str();
     let val = tokens[1].as_str();
 
-    if key == "level" {
-        anims.level = match val {
-            "none" => AnimationLevel::None,
-            "light" => AnimationLevel::Light,
-            "heavy" => AnimationLevel::Heavy,
-            _ => {
-                ctx.warn(&format!("unknown animation level '{val}'"));
-                return;
-            }
-        };
-        return;
-    }
-
-    // Per-animation overrides: name duration easing
-    let duration: u32 = match val.parse() {
-        Ok(v) => v,
-        Err(_) => {
-            ctx.warn(&format!("invalid animation duration '{val}'"));
-            return;
-        }
-    };
-    let easing = tokens
-        .get(2)
-        .and_then(|s| parse_easing(s))
-        .unwrap_or(Easing::EaseOut);
-
-    let ov = AnimationOverride { duration_ms: duration, easing };
     match key {
-        "window_open" => anims.window_open = Some(ov),
-        "window_close" => anims.window_close = Some(ov),
-        "workspace_switch" => anims.workspace_switch = Some(ov),
-        "scratchpad" => anims.scratchpad = Some(ov),
-        "focus_border" => anims.focus_border = Some(ov),
+        "preset" => {
+            anims.preset = match val {
+                "instant" | "none" => AnimationPreset::Instant,
+                "clean" => AnimationPreset::Clean,
+                "swoosh" => AnimationPreset::Swoosh,
+                _ => {
+                    ctx.warn(&format!("unknown animation preset '{val}'"));
+                    return;
+                }
+            };
+        }
+        "duration" => {
+            match val.parse::<u32>() {
+                Ok(v) => anims.duration_ms = v.clamp(0, 2000),
+                Err(_) => ctx.warn(&format!("invalid animation duration '{val}'")),
+            }
+        }
+        // Accept old keys silently for backward compat
+        "level" | "window_open" | "window_close" | "workspace_switch"
+        | "scratchpad" | "focus_border" => {}
         _ => ctx.warn(&format!("unknown animation key '{key}'")),
     }
 }
@@ -765,6 +748,7 @@ fn parse_input_device_line(
 fn sanitize(config: &mut Config) {
     let g = &mut config.general;
     g.border_px = g.border_px.max(0);
+    g.border_radius = g.border_radius.max(0);
     g.gap_px = g.gap_px.max(0);
     g.default_mfact = g.default_mfact.clamp(0.05, 0.95);
     if g.font_size <= 0.0 {

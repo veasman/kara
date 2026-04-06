@@ -54,6 +54,10 @@ pub fn parse_action(verb: &str, arg: Option<&str>) -> Result<BindAction, String>
             let name = arg.ok_or("spawn requires a command name")?;
             Ok(BindAction::Spawn(name.to_string()))
         }
+        "exec" => {
+            let cmd = arg.ok_or("exec requires a command string")?;
+            Ok(BindAction::Exec(cmd.to_string()))
+        }
         "scratchpad" => Ok(BindAction::Scratchpad(arg.map(|s| s.to_string()))),
         "focus_next" => Ok(BindAction::FocusNext),
         "focus_prev" => Ok(BindAction::FocusPrev),
@@ -161,6 +165,12 @@ mod tests {
     fn test_parse_action_spawn() {
         let action = parse_action("spawn", Some("terminal")).unwrap();
         assert_eq!(action, BindAction::Spawn("terminal".into()));
+    }
+
+    #[test]
+    fn test_parse_action_exec() {
+        let action = parse_action("exec", Some("kitty")).unwrap();
+        assert_eq!(action, BindAction::Exec("kitty".into()));
     }
 
     #[test]

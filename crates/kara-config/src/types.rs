@@ -48,6 +48,7 @@ pub struct General {
     pub font: String,
     pub font_size: f32,
     pub border_px: i32,
+    pub border_radius: i32,
     pub gap_px: i32,
     pub default_mfact: f32,
     pub sync_workspaces: bool,
@@ -59,8 +60,9 @@ impl Default for General {
     fn default() -> Self {
         Self {
             font: "monospace".into(),
-            font_size: 11.0,
+            font_size: 14.0,
             border_px: 2,
+            border_radius: 4,
             gap_px: 8,
             default_mfact: 0.5,
             sync_workspaces: true,
@@ -100,45 +102,23 @@ impl Default for Theme {
 // ── Animations ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AnimationLevel {
-    None,
-    Light,
-    Heavy,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Easing {
-    Linear,
-    EaseIn,
-    EaseOut,
-    EaseInOut,
+pub enum AnimationPreset {
+    Instant,
+    Clean,
+    Swoosh,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct AnimationOverride {
-    pub duration_ms: u32,
-    pub easing: Easing,
-}
-
-#[derive(Debug, Clone)]
 pub struct Animations {
-    pub level: AnimationLevel,
-    pub window_open: Option<AnimationOverride>,
-    pub window_close: Option<AnimationOverride>,
-    pub workspace_switch: Option<AnimationOverride>,
-    pub scratchpad: Option<AnimationOverride>,
-    pub focus_border: Option<AnimationOverride>,
+    pub preset: AnimationPreset,
+    pub duration_ms: u32,
 }
 
 impl Default for Animations {
     fn default() -> Self {
         Self {
-            level: AnimationLevel::None,
-            window_open: None,
-            window_close: None,
-            workspace_switch: None,
-            scratchpad: None,
-            focus_border: None,
+            preset: AnimationPreset::Instant,
+            duration_ms: 150,
         }
     }
 }
@@ -317,6 +297,8 @@ impl ModMask {
 pub enum BindAction {
     /// Spawn a named command from the commands block
     Spawn(String),
+    /// Execute a raw shell command directly (no command lookup)
+    Exec(String),
     /// Toggle scratchpad (optionally a named one)
     Scratchpad(Option<String>),
     /// Built-in WM action

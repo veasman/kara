@@ -108,6 +108,8 @@ pub fn run(
         let now = Instant::now();
         if now.duration_since(last_status_refresh) >= Duration::from_secs(1) {
             state.status_cache.refresh(false);
+            state.bar_dirty = true;
+            state.check_config_changed();
             last_status_refresh = now;
         }
 
@@ -138,6 +140,12 @@ pub fn run(
         .ok();
         drop(framebuffer);
         backend.submit(None).expect("failed to submit");
+
+        // Tick animations
+        state.process_completed_animations();
+        if state.animations.has_active() {
+            state.apply_animation_offsets();
+        }
 
         // Dispatch
         display.dispatch_clients(&mut state).unwrap();

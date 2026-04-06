@@ -1,6 +1,8 @@
 mod actions;
+mod animation;
 mod backend_udev;
 mod backend_winit;
+mod cursor;
 mod input;
 mod ipc;
 mod layout;

@@ -10,9 +10,10 @@ use smithay::utils::{Size, Transform};
 
 /// Loaded wallpaper ready for GPU upload.
 pub struct Wallpaper {
-    pub rgba: Vec<u8>,
-    pub width: u32,
-    pub height: u32,
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+    cached_texture: Option<TextureBuffer<GlesTexture>>,
 }
 
 impl Wallpaper {
@@ -39,22 +40,26 @@ impl Wallpaper {
             rgba: data,
             width,
             height,
+            cached_texture: None,
         })
     }
 
-    /// Upload as a GlesTexture.
-    pub fn upload(&self, renderer: &mut GlesRenderer) -> Option<TextureBuffer<GlesTexture>> {
-        TextureBuffer::from_memory(
-            renderer,
-            &self.rgba,
-            Fourcc::Abgr8888,
-            Size::from((self.width as i32, self.height as i32)),
-            false,
-            1,
-            Transform::Normal,
-            None,
-        )
-        .map_err(|e| tracing::error!("failed to upload wallpaper texture: {e:?}"))
-        .ok()
+    /// Get or create the GPU texture (cached after first upload).
+    pub fn texture(&mut self, renderer: &mut GlesRenderer) -> Option<&TextureBuffer<GlesTexture>> {
+        if self.cached_texture.is_none() {
+            self.cached_texture = TextureBuffer::from_memory(
+                renderer,
+                &self.rgba,
+                Fourcc::Abgr8888,
+                Size::from((self.width as i32, self.height as i32)),
+                false,
+                1,
+                Transform::Normal,
+                None,
+            )
+            .map_err(|e| tracing::error!("failed to upload wallpaper texture: {e:?}"))
+            .ok();
+        }
+        self.cached_texture.as_ref()
     }
 }

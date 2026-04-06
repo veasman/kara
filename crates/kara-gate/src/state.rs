@@ -90,10 +90,11 @@ pub struct Gate {
     pub workspaces: Vec<Workspace>,
     pub current_ws: usize,
     pub previous_ws: usize,
-    pub keybinds: Vec<Keybind>,
+    pub keybinds: std::sync::Arc<Vec<Keybind>>,
 
     // Multi-monitor: per-output state
     pub outputs: Vec<OutputState>,
+    pub output_bounds: (i32, i32), // cached (max_x, max_y) for pointer clamping
     pub focused_output: usize,
 
     // Wallpaper
@@ -114,9 +115,32 @@ pub struct Gate {
 
     // Border rendering: cached geometry from last apply_layout
     pub border_rects: Vec<(smithay::utils::Rectangle<i32, Logical>, bool)>, // (rect, is_focused)
+    pub layout_dirty: bool,
+    // Cached border pixmap data per rect: (rgba_bytes, width, height)
+    pub border_cache: Vec<(Vec<u8>, u32, u32)>,
+    pub border_offsets: Vec<(f64, f64)>,
+
+    // Animation
+    pub animations: crate::animation::AnimationManager,
+    pub pending_sends: Vec<(Window, usize)>,
+    // Base positions from apply_layout(), keyed by window identity for offset calculation
+    pub window_base_positions: Vec<(Window, smithay::utils::Point<i32, Logical>)>,
 
     // Pointer location (tracked explicitly for relative motion from libinput)
     pub pointer_location: smithay::utils::Point<f64, Logical>,
+
+    // Bar rendering cache
+    pub bar_dirty: bool,
+    pub bar_cache: Option<(Vec<u8>, u32, u32)>, // (rgba_bytes, width, height)
+
+    // Cursor rendering
+    pub cursor_status: CursorImageStatus,
+    pub cursor_cache: Option<crate::cursor::CursorCache>,
+    pub cursor_last_moved: std::time::Instant,
+    pub cursor_idle_pos: smithay::utils::Point<f64, Logical>,
+
+    // Config auto-reload: cached mtime to detect file changes
+    pub config_mtime: Option<std::time::SystemTime>,
 
     // Backend-specific data (UdevData for udev, None for winit)
     #[allow(dead_code)]
@@ -136,11 +160,11 @@ impl Gate {
         let data_device_state = DataDeviceState::new::<Self>(&dh);
 
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
-        seat.add_keyboard(Default::default(), 200, 25).unwrap();
+        seat.add_keyboard(Default::default(), 500, 33).unwrap();
         seat.add_pointer();
 
         let config = kara_config::load_default_config();
-        let keybinds = crate::input::keybinds_from_config(&config);
+        let keybinds = std::sync::Arc::new(crate::input::keybinds_from_config(&config));
 
         let workspaces: Vec<Workspace> = (0..WORKSPACE_COUNT)
             .map(|id| {
@@ -164,7 +188,7 @@ impl Gate {
             config.rules.len(),
         );
 
-        let gate = Self {
+        let mut gate = Self {
             display_handle: dh,
             loop_signal,
             running: true,
@@ -188,6 +212,7 @@ impl Gate {
             keybinds,
             wallpaper: None,
             outputs: Vec::new(),
+            output_bounds: (800, 600),
             focused_output: 0,
             ipc_listener: kara_ipc::server::bind_socket().ok(),
             scratchpad_visible: false,
@@ -195,13 +220,27 @@ impl Gate {
             scratchpad_started: false,
             autostart_done: false,
             border_rects: Vec::new(),
+            layout_dirty: true,
+            border_cache: Vec::new(),
+            border_offsets: Vec::new(),
+            animations: crate::animation::AnimationManager::new(),
+            pending_sends: Vec::new(),
+            window_base_positions: Vec::new(),
+            bar_dirty: true,
+            bar_cache: None,
             pointer_location: (0.0, 0.0).into(),
+            cursor_status: CursorImageStatus::default_named(),
+            cursor_cache: None,
+            cursor_last_moved: std::time::Instant::now(),
+            cursor_idle_pos: (0.0, 0.0).into(),
+            config_mtime: Self::get_config_mtime(),
             backend_data: None,
         };
 
         // Apply environment variables and cursor theme
         gate.apply_environment();
         gate.apply_cursor_theme();
+        gate.load_cursor_theme();
 
         gate
     }
@@ -210,11 +249,12 @@ impl Gate {
     pub fn reload_config(&mut self) {
         tracing::info!("reloading config");
         self.config = kara_config::load_default_config();
-        self.keybinds = crate::input::keybinds_from_config(&self.config);
+        self.keybinds = std::sync::Arc::new(crate::input::keybinds_from_config(&self.config));
 
         // Re-apply environment and cursor theme
         self.apply_environment();
         self.apply_cursor_theme();
+        self.load_cursor_theme();
 
         // Apply general config to workspaces
         for ws in &mut self.workspaces {
@@ -238,6 +278,47 @@ impl Gate {
         );
 
         self.apply_layout();
+        self.config_mtime = Self::get_config_mtime();
+    }
+
+    /// Get the config file's mtime for change detection.
+    fn get_config_mtime() -> Option<std::time::SystemTime> {
+        std::fs::metadata(kara_config::default_config_path())
+            .and_then(|m| m.modified())
+            .ok()
+    }
+
+    /// Check if config file has changed and reload if so.
+    pub fn check_config_changed(&mut self) {
+        let current_mtime = Self::get_config_mtime();
+        if current_mtime != self.config_mtime {
+            tracing::info!("config file changed, auto-reloading");
+            self.reload_config();
+        }
+    }
+
+    /// Recompute cached output bounding box for pointer clamping.
+    fn recompute_output_bounds(&mut self) {
+        self.output_bounds = self.outputs.iter().fold((0i32, 0i32), |(mx, my), out| {
+            (mx.max(out.location.x + out.size.0), my.max(out.location.y + out.size.1))
+        });
+    }
+
+    // ── Cursor idle tracking ──────────────────────────────────────────
+
+    /// Update cursor idle state. Resets timer if pointer moved > 5px from idle position.
+    pub fn update_cursor_idle(&mut self) {
+        let dx = self.pointer_location.x - self.cursor_idle_pos.x;
+        let dy = self.pointer_location.y - self.cursor_idle_pos.y;
+        if dx * dx + dy * dy > 25.0 {
+            self.cursor_last_moved = std::time::Instant::now();
+            self.cursor_idle_pos = self.pointer_location;
+        }
+    }
+
+    /// Returns true if cursor has been idle for more than 1 second.
+    pub fn cursor_is_idle(&self) -> bool {
+        self.cursor_last_moved.elapsed() > std::time::Duration::from_secs(1)
     }
 
     // ── Output helpers (shims for backward compat + multi-monitor) ──
@@ -250,7 +331,6 @@ impl Gate {
     }
 
     /// Convenience: focused output's workarea.
-    #[allow(dead_code)]
     pub fn workarea(&self) -> Rectangle<i32, Logical> {
         self.outputs.get(self.focused_output)
             .map(|o| o.workarea)
@@ -269,6 +349,7 @@ impl Gate {
         };
         self.recompute_workarea_for(&mut out_state);
         self.outputs.push(out_state);
+        self.recompute_output_bounds();
     }
 
     /// Set the output size and recompute work area for a specific output.
@@ -285,6 +366,7 @@ impl Gate {
                 (w, area_h.max(0)).into(),
             );
         }
+        self.recompute_output_bounds();
     }
 
     /// Recompute workarea for a single output state.
@@ -384,7 +466,10 @@ impl Gate {
     /// Apply the tiling layout across all outputs.
     /// Each output shows its effective workspace. Windows are positioned in global coordinates.
     pub fn apply_layout(&mut self) {
+        self.layout_dirty = true;
+        self.bar_dirty = true;
         self.border_rects.clear();
+        self.window_base_positions.clear();
 
         // Collect which workspaces are visible on which outputs
         let output_ws: Vec<(usize, (i32, i32), Rectangle<i32, Logical>, Point<i32, Logical>, Option<Window>)> =
@@ -447,14 +532,79 @@ impl Gate {
                         toplevel.send_configure();
                     }
                     self.space.map_element(geom.window.clone(), geom.rect.loc, false);
+                    self.window_base_positions.push((geom.window.clone(), geom.rect.loc));
 
                     if let Some(br) = geom.border_rect {
+                        // Store border with index matching window_base_positions
                         self.border_rects.push((br, geom.is_focused));
                     }
                 } else {
                     self.space.unmap_elem(&geom.window);
                 }
             }
+        }
+    }
+
+    /// Re-position windows and borders with current animation offsets.
+    /// Uses stored base positions from apply_layout() — no compounding.
+    pub fn apply_animation_offsets(&mut self) {
+        // Re-map windows from their base positions + current animation offset
+        for (window, base_pos) in &self.window_base_positions {
+            if let Some((dx, dy)) = self.animations.offset_for(window) {
+                let offset_loc: Point<i32, Logical> =
+                    (base_pos.x + dx as i32, base_pos.y + dy as i32).into();
+                self.space.map_element(window.clone(), offset_loc, false);
+            }
+        }
+
+        // Build border offsets — border_rects and window_base_positions are in the same order
+        // (both built during apply_layout iteration), so indices correspond 1:1.
+        self.border_offsets.clear();
+        for (i, _) in self.border_rects.iter().enumerate() {
+            let offset = self.window_base_positions.get(i)
+                .and_then(|(window, _)| self.animations.offset_for(window))
+                .unwrap_or((0.0, 0.0));
+            self.border_offsets.push(offset);
+        }
+    }
+
+    /// Process deferred workspace sends after out-animations complete.
+    /// Also snaps completed in-animations back to their base positions.
+    pub fn process_completed_animations(&mut self) {
+        let to_unmap = self.animations.tick();
+
+        if to_unmap.is_empty() && !self.animations.has_active() && !self.pending_sends.is_empty() {
+            // Safety: if no animations but pending sends remain, flush them
+        }
+
+        let mut needs_relayout = false;
+
+        for window in &to_unmap {
+            self.space.unmap_elem(window);
+
+            // Check if this window has a pending send
+            if let Some(pos) = self.pending_sends.iter().position(|(w, _)| w == window) {
+                let (window, target_ws) = self.pending_sends.remove(pos);
+                for ws in &mut self.workspaces {
+                    ws.remove_client(&window);
+                }
+                if target_ws < self.workspaces.len() {
+                    self.workspaces[target_ws].add_client(window);
+                }
+                needs_relayout = true;
+            }
+        }
+
+        // Snap all non-animated windows back to their base positions
+        for (window, base_pos) in &self.window_base_positions {
+            if self.animations.offset_for(window).is_none() {
+                self.space.map_element(window.clone(), *base_pos, false);
+            }
+        }
+
+        if needs_relayout {
+            self.apply_layout();
+            self.apply_focus();
         }
     }
 
@@ -584,11 +734,26 @@ impl XdgShellHandler for Gate {
         let ws_idx = target_ws.unwrap_or_else(|| self.effective_ws(self.focused_output));
 
         // Add to workspace with floating state
-        self.workspaces[ws_idx].add_client_floating(window, should_float);
+        self.workspaces[ws_idx].add_client_floating(window.clone(), should_float);
 
         // Re-layout and focus
         self.apply_layout();
         self.apply_focus();
+
+        // Animate window in
+        let preset = self.config.animations.preset;
+        if preset != kara_config::AnimationPreset::Instant {
+            if let Some(loc) = self.space.element_location(&window) {
+                let geom = window.geometry();
+                let wa = self.workarea();
+                self.animations.animate_in(
+                    window, preset, self.config.animations.duration_ms,
+                    loc.x, loc.y, geom.size.w, geom.size.h,
+                    wa.loc.x, wa.loc.y, wa.size.w, wa.size.h,
+                    crate::animation::SlideDirection::Auto,
+                );
+            }
+        }
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
@@ -598,6 +763,7 @@ impl XdgShellHandler for Gate {
         }).cloned();
 
         if let Some(window) = target {
+            self.animations.cancel(&window);
             self.space.unmap_elem(&window);
 
             // Check scratchpad windows
@@ -652,7 +818,9 @@ impl SeatHandler for Gate {
     }
 
     fn focus_changed(&mut self, _seat: &Seat<Self>, _focused: Option<&Self::KeyboardFocus>) {}
-    fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        self.cursor_status = image;
+    }
 }
 
 impl SelectionHandler for Gate {

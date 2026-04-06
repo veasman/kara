@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 use smithay::backend::drm::compositor::{DrmCompositor, FrameFlags};
@@ -101,6 +101,8 @@ struct OutputInstance {
         DrmDeviceFd,
     >,
     output: Output,
+    crtc: crtc::Handle,
+    frame_pending: bool,
 }
 
 pub fn run(
@@ -267,6 +269,8 @@ pub fn run(
         output_instances.push(OutputInstance {
             drm_compositor,
             output,
+            crtc: crtc_handle,
+            frame_pending: false,
         });
 
         x_offset += mode_size.0 as i32;
@@ -317,12 +321,17 @@ pub fn run(
         })
         .expect("failed to insert session source");
 
-    // DRM device notifier
+    // DRM device notifier — vblank signals per-CRTC frame completion
+    let vblank_crtcs: Arc<std::sync::Mutex<Vec<crtc::Handle>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let vblank_crtcs_clone = vblank_crtcs.clone();
     loop_handle
         .insert_source(drm_notifier, move |event, _metadata, _state: &mut Gate| {
             match event {
                 DrmEvent::VBlank(crtc) => {
-                    tracing::trace!("vblank on crtc {:?}", crtc);
+                    if let Ok(mut crtcs) = vblank_crtcs_clone.lock() {
+                        crtcs.push(crtc);
+                    }
                 }
                 DrmEvent::Error(err) => {
                     tracing::error!("DRM error: {err}");
@@ -369,6 +378,8 @@ pub fn run(
             Timer::from_duration(Duration::from_secs(1)),
             |_deadline, _, state: &mut Gate| {
                 state.status_cache.refresh(false);
+                state.bar_dirty = true;
+                state.check_config_changed();
                 TimeoutAction::ToDuration(Duration::from_secs(1))
             },
         )
@@ -379,9 +390,17 @@ pub fn run(
         render_frame(instance, &mut renderer, &mut state, idx);
     }
 
-    let mut last_render = Instant::now();
-
     loop {
+        // 1. Dispatch events FIRST — process input, vblank, timers, wayland clients.
+        //    This ensures input state is up-to-date before we render.
+        display.dispatch_clients(&mut state).unwrap();
+        display.flush_clients().unwrap();
+
+        event_loop
+            .dispatch(Some(Duration::from_millis(1)), &mut state)
+            .expect("event loop error");
+
+        // 2. Housekeeping
         state.poll_ipc();
 
         if signal_flag.swap(false, std::sync::atomic::Ordering::Relaxed) {
@@ -394,7 +413,25 @@ pub fn run(
             break;
         }
 
-        // Send frame callbacks per output
+        // 3. Process vblank events — acknowledge completed frames per-CRTC
+        if let Ok(mut crtcs) = vblank_crtcs.lock() {
+            for vblank_crtc in crtcs.drain(..) {
+                for instance in output_instances.iter_mut() {
+                    if instance.crtc == vblank_crtc && instance.frame_pending {
+                        let _ = instance.drm_compositor.frame_submitted();
+                        instance.frame_pending = false;
+                    }
+                }
+            }
+        }
+
+        // 4. Tick animations
+        state.process_completed_animations();
+        if state.animations.has_active() {
+            state.apply_animation_offsets();
+        }
+
+        // 5. Send frame callbacks
         let time = state.clock.now();
         for out_state in &state.outputs {
             let output = &out_state.output;
@@ -405,22 +442,12 @@ pub fn run(
             });
         }
 
-        // Render all outputs at ~60fps
-        let now = Instant::now();
-        if now.duration_since(last_render) >= Duration::from_millis(16) {
-            for (idx, instance) in output_instances.iter_mut().enumerate() {
-                let _ = instance.drm_compositor.frame_submitted();
+        // 6. Render outputs not waiting for a pending frame
+        for (idx, instance) in output_instances.iter_mut().enumerate() {
+            if !instance.frame_pending {
                 render_frame(instance, &mut renderer, &mut state, idx);
             }
-            last_render = now;
         }
-
-        display.dispatch_clients(&mut state).unwrap();
-        display.flush_clients().unwrap();
-
-        event_loop
-            .dispatch(Some(Duration::from_millis(16)), &mut state)
-            .expect("event loop error");
     }
 }
 
@@ -444,9 +471,15 @@ fn render_frame(
     };
 
     let mut elements: Vec<DrmRenderElement> =
-        Vec::with_capacity(custom_elements.len() + space_elements.len());
+        Vec::with_capacity(custom_elements.len() + space_elements.len() + 1);
     elements.extend(custom_elements.into_iter().map(DrmRenderElement::Texture));
     elements.extend(space_elements.into_iter().map(DrmRenderElement::Space));
+
+    // Software cursor — rendered on top of everything.
+    // Using Kind::Cursor allows DRM compositor to use cursor plane if available.
+    if let Some(cursor_elem) = crate::cursor::build_cursor_element(state, renderer, output_idx) {
+        elements.insert(0, DrmRenderElement::Texture(cursor_elem));
+    }
 
     match instance.drm_compositor.render_frame(
         renderer,
@@ -456,8 +489,9 @@ fn render_frame(
     ) {
         Ok(result) => {
             if !result.is_empty {
-                if let Err(e) = instance.drm_compositor.queue_frame(()) {
-                    tracing::error!("failed to queue frame: {e:?}");
+                match instance.drm_compositor.queue_frame(()) {
+                    Ok(()) => instance.frame_pending = true,
+                    Err(e) => tracing::error!("failed to queue frame: {e:?}"),
                 }
             }
         }

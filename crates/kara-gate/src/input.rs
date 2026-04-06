@@ -56,6 +56,7 @@ fn convert_action(action: &kara_config::BindAction) -> Action {
     use kara_config::BindAction;
     match action {
         BindAction::Spawn(name) => Action::Spawn(name.clone()),
+        BindAction::Exec(cmd) => Action::SpawnRaw(cmd.clone()),
         BindAction::Scratchpad(name) => Action::ToggleScratchpad(name.clone()),
         BindAction::FocusNext => Action::FocusNext,
         BindAction::FocusPrev => Action::FocusPrev,
@@ -103,7 +104,7 @@ impl Gate {
 
         let keyboard = self.seat.get_keyboard().unwrap();
 
-        // Clone keybinds to avoid borrow conflict in the closure
+        // Arc clone — pointer copy, no allocation
         let keybinds = self.keybinds.clone();
         let pressed = key_state == KeyState::Pressed;
 
@@ -115,9 +116,9 @@ impl Gate {
             time,
             |_state, mods, handle| {
                 if pressed {
-                    let sym = handle.modified_sym();
-                    for bind in &keybinds {
-                        if bind.sym == sym.raw() && bind.mods.matches(mods) {
+                    let raw_syms = handle.raw_syms();
+                    for bind in keybinds.iter() {
+                        if raw_syms.iter().any(|sym| bind.sym == sym.raw()) && bind.mods.matches(mods) {
                             return FilterResult::Intercept(bind.action.clone());
                         }
                     }
@@ -136,13 +137,11 @@ impl Gate {
         event: B::PointerMotionEvent,
     ) {
         let delta = event.delta();
-        // Clamp to global bounding box of all outputs
-        let (max_x, max_y) = self.outputs.iter().fold((0i32, 0i32), |(mx, my), out| {
-            (mx.max(out.location.x + out.size.0), my.max(out.location.y + out.size.1))
-        });
+        let (max_x, max_y) = self.output_bounds;
         let new_x = (self.pointer_location.x + delta.x).clamp(0.0, max_x as f64 - 1.0);
         let new_y = (self.pointer_location.y + delta.y).clamp(0.0, max_y as f64 - 1.0);
         self.pointer_location = (new_x, new_y).into();
+        self.update_cursor_idle();
 
         // Update focused output based on pointer position
         let new_output = self.output_for_point(self.pointer_location);
@@ -193,6 +192,7 @@ impl Gate {
 
         let pos = event.position_transformed(output_geo.size);
         self.pointer_location = pos;
+        self.update_cursor_idle();
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().unwrap();
 
