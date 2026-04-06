@@ -704,6 +704,7 @@ impl Gate {
                     self.scratchpad_border_rects.clear();
                     self.scratchpad_border_cache.clear();
                     self.scratchpad_border_offsets.clear();
+                    needs_relayout = true;
                 }
             }
         }
