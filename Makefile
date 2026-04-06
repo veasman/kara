@@ -54,11 +54,9 @@ install: release
 	install -m 0644 session/kara.desktop "$(DESTDIR)$(DATADIR)/wayland-sessions/kara.desktop"
 	install -d "$(DESTDIR)$(DATADIR)/licenses/kara"
 	install -m 0644 LICENSE "$(DESTDIR)$(DATADIR)/licenses/kara/LICENSE"
-
-install-config:
 	@mkdir -p "$(HOME)/.config/kara"
 	@if [ -f "$(HOME)/.config/kara/kara-gate.conf" ]; then \
-		echo "Config already exists: ~/.config/kara/kara-gate.conf (not overwriting)"; \
+		echo "Config exists: ~/.config/kara/kara-gate.conf (not overwriting)"; \
 	else \
 		install -m 0644 example/kara-gate.conf "$(HOME)/.config/kara/kara-gate.conf"; \
 		echo "Installed config: ~/.config/kara/kara-gate.conf"; \
