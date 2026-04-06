@@ -132,6 +132,7 @@ pub struct Gate {
     pub border_cache: Vec<(Vec<u8>, u32, u32)>,
     pub scratchpad_border_cache: Vec<(Vec<u8>, u32, u32)>,
     pub border_offsets: Vec<(f64, f64)>,
+    pub scratchpad_border_offsets: Vec<(f64, f64)>,
 
     // Animation
     pub animations: crate::animation::AnimationManager,
@@ -252,6 +253,7 @@ impl Gate {
             scratchpad_layout_dirty: false,
             border_cache: Vec::new(),
             scratchpad_border_cache: Vec::new(),
+            scratchpad_border_offsets: Vec::new(),
             border_offsets: Vec::new(),
             animations: crate::animation::AnimationManager::new(),
             pending_sends: Vec::new(),
@@ -659,6 +661,18 @@ impl Gate {
                 .and_then(|(window, _)| self.animations.offset_for(window))
                 .unwrap_or((0.0, 0.0));
             self.border_offsets.push(offset);
+        }
+
+        // Build scratchpad border offsets from scratchpad windows
+        self.scratchpad_border_offsets.clear();
+        // Scratchpad borders correspond to visible scratchpad windows in layout order.
+        // Find the scratchpad window base positions (appended after regular ones)
+        let regular_count = self.border_rects.len();
+        for (i, _) in self.scratchpad_border_rects.iter().enumerate() {
+            let offset = self.window_base_positions.get(regular_count + i)
+                .and_then(|(window, _)| self.animations.offset_for(window))
+                .unwrap_or((0.0, 0.0));
+            self.scratchpad_border_offsets.push(offset);
         }
     }
 

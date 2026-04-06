@@ -287,7 +287,7 @@ pub fn build_scratchpad_borders(
             state.config.theme.accent, state.config.theme.border,
         );
         state.scratchpad_layout_dirty = false;
-        elements.extend(render_border_set(&state.scratchpad_border_rects, &state.scratchpad_border_cache, &[], state.outputs.get(output_idx), renderer));
+        elements.extend(render_border_set(&state.scratchpad_border_rects, &state.scratchpad_border_cache, &state.scratchpad_border_offsets, state.outputs.get(output_idx), renderer));
     }
 
     elements
