@@ -12,6 +12,7 @@ depends=(
 	'libinput'
 	'seatd'
 	'fontconfig'
+	'dbus'
 )
 makedepends=(
 	'base-devel'
@@ -23,9 +24,11 @@ optdepends=(
 	'wireplumber: volume module (wpctl)'
 	'playerctl: media module'
 	'brightnessctl: brightness keybinds'
+	'wl-clipboard: screenshot clipboard copy'
 	'kitty: default terminal'
+	'bibata-cursor-theme: default cursor theme'
 )
-provides=('kara' 'kara-gate')
+provides=('kara' 'kara-gate' 'kara-summon' 'kara-glimpse' 'kara-whisper')
 conflicts=('kara' 'kara-gate')
 source=("git+https://github.com/veasman/kara.git")
 sha256sums=('SKIP')

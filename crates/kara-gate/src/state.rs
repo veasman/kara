@@ -13,6 +13,7 @@ use smithay::reexports::calloop::LoopSignal;
 use smithay::reexports::wayland_server::{Client, Display, DisplayHandle};
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_buffer;
+use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::output::Output;
 use smithay::utils::{Clock, Logical, Monotonic, Point, Rectangle, Serial, SERIAL_COUNTER};
@@ -21,6 +22,7 @@ use smithay::wayland::compositor::{self, CompositorClientState, CompositorHandle
 use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::selection::data_device::{
     ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
+    set_data_device_focus,
 };
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
@@ -30,6 +32,7 @@ use smithay::wayland::shell::wlr_layer::{
     Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState,
 };
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
+use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
 use crate::input::Keybind;
@@ -82,6 +85,8 @@ pub struct Gate {
     pub shm_state: ShmState,
     pub seat_state: SeatState<Self>,
     pub data_device_state: DataDeviceState,
+    #[allow(dead_code)]
+    pub output_manager_state: OutputManagerState,
     pub seat: Seat<Self>,
 
     // Layer surfaces (kara-summon, kara-whisper, etc.)
@@ -152,6 +157,7 @@ pub struct Gate {
     // Cursor rendering
     pub cursor_status: CursorImageStatus,
     pub cursor_cache: Option<crate::cursor::CursorCache>,
+    pub named_cursor_cache: std::collections::HashMap<smithay::input::pointer::CursorIcon, crate::cursor::CursorCache>,
     pub cursor_last_moved: std::time::Instant,
     pub cursor_idle_pos: smithay::utils::Point<f64, Logical>,
 
@@ -162,6 +168,10 @@ pub struct Gate {
     #[allow(dead_code)]
     pub backend_data: Option<Box<dyn std::any::Any>>,
     pub screenshot_path: Option<String>,
+    pub screenshot_region: Option<(i32, i32, i32, i32)>,
+
+    // Keybind overlay
+    pub keybind_overlay_visible: bool,
 }
 
 impl Gate {
@@ -175,6 +185,7 @@ impl Gate {
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
+        let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
 
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
         seat.add_keyboard(Default::default(), 500, 33).unwrap();
@@ -232,6 +243,7 @@ impl Gate {
             shm_state,
             seat_state,
             data_device_state,
+            output_manager_state,
             seat,
             layer_surfaces: Vec::new(),
             space: Space::default(),
@@ -267,11 +279,14 @@ impl Gate {
             pointer_location: (0.0, 0.0).into(),
             cursor_status: CursorImageStatus::default_named(),
             cursor_cache: None,
+            named_cursor_cache: std::collections::HashMap::new(),
             cursor_last_moved: std::time::Instant::now(),
             cursor_idle_pos: (0.0, 0.0).into(),
             config_mtime: Self::get_config_mtime(),
             backend_data: None,
             screenshot_path: None,
+            screenshot_region: None,
+            keybind_overlay_visible: false,
         };
 
         // Apply environment variables and cursor theme
@@ -376,6 +391,9 @@ impl Gate {
 
     /// Add an output and compute its workarea.
     pub fn add_output(&mut self, output: Output, size: (i32, i32), location: Point<i32, Logical>) {
+        // Advertise wl_output global to Wayland clients
+        output.create_global::<Self>(&self.display_handle);
+
         let mut out_state = OutputState {
             output,
             current_ws: 0,
@@ -904,6 +922,14 @@ impl XdgShellHandler for Gate {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        // Send initial configure with workarea size so clients that draw
+        // before ACKing (e.g. Floorp) get a reasonable size immediately.
+        let wa = self.workarea();
+        surface.with_pending_state(|state| {
+            state.size = Some(wa.size);
+        });
+        surface.send_configure();
+
         let window = Window::new_wayland_window(surface.clone());
 
         // Get app_id for rule matching
@@ -1060,7 +1086,11 @@ impl SeatHandler for Gate {
         &mut self.seat_state
     }
 
-    fn focus_changed(&mut self, _seat: &Seat<Self>, _focused: Option<&Self::KeyboardFocus>) {}
+    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&Self::KeyboardFocus>) {
+        let dh = self.display_handle.clone();
+        let client = focused.and_then(|s| dh.get_client(s.id()).ok());
+        set_data_device_focus(&dh, seat, client);
+    }
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
         self.cursor_status = image;
     }

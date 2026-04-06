@@ -27,6 +27,10 @@ pub enum Request {
 
     // Screenshot
     Screenshot,
+    ScreenshotRegion { x: i32, y: i32, w: i32, h: i32 },
+
+    // Queries
+    GetWindowGeometries,
 
     // Event subscription
     Subscribe,
@@ -56,6 +60,9 @@ pub enum Response {
     ScreenshotDone {
         path: String,
     },
+    WindowGeometries {
+        windows: Vec<WindowGeometry>,
+    },
 }
 
 /// Compositor event pushed to subscribed tools.
@@ -68,6 +75,16 @@ pub enum Event {
     FocusChanged { title: String, app_id: String },
     ThemeReloaded,
     OutputChanged,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowGeometry {
+    pub app_id: String,
+    pub title: String,
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

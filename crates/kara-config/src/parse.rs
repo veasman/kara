@@ -200,6 +200,7 @@ enum Block {
     Environment,
     Input,
     InputDevice,
+    Monitor(usize),
 }
 
 fn root_block_name(name: &str) -> Option<Block> {
@@ -671,6 +672,54 @@ fn parse_environment_line(tokens: &[String], env: &mut Vec<EnvDirective>, ctx: &
     }
 }
 
+fn parse_monitor_line(tokens: &[String], mon: &mut MonitorConfig, _ctx: &ParseContext) {
+    if tokens.len() < 2 { return; }
+    match tokens[0].as_str() {
+        "resolution" | "mode" | "res" => {
+            let s = &tokens[1];
+            if let Some((w, h)) = s.split_once('x')
+                .and_then(|(w, h)| Some((w.parse::<i32>().ok()?, h.parse::<i32>().ok()?)))
+            {
+                mon.resolution = Some((w, h));
+            } else if tokens.len() >= 3 {
+                if let (Ok(w), Ok(h)) = (tokens[1].parse::<i32>(), tokens[2].parse::<i32>()) {
+                    mon.resolution = Some((w, h));
+                }
+            }
+        }
+        "refresh" | "hz" => {
+            if let Ok(v) = tokens[1].parse::<u32>() {
+                mon.refresh = Some(v);
+            }
+        }
+        "position" | "pos" => {
+            let s = &tokens[1];
+            if let Some((x, y)) = s.split_once(',')
+                .or_else(|| s.split_once('x'))
+                .and_then(|(x, y)| Some((x.parse::<i32>().ok()?, y.parse::<i32>().ok()?)))
+            {
+                mon.position = Some((x, y));
+            } else if tokens.len() >= 3 {
+                if let (Ok(x), Ok(y)) = (tokens[1].parse::<i32>(), tokens[2].parse::<i32>()) {
+                    mon.position = Some((x, y));
+                }
+            }
+        }
+        "scale" => {
+            if let Ok(v) = tokens[1].parse::<f64>() {
+                mon.scale = Some(v);
+            }
+        }
+        "enabled" | "enable" => {
+            mon.enabled = matches!(tokens[1].as_str(), "true" | "yes" | "1");
+        }
+        "disabled" | "disable" => {
+            mon.enabled = !matches!(tokens[1].as_str(), "true" | "yes" | "1");
+        }
+        _ => {}
+    }
+}
+
 fn parse_input_device_line(
     tokens: &[String],
     device: &mut InputDevice,
@@ -886,6 +935,22 @@ fn load_file_recursive(
                     continue;
                 }
 
+                if block_tokens.first().map(|s| s.as_str()) == Some("monitor") {
+                    let mon_name = block_tokens.get(1).map(|s| s.trim_matches('"').to_string())
+                        .unwrap_or_default();
+                    config.monitors.push(MonitorConfig {
+                        name: mon_name,
+                        resolution: None,
+                        refresh: None,
+                        position: None,
+                        scale: None,
+                        enabled: true,
+                    });
+                    let idx = config.monitors.len() - 1;
+                    block = Block::Monitor(idx);
+                    continue;
+                }
+
                 match root_block_name(name) {
                     Some(b) => {
                         block = b;
@@ -982,6 +1047,11 @@ fn load_file_recursive(
             Block::InputDevice => {
                 if let Some(dev) = config.input.last_mut() {
                     parse_input_device_line(&tokens, dev, &ctx);
+                }
+            }
+            Block::Monitor(idx) => {
+                if let Some(mon) = config.monitors.get_mut(idx) {
+                    parse_monitor_line(&tokens, mon, &ctx);
                 }
             }
             Block::None => unreachable!(),

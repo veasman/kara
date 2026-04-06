@@ -53,6 +53,8 @@ install:
 		install -m 0755 "target/release/kara-summon" "$(DESTDIR)$(BINDIR)/kara-summon" || true
 	@test -f "target/release/kara-glimpse" && \
 		install -m 0755 "target/release/kara-glimpse" "$(DESTDIR)$(BINDIR)/kara-glimpse" || true
+	@test -f "target/release/kara-whisper" && \
+		install -m 0755 "target/release/kara-whisper" "$(DESTDIR)$(BINDIR)/kara-whisper" || true
 	install -d "$(DESTDIR)$(APPDIR)"
 	install -m 0644 example/kara-gate.conf "$(DESTDIR)$(APPDIR)/kara-gate.conf.example"
 	install -d "$(DESTDIR)$(DATADIR)/wayland-sessions"
@@ -69,6 +71,9 @@ install:
 
 uninstall:
 	rm -f "$(DESTDIR)$(BINDIR)/$(TARGET)"
+	rm -f "$(DESTDIR)$(BINDIR)/kara-summon"
+	rm -f "$(DESTDIR)$(BINDIR)/kara-glimpse"
+	rm -f "$(DESTDIR)$(BINDIR)/kara-whisper"
 	rm -f "$(DESTDIR)$(APPDIR)/kara-gate.conf.example"
 	rm -f "$(DESTDIR)$(DATADIR)/wayland-sessions/kara.desktop"
 	rm -f "$(DESTDIR)$(DATADIR)/licenses/kara/LICENSE"

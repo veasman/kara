@@ -164,9 +164,9 @@ impl BarRenderer {
 
     fn measure_workspaces(&mut self, ctx: &ModuleContext) -> u32 {
         if ctx.icons {
-            let dot_w = self.text.font_size as u32;
+            let dot_size = (self.text.font_size * 0.45) as u32;
             let gap = (self.text.font_size * 0.4) as u32;
-            dot_w * 9 + gap * 8
+            dot_size * 9 + gap * 8
         } else {
             let digit_w = self.text.measure("0");
             let gap = (self.text.font_size * 0.3) as u32;
@@ -336,9 +336,23 @@ fn draw_volume_bar(
 
     let fill_w = (w * pct / 100.0).max(0.0);
     if fill_w > 0.0 {
-        let fill_color = if volume.muted { theme.text_muted } else { theme.accent };
+        let fill_color = if volume.muted {
+            theme.text_muted
+        } else {
+            lerp_color_u32(theme.text_muted, theme.accent, pct / 100.0)
+        };
         fill_rounded_rect(pixmap, x, y, fill_w, h, radius, color_from_u32(fill_color));
     }
+}
+
+fn lerp_color_u32(a: u32, b: u32, t: f32) -> u32 {
+    let t = t.clamp(0.0, 1.0);
+    let lerp = |shift: u32| -> u32 {
+        let ca = ((a >> shift) & 0xFF) as f32;
+        let cb = ((b >> shift) & 0xFF) as f32;
+        (ca + (cb - ca) * t).round().clamp(0.0, 255.0) as u32
+    };
+    (lerp(16) << 16) | (lerp(8) << 8) | lerp(0)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────

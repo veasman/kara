@@ -1,11 +1,12 @@
 use smithay::backend::input::{
-    AbsolutePositionEvent, ButtonState, Event, InputEvent, KeyState, KeyboardKeyEvent,
-    PointerButtonEvent, PointerMotionEvent,
+    AbsolutePositionEvent, Axis, ButtonState, Event, InputEvent, KeyState, KeyboardKeyEvent,
+    PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
 };
-use smithay::desktop::WindowSurfaceType;
+use smithay::desktop::{WindowSurfaceType, layer_map_for_output};
 use smithay::input::keyboard::{FilterResult, ModifiersState};
-use smithay::input::pointer::{ButtonEvent, MotionEvent};
+use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::utils::SERIAL_COUNTER;
+use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 
 use crate::actions::Action;
 use crate::state::Gate;
@@ -74,6 +75,7 @@ fn convert_action(action: &kara_config::BindAction) -> Action {
         BindAction::KillClient => Action::KillClient,
         BindAction::Reload => Action::Reload,
         BindAction::Quit => Action::Quit,
+        BindAction::ShowKeybinds => Action::ShowKeybinds,
         BindAction::ViewWs(idx) => Action::ViewWs(*idx),
         BindAction::SendWs(idx) => Action::SendWs(*idx),
     }
@@ -89,6 +91,7 @@ impl Gate {
             InputEvent::PointerMotion { event } => self.handle_pointer_motion_relative::<B>(event),
             InputEvent::PointerMotionAbsolute { event } => self.handle_pointer_motion_absolute::<B>(event),
             InputEvent::PointerButton { event } => self.handle_pointer_button::<B>(event),
+            InputEvent::PointerAxis { event } => self.handle_pointer_axis::<B>(event),
             _ => {}
         }
     }
@@ -127,9 +130,86 @@ impl Gate {
             },
         );
 
+        let was_bound = action.is_some();
         if let Some(action) = action {
             self.dispatch_action(action);
         }
+
+        // Dismiss keybind overlay on any non-bound keypress
+        if pressed && self.keybind_overlay_visible && !was_bound {
+            self.keybind_overlay_visible = false;
+            self.layout_dirty = true;
+        }
+    }
+
+    /// Find the surface under the pointer, checking layer surfaces (overlay/top) first,
+    /// then falling back to windows in the space.
+    fn surface_under_pointer(
+        &self,
+        pos: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) -> Option<(
+        smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+        smithay::utils::Point<f64, smithay::utils::Logical>,
+    )> {
+        // Check overlay/top layer surfaces first (kara-summon, kara-glimpse, etc.)
+        if let Some(output) = self.outputs.get(self.focused_output) {
+            let map = layer_map_for_output(&output.output);
+            // Convert to output-local coordinates for layer map queries
+            let out_loc = output.location;
+            let local_pos: smithay::utils::Point<f64, smithay::utils::Logical> = (
+                pos.x - out_loc.x as f64,
+                pos.y - out_loc.y as f64,
+            ).into();
+
+            // Check Overlay then Top layers — iterate all layers and do manual hit-test
+            for layer_type in &[WlrLayer::Overlay, WlrLayer::Top] {
+                for layer in map.layers_on(*layer_type).rev() {
+                    let geo = map.layer_geometry(layer);
+                    if let Some(geo) = geo {
+                        let geo_f = geo.to_f64();
+                        if geo_f.contains(local_pos) {
+                            let surface_local = (
+                                local_pos.x - geo.loc.x as f64,
+                                local_pos.y - geo.loc.y as f64,
+                            );
+                            // Try surface_under first (handles subsurfaces/popups)
+                            if let Some((surface, surface_loc)) =
+                                layer.surface_under(surface_local, WindowSurfaceType::ALL)
+                            {
+                                return Some((
+                                    surface,
+                                    (
+                                        surface_loc.x as f64 + geo.loc.x as f64 + out_loc.x as f64,
+                                        surface_loc.y as f64 + geo.loc.y as f64 + out_loc.y as f64,
+                                    )
+                                        .into(),
+                                ));
+                            }
+                            // Fallback: return the layer's root wl_surface directly
+                            // (handles cases where surface_under fails due to missing input region)
+                            return Some((
+                                layer.wl_surface().clone(),
+                                pos,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fall back to windows in the space
+        self.space
+            .element_under(pos)
+            .and_then(|(window, loc)| {
+                window
+                    .surface_under(
+                        (pos.x - loc.x as f64, pos.y - loc.y as f64),
+                        WindowSurfaceType::ALL,
+                    )
+                    .map(|(s, p)| {
+                        (s, (p.x as f64 + loc.x as f64, p.y as f64 + loc.y as f64).into())
+                    })
+            })
     }
 
     fn handle_pointer_motion_relative<B: smithay::backend::input::InputBackend>(
@@ -153,17 +233,7 @@ impl Gate {
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().unwrap();
 
-        let under = self.space.element_under(pos)
-            .and_then(|(window, loc)| {
-                window
-                    .surface_under(
-                        (pos.x - loc.x as f64, pos.y - loc.y as f64),
-                        WindowSurfaceType::ALL,
-                    )
-                    .map(|(s, p)| {
-                        (s, (p.x as f64 + loc.x as f64, p.y as f64 + loc.y as f64).into())
-                    })
-            });
+        let under = self.surface_under_pointer(pos);
 
         pointer.motion(
             self,
@@ -174,6 +244,7 @@ impl Gate {
                 time: Event::time_msec(&event),
             },
         );
+        pointer.frame(self);
     }
 
     fn handle_pointer_motion_absolute<B: smithay::backend::input::InputBackend>(
@@ -196,17 +267,7 @@ impl Gate {
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().unwrap();
 
-        let under = self.space.element_under(pos)
-            .and_then(|(window, loc)| {
-                window
-                    .surface_under(
-                        (pos.x - loc.x as f64, pos.y - loc.y as f64),
-                        WindowSurfaceType::ALL,
-                    )
-                    .map(|(s, p)| {
-                        (s, (p.x as f64 + loc.x as f64, p.y as f64 + loc.y as f64).into())
-                    })
-            });
+        let under = self.surface_under_pointer(pos);
 
         pointer.motion(
             self,
@@ -217,6 +278,7 @@ impl Gate {
                 time: Event::time_msec(&event),
             },
         );
+        pointer.frame(self);
     }
 
     fn handle_pointer_button<B: smithay::backend::input::InputBackend>(
@@ -244,5 +306,31 @@ impl Gate {
                 time: Event::time_msec(&event),
             },
         );
+        pointer.frame(self);
+    }
+
+    fn handle_pointer_axis<B: smithay::backend::input::InputBackend>(
+        &mut self,
+        event: B::PointerAxisEvent,
+    ) {
+        let pointer = self.seat.get_pointer().unwrap();
+        let mut frame = AxisFrame::new(Event::time_msec(&event));
+
+        if let Some(amount) = event.amount(Axis::Horizontal) {
+            frame = frame.value(Axis::Horizontal, amount);
+        } else if let Some(discrete) = event.amount_v120(Axis::Horizontal) {
+            frame = frame.v120(Axis::Horizontal, discrete as i32);
+        }
+
+        if let Some(amount) = event.amount(Axis::Vertical) {
+            frame = frame.value(Axis::Vertical, amount);
+        } else if let Some(discrete) = event.amount_v120(Axis::Vertical) {
+            frame = frame.v120(Axis::Vertical, discrete as i32);
+        }
+
+        frame = frame.source(event.source());
+
+        pointer.axis(self, frame);
+        pointer.frame(self);
     }
 }

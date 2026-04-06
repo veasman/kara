@@ -7,11 +7,24 @@ use std::io::{BufReader, BufWriter};
 use std::os::unix::net::UnixStream;
 
 use kara_ipc::frame::{read_message, write_message};
-use kara_ipc::message::{Request, Response, ThemeColors};
+use kara_ipc::message::{Request, Response, ThemeColors, WindowGeometry};
 
 use crate::state::Gate;
 
 impl Gate {
+    fn screenshot_output_path(&self) -> String {
+        let dir = dirs::picture_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+        std::fs::create_dir_all(&dir).ok();
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        dir.join(format!("kara-screenshot-{timestamp}.png"))
+            .to_string_lossy()
+            .to_string()
+    }
+
     /// Poll the IPC listener for new connections and handle requests.
     /// Called once per frame from the main loop.
     pub fn poll_ipc(&mut self) {
@@ -175,17 +188,53 @@ impl Gate {
             }
 
             Request::Screenshot => {
-                let dir = dirs::picture_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-                std::fs::create_dir_all(&dir).ok();
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let path = dir.join(format!("kara-screenshot-{timestamp}.png"));
-                let path_str = path.to_string_lossy().to_string();
+                let path_str = self.screenshot_output_path();
                 self.screenshot_path = Some(path_str.clone());
                 Response::ScreenshotDone { path: path_str }
+            }
+
+            Request::ScreenshotRegion { x, y, w, h } => {
+                let path_str = self.screenshot_output_path();
+                self.screenshot_path = Some(path_str.clone());
+                self.screenshot_region = Some((x, y, w, h));
+                Response::ScreenshotDone { path: path_str }
+            }
+
+            Request::GetWindowGeometries => {
+                let ws_idx = self.effective_ws(self.focused_output);
+                let ws = &self.workspaces[ws_idx];
+                let area = self.workarea();
+                let geos = crate::layout::layout_workspace(ws, area, self.config.general.border_px);
+                let windows: Vec<WindowGeometry> = geos.iter()
+                    .filter(|g| g.visible)
+                    .map(|g| {
+                        let (title, app_id) = g.window.toplevel()
+                            .map(|t| {
+                                smithay::wayland::compositor::with_states(t.wl_surface(), |states| {
+                                    let data = states.data_map
+                                        .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                                        .and_then(|d| d.lock().ok());
+                                    let title = data.as_ref()
+                                        .and_then(|d| d.title.clone())
+                                        .unwrap_or_default();
+                                    let app_id = data.as_ref()
+                                        .and_then(|d| d.app_id.clone())
+                                        .unwrap_or_default();
+                                    (title, app_id)
+                                })
+                            })
+                            .unwrap_or_default();
+                        WindowGeometry {
+                            app_id,
+                            title,
+                            x: g.rect.loc.x,
+                            y: g.rect.loc.y,
+                            w: g.rect.size.w,
+                            h: g.rect.size.h,
+                        }
+                    })
+                    .collect();
+                Response::WindowGeometries { windows }
             }
 
             Request::Subscribe | Request::Unsubscribe => {

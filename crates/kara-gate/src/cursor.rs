@@ -58,14 +58,40 @@ pub fn load_xcursor(theme_name: &str, icon_name: &str, size: u32) -> Option<Curs
 ///
 /// Returns None if cursor is hidden, not on this output, or theme unavailable.
 pub fn build_cursor_element(
-    state: &Gate,
+    state: &mut Gate,
     renderer: &mut GlesRenderer,
     output_idx: usize,
 ) -> Option<TextureRenderElement<GlesTexture>> {
-    // Don't render cursor if hidden or idle
-    if matches!(state.cursor_status, CursorImageStatus::Hidden) || state.cursor_is_idle() {
+    // Don't render cursor if idle
+    if state.cursor_is_idle() {
         return None;
     }
+
+    // Determine which cursor cache to use based on cursor_status
+    let cache = match &state.cursor_status {
+        CursorImageStatus::Hidden => return None,
+
+        CursorImageStatus::Named(icon) => {
+            let icon = *icon;
+            // Load and cache named cursors on demand
+            if !state.named_cursor_cache.contains_key(&icon) {
+                let theme_name = state.config.general.cursor_theme
+                    .as_deref()
+                    .unwrap_or("default");
+                let size = state.config.general.cursor_size as u32;
+                if let Some(cache) = load_xcursor(theme_name, icon.name(), size) {
+                    state.named_cursor_cache.insert(icon, cache);
+                }
+            }
+            state.named_cursor_cache.get(&icon)
+        }
+
+        // Client-provided surface cursor — fall back to default cursor for now
+        // TODO: render the client's wl_surface as cursor (requires WaylandSurfaceRenderElement)
+        CursorImageStatus::Surface(_) => state.cursor_cache.as_ref(),
+    };
+
+    let cache = cache?;
 
     let out = state.outputs.get(output_idx)?;
     let out_rect = Rectangle::new(
@@ -80,8 +106,6 @@ pub fn build_cursor_element(
     if !out_rect.contains(pointer_point) {
         return None;
     }
-
-    let cache = state.cursor_cache.as_ref()?;
 
     let texture_buffer = TextureBuffer::from_memory(
         renderer,

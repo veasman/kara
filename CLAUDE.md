@@ -92,28 +92,21 @@ kara-glimpse    -> kara-ipc
 - **M5**: Single-monitor daily driver — done (environment, autostart, rules, floating, fullscreen, borders, cursor, scratchpad)
 - **M6**: Multi-monitor — done (per-output workspaces, hybrid sync, monitor actions, animations)
 - **M7**: Production backend — done (udev/DRM, libinput, libseat, xdg-decoration)
-- **M8**: First-party tools — pending (kara-summon, kara-whisper, kara-glimpse)
+- **M8**: First-party tools — in progress (kara-summon done, kara-whisper built, kara-glimpse interactive mode built)
 
 ## Picking Up Where We Left Off
 
-**Last session**: 2026-04-05.
+**Last session**: 2026-04-06.
 
 **What was done this session**:
-1. `exec` keybind action, `toggle_float` docs, scratchpad workarea centering
-2. Software cursor rendering (xcursor theme, auto-hide 1s/5px jitter)
-3. `mod+Shift+{1-9}` fix (raw_syms), config auto-reload (mtime polling)
-4. Border radius / rounded corners, key repeat tuning (500ms/33ms)
-5. Monitor + sync bar modules merged, CPU bar module added
-6. Clock icon fix, sync icon fix
-7. Animation system: instant/clean/swoosh presets, position-only transforms
-8. Per-CRTC vblank rendering, event-first loop ordering (input latency fix)
-9. Performance: wallpaper/border/bar texture caching, Arc keybinds, output bounds cache
-10. Named scratchpads as independent floating workspaces with own tiling
-11. Scratchpad action routing (focus/zoom/monocle/mfact route to scratchpad workspace)
-12. Dim overlay for visible scratchpads
+1. Fixed clipboard/paste: `focus_changed` callback now calls `set_data_device_focus`
+2. IPC additions: `GetWindowGeometries`, `ScreenshotRegion`, `WindowGeometry` struct
+3. kara-glimpse Phase 2: interactive screenshot selection (fullscreen overlay, window hover detection, click/drag region, `--quick` flag for old behavior)
+4. kara-whisper: notification daemon (freedesktop D-Bus via zbus, layer-shell rendering, urgency levels, auto-expiry)
+5. Region screenshot cropping in compositor (backend_udev.rs)
 
 **Next priorities**:
-1. M8: First-party tools (kara-summon, kara-whisper, kara-glimpse)
+1. Test kara-summon vim keys (Ctrl+n/j/p/k), kara-whisper with notify-send, kara-glimpse interactive mode
 2. GL shader support for opacity/scale animations (kara-beautify)
 3. Input device config wiring to libinput
 4. Scratchpad blur effect (needs GL shaders)
@@ -134,6 +127,8 @@ kara-glimpse    -> kara-ipc
 - `chrono 0.4` — clock module
 - `serde` / `serde_json` — IPC serialization
 - `xcursor 0.3` — cursor theme loading
+- `smithay-client-toolkit 0.19` — Wayland client toolkit (kara-summon, kara-glimpse, kara-whisper)
+- `zbus 4` — D-Bus (kara-whisper notifications interface)
 
 ## Code Conventions
 

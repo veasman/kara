@@ -75,6 +75,7 @@ pub fn parse_action(verb: &str, arg: Option<&str>) -> Result<BindAction, String>
         "kill_client" | "kill" => Ok(BindAction::KillClient),
         "reload" => Ok(BindAction::Reload),
         "quit" => Ok(BindAction::Quit),
+        "show_keybinds" | "keybinds" => Ok(BindAction::ShowKeybinds),
         "view_ws" => {
             let n: usize = arg
                 .ok_or("view_ws requires a workspace number")?

@@ -21,6 +21,7 @@ pub struct Config {
     pub keybinds: Vec<Keybind>,
     pub environment: Vec<EnvDirective>,
     pub input: Vec<InputDevice>,
+    pub monitors: Vec<MonitorConfig>,
 }
 
 impl Default for Config {
@@ -37,6 +38,7 @@ impl Default for Config {
             keybinds: Vec::new(),
             environment: Vec::new(),
             input: Vec::new(),
+            monitors: Vec::new(),
         }
     }
 }
@@ -182,12 +184,19 @@ pub struct Bar {
     pub icons: bool,
     pub colors: bool,
     pub minimal: bool,
+    /// Reserved: outer horizontal inset from screen edge (not yet wired)
     pub margin_x: i32,
+    /// Reserved: outer vertical inset from screen edge (not yet wired)
     pub margin_y: i32,
+    /// Horizontal padding from bar edge to first/last module
     pub content_margin_x: i32,
+    /// Vertical inset of pill/content area from bar top/bottom edges
     pub content_margin_y: i32,
+    /// Space between adjacent modules
     pub gap: i32,
+    /// Horizontal padding inside pill backgrounds (pill mode only)
     pub padding_x: i32,
+    /// Vertical padding inside pill backgrounds (pill mode only)
     pub padding_y: i32,
     pub volume_bar_enabled: bool,
     pub volume_bar_width: i32,
@@ -316,6 +325,7 @@ pub enum BindAction {
     KillClient,
     Reload,
     Quit,
+    ShowKeybinds,
     ViewWs(usize),
     SendWs(usize),
 }
@@ -335,6 +345,18 @@ pub enum EnvDirective {
     Set { key: String, value: String },
     /// Source a shell file: source "path"
     Source { path: String },
+}
+
+// ── Monitor config ─────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct MonitorConfig {
+    pub name: String,
+    pub resolution: Option<(i32, i32)>,
+    pub refresh: Option<u32>,
+    pub position: Option<(i32, i32)>,
+    pub scale: Option<f64>,
+    pub enabled: bool,
 }
 
 // ── Input devices ───────────────────────────────────────────────────

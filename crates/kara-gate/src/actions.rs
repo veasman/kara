@@ -26,6 +26,7 @@ pub enum Action {
     ToggleSync,
     ViewWs(usize),
     SendWs(usize),
+    ShowKeybinds,
     Reload,
     Quit,
 }
@@ -52,6 +53,10 @@ impl Gate {
             Action::ToggleSync => self.do_toggle_sync(),
             Action::ViewWs(idx) => self.do_view_ws(idx),
             Action::SendWs(idx) => self.do_send_ws(idx),
+            Action::ShowKeybinds => {
+                self.keybind_overlay_visible = !self.keybind_overlay_visible;
+                self.layout_dirty = true;
+            }
             Action::Reload => self.reload_config(),
             Action::Quit => {
                 self.running = false;

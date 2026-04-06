@@ -173,12 +173,53 @@ pub fn run(
             continue;
         }
 
-        let drm_mode = conn_info
-            .modes()
-            .iter()
-            .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
-            .copied()
-            .unwrap_or(conn_info.modes()[0]);
+        // Build canonical output name for config matching
+        let output_name = format!("{}-{}",
+            match conn_info.interface() {
+                connector::Interface::HDMIA => "HDMI-A",
+                connector::Interface::HDMIB => "HDMI-B",
+                connector::Interface::DisplayPort => "DP",
+                connector::Interface::EmbeddedDisplayPort => "eDP",
+                connector::Interface::VGA => "VGA",
+                connector::Interface::DVII => "DVI-I",
+                connector::Interface::DVID => "DVI-D",
+                connector::Interface::DVIA => "DVI-A",
+                connector::Interface::LVDS => "LVDS",
+                _ => "Unknown",
+            },
+            conn_info.interface_id()
+        );
+
+        // Look up monitor config
+        let mon_config = state.config.monitors.iter().find(|m| m.name == output_name);
+
+        // Skip disabled monitors
+        if let Some(mc) = mon_config {
+            if !mc.enabled {
+                tracing::info!("monitor {output_name} disabled by config, skipping");
+                continue;
+            }
+        }
+
+        // Mode selection — prefer config resolution over preferred mode
+        let drm_mode = if let Some(Some((w, h))) = mon_config.map(|mc| mc.resolution) {
+            let refresh = mon_config.and_then(|mc| mc.refresh).unwrap_or(0);
+            conn_info.modes().iter()
+                .find(|m| {
+                    let (mw, mh) = m.size();
+                    mw as i32 == w && mh as i32 == h
+                        && (refresh == 0 || m.vrefresh() == refresh)
+                })
+                .or_else(|| conn_info.modes().iter()
+                    .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED)))
+                .copied()
+                .unwrap_or(conn_info.modes()[0])
+        } else {
+            conn_info.modes().iter()
+                .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
+                .copied()
+                .unwrap_or(conn_info.modes()[0])
+        };
 
         // Find an available CRTC
         let crtc_handle = match find_crtc_for_connector(&drm_device, &resources, *conn_handle, &used_crtcs) {
@@ -196,7 +237,13 @@ pub fn run(
             refresh: (drm_mode.vrefresh() * 1000) as i32,
         };
 
-        let output_name = format!("{:?}-{}", conn_info.interface(), conn_info.interface_id());
+        // Position override — use configured position instead of auto x_offset
+        let mon_position = if let Some(Some((px, py))) = mon_config.map(|mc| mc.position) {
+            (px, py)
+        } else {
+            (x_offset, 0)
+        };
+
         let output = Output::new(
             output_name.clone(),
             PhysicalProperties {
@@ -210,16 +257,16 @@ pub fn run(
             Some(output_mode),
             Some(Transform::Normal),
             None,
-            Some((x_offset, 0).into()),
+            Some(mon_position.into()),
         );
         output.set_preferred(output_mode);
 
         // Map in space and add to Gate
-        state.space.map_output(&output, (x_offset, 0));
+        state.space.map_output(&output, mon_position);
         state.add_output(
             output.clone(),
             (mode_size.0 as i32, mode_size.1 as i32),
-            (x_offset, 0).into(),
+            mon_position.into(),
         );
 
         // Create DRM surface + compositor for this output
@@ -488,6 +535,13 @@ fn render_frame(
         elements.push(DrmRenderElement::Texture(cursor_elem));
     }
 
+    // Keybind overlay (in front of everything except cursor)
+    elements.extend(
+        crate::render::build_keybind_overlay(state, renderer, output_idx)
+            .into_iter()
+            .map(DrmRenderElement::Texture),
+    );
+
     // Overlay/Top layer surfaces (e.g., kara-summon) — with correct arranged positions
     {
         use smithay::backend::renderer::element::AsRenderElements;
@@ -532,7 +586,8 @@ fn render_frame(
 
             // Screenshot capture — render to offscreen and save PNG
             if let Some(path) = state.screenshot_path.take() {
-                capture_screenshot(renderer, &elements, state, output_idx, &path);
+                let region = state.screenshot_region.take();
+                capture_screenshot(renderer, &elements, state, output_idx, &path, region);
             }
         }
         Err(err) => {
@@ -547,6 +602,7 @@ fn capture_screenshot(
     state: &Gate,
     output_idx: usize,
     path: &str,
+    region: Option<(i32, i32, i32, i32)>,
 ) {
     use smithay::backend::renderer::{Bind, ExportMem, Frame, Offscreen};
     use smithay::backend::allocator::Fourcc;
@@ -605,15 +661,28 @@ fn capture_screenshot(
     }
 
     // Read pixels back
-    let region = smithay::utils::Rectangle::from_size(
+    let fb_region = smithay::utils::Rectangle::from_size(
         Size::<i32, smithay::utils::Buffer>::from((w, h)),
     );
-    match ExportMem::copy_framebuffer(renderer, &target, region, Fourcc::Abgr8888) {
+    match ExportMem::copy_framebuffer(renderer, &target, fb_region, Fourcc::Abgr8888) {
         Ok(mapping) => {
             match ExportMem::map_texture(renderer, &mapping) {
                 Ok(data) => {
                     if let Some(img) = image::RgbaImage::from_raw(w as u32, h as u32, data.to_vec()) {
-                        match img.save(path) {
+                        let final_img: image::RgbaImage = if let Some((rx, ry, rw, rh)) = region {
+                            let rx = (rx as u32).min(img.width());
+                            let ry = (ry as u32).min(img.height());
+                            let rw = (rw as u32).min(img.width().saturating_sub(rx));
+                            let rh = (rh as u32).min(img.height().saturating_sub(ry));
+                            if rw > 0 && rh > 0 {
+                                image::imageops::crop_imm(&img, rx, ry, rw, rh).to_image()
+                            } else {
+                                img
+                            }
+                        } else {
+                            img
+                        };
+                        match final_img.save(path) {
                             Ok(()) => tracing::info!("screenshot saved: {path}"),
                             Err(e) => tracing::error!("screenshot save failed: {e}"),
                         }

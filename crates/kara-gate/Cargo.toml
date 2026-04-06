@@ -22,3 +22,5 @@ xcursor = "0.3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 dirs = "6"
 tiny-skia = { workspace = true }
+cosmic-text = { workspace = true }
+xkbcommon = "0.8"

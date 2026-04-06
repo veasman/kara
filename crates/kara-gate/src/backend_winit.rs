@@ -136,6 +136,7 @@ pub fn run(
         custom_elements.extend(crate::render::build_scratchpad_dim(&state, renderer, 0));
         // Note: scratchpad borders render with custom elements in winit (no split rendering)
         custom_elements.extend(crate::render::build_scratchpad_borders(&mut state, renderer, 0));
+        custom_elements.extend(crate::render::build_keybind_overlay(&state, renderer, 0));
 
         render_output::<_, TextureRenderElement<GlesTexture>, _, _>(
             &output,
