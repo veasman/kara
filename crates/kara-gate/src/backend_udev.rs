@@ -32,17 +32,13 @@ use smithay::utils::{DeviceFd, Size, Transform};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::{Element, Id, RenderElement};
 use smithay::backend::renderer::utils::CommitCounter;
-use smithay::desktop::space::SpaceRenderElements;
 use smithay::utils::{Buffer, Physical, Rectangle, Scale};
 
 use crate::render::build_custom_elements;
 use crate::state::Gate;
 
-type SpaceElement = SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>;
-
-/// Combined render element for DRM output: window surfaces + custom textures + layer surfaces.
+/// Combined render element for DRM output: custom textures + wayland surfaces.
 pub enum DrmRenderElement {
-    Space(SpaceElement),
     Texture(TextureRenderElement<GlesTexture>),
     Surface(WaylandSurfaceRenderElement<GlesRenderer>),
 }
@@ -50,7 +46,6 @@ pub enum DrmRenderElement {
 impl Element for DrmRenderElement {
     fn id(&self) -> &Id {
         match self {
-            Self::Space(e) => e.id(),
             Self::Texture(e) => e.id(),
             Self::Surface(e) => e.id(),
         }
@@ -58,7 +53,6 @@ impl Element for DrmRenderElement {
 
     fn current_commit(&self) -> CommitCounter {
         match self {
-            Self::Space(e) => e.current_commit(),
             Self::Texture(e) => e.current_commit(),
             Self::Surface(e) => e.current_commit(),
         }
@@ -66,7 +60,6 @@ impl Element for DrmRenderElement {
 
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
         match self {
-            Self::Space(e) => e.geometry(scale),
             Self::Texture(e) => e.geometry(scale),
             Self::Surface(e) => e.geometry(scale),
         }
@@ -74,7 +67,6 @@ impl Element for DrmRenderElement {
 
     fn src(&self) -> Rectangle<f64, Buffer> {
         match self {
-            Self::Space(e) => e.src(),
             Self::Texture(e) => e.src(),
             Self::Surface(e) => e.src(),
         }
@@ -91,7 +83,6 @@ impl RenderElement<GlesRenderer> for DrmRenderElement {
         opaque_regions: &[Rectangle<i32, Physical>],
     ) -> Result<(), <GlesRenderer as smithay::backend::renderer::RendererSuper>::Error> {
         match self {
-            Self::Space(e) => RenderElement::<GlesRenderer>::draw(e, frame, src, dst, damage, opaque_regions),
             Self::Texture(e) => RenderElement::<GlesRenderer>::draw(e, frame, src, dst, damage, opaque_regions),
             Self::Surface(e) => RenderElement::<GlesRenderer>::draw(e, frame, src, dst, damage, opaque_regions),
         }
@@ -538,10 +529,100 @@ fn render_frame(
                     Err(e) => tracing::error!("failed to queue frame: {e:?}"),
                 }
             }
+
+            // Screenshot capture — render to offscreen and save PNG
+            if let Some(path) = state.screenshot_path.take() {
+                capture_screenshot(renderer, &elements, state, output_idx, &path);
+            }
         }
         Err(err) => {
             tracing::error!("render_frame failed: {err:?}");
         }
+    }
+}
+
+fn capture_screenshot(
+    renderer: &mut GlesRenderer,
+    elements: &[DrmRenderElement],
+    state: &Gate,
+    output_idx: usize,
+    path: &str,
+) {
+    use smithay::backend::renderer::{Bind, ExportMem, Frame, Offscreen};
+    use smithay::backend::allocator::Fourcc;
+
+    let (w, h) = match state.outputs.get(output_idx) {
+        Some(o) => o.size,
+        None => return,
+    };
+
+    // Create offscreen render target
+    let mut offscreen: smithay::backend::renderer::gles::GlesRenderbuffer =
+        match Offscreen::<smithay::backend::renderer::gles::GlesRenderbuffer>::create_buffer(
+            renderer,
+            Fourcc::Abgr8888,
+            Size::from((w, h)),
+        ) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("screenshot: failed to create offscreen buffer: {e:?}");
+                return;
+            }
+        };
+
+    use smithay::backend::renderer::Renderer;
+
+    let mut target = match renderer.bind(&mut offscreen) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!("screenshot: failed to bind offscreen: {e:?}");
+            return;
+        }
+    };
+
+    {
+        let output_size: Size<i32, smithay::utils::Physical> = (w, h).into();
+        let mut frame = match renderer.render(&mut target, output_size, Transform::Normal) {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::error!("screenshot: failed to start render: {e:?}");
+                return;
+            }
+        };
+
+        let output_rect = smithay::utils::Rectangle::from_size(Size::from((w, h)));
+        frame.clear(
+            smithay::backend::renderer::Color32F::from([0.05, 0.05, 0.05, 1.0]),
+            &[output_rect],
+        ).ok();
+
+        // Draw elements back-to-front (last element in vec = backmost)
+        for elem in elements.iter().rev() {
+            let geo = elem.geometry(smithay::utils::Scale::from(1.0));
+            let src = elem.src();
+            RenderElement::<GlesRenderer>::draw(&*elem, &mut frame, src, geo, &[geo], &[]).ok();
+        }
+    }
+
+    // Read pixels back
+    let region = smithay::utils::Rectangle::from_size(
+        Size::<i32, smithay::utils::Buffer>::from((w, h)),
+    );
+    match ExportMem::copy_framebuffer(renderer, &target, region, Fourcc::Abgr8888) {
+        Ok(mapping) => {
+            match ExportMem::map_texture(renderer, &mapping) {
+                Ok(data) => {
+                    if let Some(img) = image::RgbaImage::from_raw(w as u32, h as u32, data.to_vec()) {
+                        match img.save(path) {
+                            Ok(()) => tracing::info!("screenshot saved: {path}"),
+                            Err(e) => tracing::error!("screenshot save failed: {e}"),
+                        }
+                    }
+                }
+                Err(e) => tracing::error!("screenshot: map_texture failed: {e:?}"),
+            }
+        }
+        Err(e) => tracing::error!("screenshot: copy_framebuffer failed: {e:?}"),
     }
 }
 

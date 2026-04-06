@@ -174,6 +174,20 @@ impl Gate {
                 Response::Ok
             }
 
+            Request::Screenshot => {
+                let dir = dirs::picture_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+                std::fs::create_dir_all(&dir).ok();
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let path = dir.join(format!("kara-screenshot-{timestamp}.png"));
+                let path_str = path.to_string_lossy().to_string();
+                self.screenshot_path = Some(path_str.clone());
+                Response::ScreenshotDone { path: path_str }
+            }
+
             Request::Subscribe | Request::Unsubscribe => {
                 // TODO: event subscription
                 Response::Ok

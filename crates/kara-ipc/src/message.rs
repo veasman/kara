@@ -25,6 +25,9 @@ pub enum Request {
     ThemeChanged { theme_name: String },
     WallpaperChanged { path: String },
 
+    // Screenshot
+    Screenshot,
+
     // Event subscription
     Subscribe,
     Unsubscribe,
@@ -49,6 +52,9 @@ pub enum Response {
     },
     Theme {
         colors: ThemeColors,
+    },
+    ScreenshotDone {
+        path: String,
     },
 }
 

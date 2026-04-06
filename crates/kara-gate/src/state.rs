@@ -161,6 +161,7 @@ pub struct Gate {
     // Backend-specific data (UdevData for udev, None for winit)
     #[allow(dead_code)]
     pub backend_data: Option<Box<dyn std::any::Any>>,
+    pub screenshot_path: Option<String>,
 }
 
 impl Gate {
@@ -270,6 +271,7 @@ impl Gate {
             cursor_idle_pos: (0.0, 0.0).into(),
             config_mtime: Self::get_config_mtime(),
             backend_data: None,
+            screenshot_path: None,
         };
 
         // Apply environment variables and cursor theme

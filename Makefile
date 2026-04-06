@@ -51,6 +51,8 @@ install:
 	install -m 0755 "target/release/$(TARGET)" "$(DESTDIR)$(BINDIR)/$(TARGET)"
 	@test -f "target/release/kara-summon" && \
 		install -m 0755 "target/release/kara-summon" "$(DESTDIR)$(BINDIR)/kara-summon" || true
+	@test -f "target/release/kara-glimpse" && \
+		install -m 0755 "target/release/kara-glimpse" "$(DESTDIR)$(BINDIR)/kara-glimpse" || true
 	install -d "$(DESTDIR)$(APPDIR)"
 	install -m 0644 example/kara-gate.conf "$(DESTDIR)$(APPDIR)/kara-gate.conf.example"
 	install -d "$(DESTDIR)$(DATADIR)/wayland-sessions"
