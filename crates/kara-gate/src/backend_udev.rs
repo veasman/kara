@@ -118,10 +118,52 @@ pub fn run(
     let udev_backend =
         UdevBackend::new(&seat_name).expect("failed to create udev backend");
 
-    let gpu_path = udev::primary_gpu(&seat_name)
-        .expect("failed to find primary GPU")
+    // Discover all GPUs. Pick the one with the most connected outputs
+    // by checking sysfs (avoids opening/closing DRM fds which breaks sessions).
+    let all_gpus = udev::all_gpus(&seat_name).unwrap_or_default();
+    let primary = udev::primary_gpu(&seat_name).ok().flatten();
+
+    let mut best_gpu: Option<(std::path::PathBuf, usize)> = None;
+    for g in &all_gpus {
+        let is_primary = primary.as_ref() == Some(g);
+        // Count connected connectors via sysfs
+        let card_name = g.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        let sysfs_dir = format!("/sys/class/drm/{}", card_name);
+        let conn_count = std::fs::read_dir(&sysfs_dir)
+            .map(|entries| {
+                entries.filter_map(|e| e.ok())
+                    .filter(|e| {
+                        let name = e.file_name().to_string_lossy().to_string();
+                        if !name.starts_with(card_name) || name == card_name {
+                            return false;
+                        }
+                        // Check connector status
+                        let status_path = e.path().join("status");
+                        std::fs::read_to_string(status_path)
+                            .map(|s| s.trim() == "connected")
+                            .unwrap_or(false)
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        tracing::info!(
+            "found GPU: {} — {conn_count} connected output(s){}",
+            g.display(),
+            if is_primary { " (primary)" } else { "" }
+        );
+        let prev = best_gpu.as_ref().map(|(_, c)| *c).unwrap_or(0);
+        if conn_count > prev {
+            best_gpu = Some((g.clone(), conn_count));
+        }
+    }
+
+    let gpu_path = best_gpu.map(|(p, _)| p)
+        .or(primary)
+        .or_else(|| all_gpus.into_iter().next())
         .expect("no GPU found");
-    tracing::info!("primary GPU: {}", gpu_path.display());
+    tracing::info!("using GPU: {}", gpu_path.display());
 
     // --- 3. Open DRM device via session ---
     let gpu_fd = session
@@ -163,6 +205,10 @@ pub fn run(
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &socket_name) };
     let mut state = Gate::new(display, event_loop.get_signal());
 
+    // If any monitors are explicitly configured, only use those (skip unconfigured ones).
+    // This gives explicit control over which outputs are active.
+    let has_monitor_config = !state.config.monitors.is_empty();
+
     for conn_handle in resources.connectors() {
         let conn_info = match drm_device.get_connector(*conn_handle, false) {
             Ok(info) => info,
@@ -190,11 +236,19 @@ pub fn run(
             conn_info.interface_id()
         );
 
-        // Look up monitor config
-        let mon_config = state.config.monitors.iter().find(|m| m.name == output_name);
+        tracing::info!("detected connector: {output_name}");
 
-        // Skip disabled monitors
-        if let Some(mc) = mon_config {
+        // Look up monitor config — clone relevant fields to avoid borrowing state
+        let mon_config = state.config.monitors.iter().find(|m| m.name == output_name).cloned();
+
+        // If monitors are configured, skip any connector not in config
+        if has_monitor_config && mon_config.is_none() {
+            tracing::info!("monitor {output_name} not in config, skipping");
+            continue;
+        }
+
+        // Skip explicitly disabled monitors
+        if let Some(mc) = mon_config.as_ref() {
             if !mc.enabled {
                 tracing::info!("monitor {output_name} disabled by config, skipping");
                 continue;
@@ -202,8 +256,8 @@ pub fn run(
         }
 
         // Mode selection — prefer config resolution over preferred mode
-        let drm_mode = if let Some(Some((w, h))) = mon_config.map(|mc| mc.resolution) {
-            let refresh = mon_config.and_then(|mc| mc.refresh).unwrap_or(0);
+        let drm_mode = if let Some(Some((w, h))) = mon_config.as_ref().map(|mc| mc.resolution) {
+            let refresh = mon_config.as_ref().and_then(|mc| mc.refresh).unwrap_or(0);
             conn_info.modes().iter()
                 .find(|m| {
                     let (mw, mh) = m.size();
@@ -238,7 +292,7 @@ pub fn run(
         };
 
         // Position override — use configured position instead of auto x_offset
-        let mon_position = if let Some(Some((px, py))) = mon_config.map(|mc| mc.position) {
+        let mon_position = if let Some(Some((px, py))) = mon_config.as_ref().map(|mc| mc.position) {
             (px, py)
         } else {
             (x_offset, 0)
@@ -268,6 +322,15 @@ pub fn run(
             (mode_size.0 as i32, mode_size.1 as i32),
             mon_position.into(),
         );
+
+        // Log rotation config (not yet applied to DRM — needs GPU-side rotation support)
+        let mon_rotation = mon_config.as_ref().map(|mc| mc.rotation).unwrap_or(kara_config::MonitorRotation::Normal);
+        if mon_rotation != kara_config::MonitorRotation::Normal {
+            tracing::warn!(
+                "monitor {output_name}: rotation '{:?}' configured but not yet applied (needs GPU rotation support)",
+                mon_rotation
+            );
+        }
 
         // Create DRM surface + compositor for this output
         let drm_surface = match drm_device.create_surface(crtc_handle, drm_mode, &[*conn_handle]) {
@@ -306,8 +369,9 @@ pub fn run(
         };
 
         tracing::info!(
-            "output {output_name}: {}x{}@{}Hz at x={x_offset}",
-            mode_size.0, mode_size.1, drm_mode.vrefresh()
+            "output {output_name}: {}x{}@{}Hz at pos=({},{}) crtc={:?}",
+            mode_size.0, mode_size.1, drm_mode.vrefresh(),
+            mon_position.0, mon_position.1, crtc_handle
         );
 
         output_instances.push(OutputInstance {
@@ -321,7 +385,11 @@ pub fn run(
     }
 
     if output_instances.is_empty() {
-        tracing::error!("no connected displays found");
+        tracing::error!("no connected displays found!");
+        tracing::error!("if you have monitor blocks in config, only those exact names are used.");
+        tracing::error!("remove all monitor blocks from config to auto-detect, or fix the names.");
+        // Give user time to read the error + detected connector names above
+        std::thread::sleep(std::time::Duration::from_secs(10));
         std::process::exit(1);
     }
 
@@ -475,16 +543,39 @@ pub fn run(
             state.apply_animation_offsets();
         }
 
-        // 5. Send frame callbacks
+        // 5. Send frame callbacks to ALL windows so clients don't stall.
         let time = state.clock.now();
         for out_state in &state.outputs {
             let output = &out_state.output;
+
+            // Windows in space
             state.space.elements().for_each(|window| {
                 window.send_frame(output, time, Some(Duration::ZERO), |_, _| {
                     Some(output.clone())
                 });
             });
-            // Layer surfaces also need frame callbacks
+
+            // Windows not in space (unmapped due to scratchpad, other workspace, etc.)
+            for ws in &state.workspaces {
+                for w in &ws.clients {
+                    if state.space.element_location(w).is_none() {
+                        w.send_frame(output, time, Some(Duration::ZERO), |_, _| {
+                            Some(output.clone())
+                        });
+                    }
+                }
+            }
+            for sp in &state.scratchpads {
+                for w in &sp.workspace.clients {
+                    if state.space.element_location(w).is_none() {
+                        w.send_frame(output, time, Some(Duration::ZERO), |_, _| {
+                            Some(output.clone())
+                        });
+                    }
+                }
+            }
+
+            // Layer surfaces
             let map = smithay::desktop::layer_map_for_output(output);
             for layer in map.layers() {
                 layer.send_frame(output, time, Some(Duration::ZERO), |_, _| {

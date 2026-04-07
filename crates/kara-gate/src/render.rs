@@ -149,10 +149,15 @@ fn rasterize_border_set(
 }
 
 /// Upload cached border pixmaps to GPU and position for a specific output.
+/// Positions are derived from the window's actual render location in the Space,
+/// not from cached layout rects, to stay in sync after surface commits.
 fn render_border_set(
     rects: &[(smithay::utils::Rectangle<i32, smithay::utils::Logical>, bool)],
     cache: &[(Vec<u8>, u32, u32)],
     offsets: &[(f64, f64)],
+    windows: &[(smithay::desktop::Window, smithay::utils::Point<i32, smithay::utils::Logical>)],
+    space: &smithay::desktop::Space<smithay::desktop::Window>,
+    border_px: i32,
     output: Option<&crate::state::OutputState>,
     renderer: &mut GlesRenderer,
 ) -> Vec<TextureRenderElement<GlesTexture>> {
@@ -164,22 +169,38 @@ fn render_border_set(
         Some(o) => o,
         None => return Vec::new(),
     };
-    let out_rect = smithay::utils::Rectangle::new(
-        out.location,
-        (out.size.0, out.size.1).into(),
-    );
 
     let mut elements = Vec::new();
 
     for (i, &(rect, _)) in rects.iter().enumerate() {
-        if !out_rect.overlaps(rect) {
-            continue;
-        }
-
         let (ref data, w, h) = cache[i];
         if data.is_empty() {
             continue;
         }
+
+        // Compute border position from window's actual render location
+        let border_loc = if let Some((window, _base)) = windows.get(i) {
+            if let Some(map_loc) = space.element_location(window) {
+                let geo = window.geometry();
+                // Window renders at map_loc - geo.loc. Border is border_px outside that.
+                let render_x = map_loc.x - geo.loc.x;
+                let render_y = map_loc.y - geo.loc.y;
+                let loc = (render_x - border_px, render_y - border_px);
+                // Log if live position differs from cached rect
+                if (loc.0 - rect.loc.x).abs() > 0 || (loc.1 - rect.loc.y).abs() > 0 {
+                    tracing::warn!(
+                        "BORDER DRIFT: cached=({},{}) live=({},{}) geo=({},{}) map=({},{})",
+                        rect.loc.x, rect.loc.y, loc.0, loc.1,
+                        geo.loc.x, geo.loc.y, map_loc.x, map_loc.y,
+                    );
+                }
+                loc
+            } else {
+                (rect.loc.x, rect.loc.y)
+            }
+        } else {
+            (rect.loc.x, rect.loc.y)
+        };
 
         let texture_buffer = match TextureBuffer::from_memory(
             renderer,
@@ -201,8 +222,8 @@ fn render_border_set(
         let (off_x, off_y) = offsets.get(i).copied().unwrap_or((0.0, 0.0));
         elements.push(TextureRenderElement::from_texture_buffer(
             Point::from((
-                (rect.loc.x - out.location.x) as f64 + off_x,
-                (rect.loc.y - out.location.y) as f64 + off_y,
+                (border_loc.0 - out.location.x) as f64 + off_x,
+                (border_loc.1 - out.location.y) as f64 + off_y,
             )),
             &texture_buffer,
             None,
@@ -249,7 +270,11 @@ pub fn build_custom_elements(
             state.config.theme.accent, state.config.theme.border,
         );
         state.layout_dirty = false;
-        elements.extend(render_border_set(&state.border_rects, &state.border_cache, &state.border_offsets, state.outputs.get(output_idx), renderer));
+        elements.extend(render_border_set(
+            &state.border_rects, &state.border_cache, &state.border_offsets,
+            &state.window_base_positions, &state.space, state.config.general.border_px,
+            state.outputs.get(output_idx), renderer,
+        ));
     }
 
     // Bar (on top, hidden during fullscreen)
@@ -287,7 +312,14 @@ pub fn build_scratchpad_borders(
             state.config.theme.accent, state.config.theme.border,
         );
         state.scratchpad_layout_dirty = false;
-        elements.extend(render_border_set(&state.scratchpad_border_rects, &state.scratchpad_border_cache, &state.scratchpad_border_offsets, state.outputs.get(output_idx), renderer));
+        // Scratchpad borders — window_base_positions has scratchpad windows after regular ones
+        let sp_window_offset = state.border_rects.len();
+        let sp_windows: Vec<_> = state.window_base_positions.get(sp_window_offset..).unwrap_or(&[]).to_vec();
+        elements.extend(render_border_set(
+            &state.scratchpad_border_rects, &state.scratchpad_border_cache, &state.scratchpad_border_offsets,
+            &sp_windows, &state.space, state.config.general.border_px,
+            state.outputs.get(output_idx), renderer,
+        ));
     }
 
     elements

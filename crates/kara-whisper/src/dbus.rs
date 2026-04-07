@@ -70,6 +70,53 @@ impl NotificationsService {
     }
 }
 
+/// XDG Desktop Portal Settings — advertises dark mode preference to applications.
+/// Implements org.freedesktop.portal.Settings so Floorp/Firefox and GTK apps
+/// pick up the color scheme.
+struct PortalSettings {
+    color_scheme: u32, // 0 = no preference, 1 = dark, 2 = light
+}
+
+#[zbus::interface(name = "org.freedesktop.portal.Settings")]
+impl PortalSettings {
+    fn read_all(
+        &self,
+        namespaces: Vec<String>,
+    ) -> HashMap<String, HashMap<String, zbus::zvariant::OwnedValue>> {
+        let mut result: HashMap<String, HashMap<String, zbus::zvariant::OwnedValue>> = HashMap::new();
+        for ns in &namespaces {
+            if ns == "org.freedesktop.appearance" || ns.is_empty() || ns == "*" {
+                let mut appearance = HashMap::new();
+                appearance.insert(
+                    "color-scheme".to_string(),
+                    zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(self.color_scheme)).unwrap(),
+                );
+                result.insert("org.freedesktop.appearance".to_string(), appearance);
+            }
+        }
+        result
+    }
+
+    fn read(
+        &self,
+        namespace: &str,
+        key: &str,
+    ) -> zbus::fdo::Result<zbus::zvariant::OwnedValue> {
+        if namespace == "org.freedesktop.appearance" && key == "color-scheme" {
+            Ok(zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(self.color_scheme)).unwrap())
+        } else {
+            Err(zbus::fdo::Error::UnknownProperty(format!(
+                "{namespace}.{key}"
+            )))
+        }
+    }
+
+    #[zbus(property)]
+    fn version(&self) -> u32 {
+        2
+    }
+}
+
 pub fn spawn_dbus(tx: mpsc::Sender<DbusEvent>) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let conn = match zbus::blocking::Connection::session() {
@@ -80,6 +127,7 @@ pub fn spawn_dbus(tx: mpsc::Sender<DbusEvent>) -> std::thread::JoinHandle<()> {
             }
         };
 
+        // Register notifications service
         if let Err(e) = conn
             .object_server()
             .at("/org/freedesktop/Notifications", NotificationsService { tx })
@@ -93,7 +141,27 @@ pub fn spawn_dbus(tx: mpsc::Sender<DbusEvent>) -> std::thread::JoinHandle<()> {
             return;
         }
 
-        eprintln!("kara-whisper: D-Bus service registered");
+        // Register portal settings (dark mode) on a separate connection
+        // since it needs a different well-known name
+        if let Ok(portal_conn) = zbus::blocking::Connection::session() {
+            let settings = PortalSettings { color_scheme: 1 }; // 1 = prefer dark
+            if portal_conn
+                .object_server()
+                .at("/org/freedesktop/portal/desktop", settings)
+                .is_ok()
+            {
+                if portal_conn
+                    .request_name("org.freedesktop.portal.Desktop")
+                    .is_ok()
+                {
+                    eprintln!("kara-whisper: portal settings registered (dark mode)");
+                } else {
+                    eprintln!("kara-whisper: portal name taken (xdg-desktop-portal running?)");
+                }
+            }
+        }
+
+        eprintln!("kara-whisper: D-Bus services registered");
 
         // Keep thread alive — zbus internal executor handles message dispatch
         loop {

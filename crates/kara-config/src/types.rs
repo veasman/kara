@@ -349,6 +349,15 @@ pub enum EnvDirective {
 
 // ── Monitor config ─────────────────────────────────────────────────
 
+/// Rotation for a monitor output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MonitorRotation {
+    Normal,
+    Left,    // 90° counter-clockwise
+    Right,   // 90° clockwise
+    Flipped, // 180°
+}
+
 #[derive(Debug, Clone)]
 pub struct MonitorConfig {
     pub name: String,
@@ -356,6 +365,7 @@ pub struct MonitorConfig {
     pub refresh: Option<u32>,
     pub position: Option<(i32, i32)>,
     pub scale: Option<f64>,
+    pub rotation: MonitorRotation,
     pub enabled: bool,
 }
 

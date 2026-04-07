@@ -716,6 +716,14 @@ fn parse_monitor_line(tokens: &[String], mon: &mut MonitorConfig, _ctx: &ParseCo
         "disabled" | "disable" => {
             mon.enabled = !matches!(tokens[1].as_str(), "true" | "yes" | "1");
         }
+        "rotate" | "rotation" | "transform" => {
+            mon.rotation = match tokens[1].as_str() {
+                "left" | "90" | "ccw" => MonitorRotation::Left,
+                "right" | "270" | "cw" => MonitorRotation::Right,
+                "flipped" | "180" | "inverted" => MonitorRotation::Flipped,
+                _ => MonitorRotation::Normal,
+            };
+        }
         _ => {}
     }
 }
@@ -944,6 +952,7 @@ fn load_file_recursive(
                         refresh: None,
                         position: None,
                         scale: None,
+                        rotation: MonitorRotation::Normal,
                         enabled: true,
                     });
                     let idx = config.monitors.len() - 1;

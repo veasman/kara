@@ -897,10 +897,19 @@ impl CompositorHandler for Gate {
             return;
         }
 
-        // If this commit is for a mapped window, refresh the space
-        if let Some(window) = self.space.elements().find(|w| {
+        // If this commit is for a known window, refresh it.
+        // Check all workspaces + scratchpads, not just space.elements(),
+        // because windows may be unmapped from space (e.g. scratchpad overlay active).
+        let window = self.space.elements().find(|w| {
             w.toplevel().map_or(false, |t| t.wl_surface() == surface)
-        }).cloned() {
+        }).cloned().or_else(|| {
+            // Check workspace clients not currently in space
+            self.workspaces.iter().flat_map(|ws| ws.clients.iter())
+                .chain(self.scratchpads.iter().flat_map(|sp| sp.workspace.clients.iter()))
+                .find(|w| w.toplevel().map_or(false, |t| t.wl_surface() == surface))
+                .cloned()
+        });
+        if let Some(window) = window {
             window.on_commit();
         }
     }
@@ -922,12 +931,8 @@ impl XdgShellHandler for Gate {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        // Send initial configure with workarea size so clients that draw
-        // before ACKing (e.g. Floorp) get a reasonable size immediately.
-        let wa = self.workarea();
-        surface.with_pending_state(|state| {
-            state.size = Some(wa.size);
-        });
+        // Send initial configure so clients can start drawing.
+        // Size is None (client chooses), then apply_layout sends the real size.
         surface.send_configure();
 
         let window = Window::new_wayland_window(surface.clone());

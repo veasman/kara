@@ -113,13 +113,32 @@ pub fn run(
             last_status_refresh = now;
         }
 
-        // Send frame callbacks to visible windows and layer surfaces
+        // Send frame callbacks to ALL windows so clients don't stall
         let time = state.clock.now();
         state.space.elements().for_each(|window| {
             window.send_frame(&output, time, Some(Duration::ZERO), |_, _| {
                 Some(output.clone())
             });
         });
+        // Windows not currently in space (unmapped due to scratchpad, other workspace, etc.)
+        for ws in &state.workspaces {
+            for w in &ws.clients {
+                if state.space.element_location(w).is_none() {
+                    w.send_frame(&output, time, Some(Duration::ZERO), |_, _| {
+                        Some(output.clone())
+                    });
+                }
+            }
+        }
+        for sp in &state.scratchpads {
+            for w in &sp.workspace.clients {
+                if state.space.element_location(w).is_none() {
+                    w.send_frame(&output, time, Some(Duration::ZERO), |_, _| {
+                        Some(output.clone())
+                    });
+                }
+            }
+        }
         {
             let map = smithay::desktop::layer_map_for_output(&output);
             for layer in map.layers() {
