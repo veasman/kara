@@ -163,6 +163,30 @@ pub fn run(
             .to_string();
         let is_primary_hint = primary.as_ref() == Some(g);
 
+        // Probe the DrmNode BEFORE opening the device. DrmNode::from_path and
+        // node_with_type only stat() — no file open, no libseat interaction.
+        // This lets us skip scan-out-only devices (evdi) early, because
+        // opening an evdi card via libseat in become_master mode was claiming
+        // some session state that caused the subsequent card1 (AMD) open to
+        // be demoted to unprivileged mode — kara could render offscreen but
+        // page flips silently no-oped and the display stayed dark.
+        let card_node = match DrmNode::from_path(g) {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!("skipping GPU {}: DrmNode::from_path failed: {e}", g.display());
+                continue;
+            }
+        };
+        let render_node = card_node.node_with_type(NodeType::Render).and_then(|r| r.ok());
+
+        if render_node.is_none() {
+            tracing::info!(
+                "found GPU: {} (scan-out only — not opened in M1, will return in M3)",
+                g.display(),
+            );
+            continue;
+        }
+
         // Count connected connectors via sysfs so we can pick a "best" device
         // without opening the device twice.
         let sysfs_dir = format!("/sys/class/drm/{card_name}");
@@ -213,28 +237,11 @@ pub fn run(
             }
         };
 
-        // DrmNode for this card, plus its matching render node (if any).
-        let card_node = match DrmNode::from_path(g) {
-            Ok(n) => n,
-            Err(e) => {
-                tracing::warn!("skipping GPU {}: DrmNode::from_path failed: {e}", g.display());
-                continue;
-            }
-        };
-        let render_node = card_node.node_with_type(NodeType::Render).and_then(|r| r.ok());
-
-        if render_node.is_some() {
-            tracing::info!(
-                "found GPU: {} ({connected_outputs} connected output(s){}, render node present)",
-                g.display(),
-                if is_primary_hint { ", udev primary" } else { "" },
-            );
-        } else {
-            tracing::info!(
-                "found GPU: {} ({connected_outputs} connected output(s), scan-out only — skipped until M3)",
-                g.display(),
-            );
-        }
+        tracing::info!(
+            "found GPU: {} ({connected_outputs} connected output(s){}, render node present)",
+            g.display(),
+            if is_primary_hint { ", udev primary" } else { "" },
+        );
 
         drm_notifiers.push((card_node, drm_notifier));
         devices.insert(
