@@ -2,6 +2,7 @@ use smithay::delegate_compositor;
 use smithay::delegate_data_device;
 use smithay::delegate_layer_shell;
 use smithay::delegate_output;
+use smithay::delegate_primary_selection;
 use smithay::delegate_seat;
 use smithay::delegate_shm;
 use smithay::delegate_xdg_decoration;
@@ -23,6 +24,9 @@ use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::selection::data_device::{
     ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
     set_data_device_focus,
+};
+use smithay::wayland::selection::primary_selection::{
+    set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
 };
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
@@ -96,6 +100,7 @@ pub struct Gate {
     pub shm_state: ShmState,
     pub seat_state: SeatState<Self>,
     pub data_device_state: DataDeviceState,
+    pub primary_selection_state: PrimarySelectionState,
     #[allow(dead_code)]
     pub output_manager_state: OutputManagerState,
     pub seat: Seat<Self>,
@@ -200,6 +205,7 @@ impl Gate {
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
+        let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
 
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
@@ -258,6 +264,7 @@ impl Gate {
             shm_state,
             seat_state,
             data_device_state,
+            primary_selection_state,
             output_manager_state,
             seat,
             layer_surfaces: Vec::new(),
@@ -1174,7 +1181,8 @@ impl SeatHandler for Gate {
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&Self::KeyboardFocus>) {
         let dh = self.display_handle.clone();
         let client = focused.and_then(|s| dh.get_client(s.id()).ok());
-        set_data_device_focus(&dh, seat, client);
+        set_data_device_focus(&dh, seat, client.clone());
+        set_primary_focus(&dh, seat, client);
     }
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
         self.cursor_status = image;
@@ -1188,6 +1196,12 @@ impl SelectionHandler for Gate {
 impl DataDeviceHandler for Gate {
     fn data_device_state(&self) -> &DataDeviceState {
         &self.data_device_state
+    }
+}
+
+impl PrimarySelectionHandler for Gate {
+    fn primary_selection_state(&self) -> &PrimarySelectionState {
+        &self.primary_selection_state
     }
 }
 
@@ -1277,4 +1291,5 @@ delegate_layer_shell!(Gate);
 delegate_shm!(Gate);
 delegate_seat!(Gate);
 delegate_data_device!(Gate);
+delegate_primary_selection!(Gate);
 delegate_output!(Gate);
