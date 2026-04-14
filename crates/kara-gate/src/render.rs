@@ -178,14 +178,15 @@ fn render_border_set(
             continue;
         }
 
-        // Compute border position from the window's actual render location so
-        // borders follow the window even if its geometry offset drifts after a commit.
+        // Border sits just outside the window's *geometry* rect. smithay's
+        // `Space::element_location` returns the geometry top-left, which is
+        // already the correct reference for the visible window — we do NOT
+        // subtract `geo.loc` here (that would offset to the buffer origin and
+        // leave the border stranded in the CSD shadow margin for clients like
+        // Firefox/Floorp that draw their own shadows outside the geometry).
         let border_loc = if let Some((window, _base)) = windows.get(i) {
             if let Some(map_loc) = space.element_location(window) {
-                let geo = window.geometry();
-                let render_x = map_loc.x - geo.loc.x;
-                let render_y = map_loc.y - geo.loc.y;
-                (render_x - border_px, render_y - border_px)
+                (map_loc.x - border_px, map_loc.y - border_px)
             } else {
                 (rect.loc.x, rect.loc.y)
             }

@@ -59,6 +59,17 @@ fn is_helper_client(app_id: &str) -> bool {
     )
 }
 
+/// Mark all four `tiled_*` state flags on an `xdg_toplevel` pending state so that
+/// CSD clients (Firefox/Floorp, GTK apps) know they are inside a tiling layout and
+/// should suppress rounded corners, drop shadows, and client-side resize handles.
+fn mark_tiled(state: &mut smithay::wayland::shell::xdg::ToplevelState) {
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
+    state.states.set(xdg_toplevel::State::TiledLeft);
+    state.states.set(xdg_toplevel::State::TiledRight);
+    state.states.set(xdg_toplevel::State::TiledTop);
+    state.states.set(xdg_toplevel::State::TiledBottom);
+}
+
 
 /// Per-scratchpad runtime state.
 pub struct ScratchpadState {
@@ -609,6 +620,7 @@ impl Gate {
                 if let Some(toplevel) = fs_window.toplevel() {
                     toplevel.with_pending_state(|state| {
                         state.size = Some((out_size.0, out_size.1).into());
+                        mark_tiled(state);
                     });
                     toplevel.send_configure();
                 }
@@ -624,6 +636,7 @@ impl Gate {
                     if let Some(toplevel) = geom.window.toplevel() {
                         toplevel.with_pending_state(|state| {
                             state.size = Some((geom.rect.size.w, geom.rect.size.h).into());
+                            mark_tiled(state);
                         });
                         toplevel.send_configure();
                     }
@@ -691,6 +704,7 @@ impl Gate {
                 if let Some(toplevel) = geom.window.toplevel() {
                     toplevel.with_pending_state(|state| {
                         state.size = Some((geom.rect.size.w, geom.rect.size.h).into());
+                        mark_tiled(state);
                     });
                     toplevel.send_configure();
                 }
@@ -1131,6 +1145,7 @@ impl XdgShellHandler for Gate {
         surface.with_pending_state(|state| {
             state.size = Some((area.size.w, area.size.h).into());
             state.bounds = Some((area.size.w, area.size.h).into());
+            mark_tiled(state);
         });
         surface.send_configure();
 
