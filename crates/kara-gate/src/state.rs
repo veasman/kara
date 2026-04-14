@@ -1132,19 +1132,14 @@ impl XdgShellHandler for Gate {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        // Send the initial configure with a realistic size + bounds so clients
-        // draw at the correct dimensions from their very first buffer. Firefox
-        // and derivatives (Floorp) cache their first-commit height and only
-        // honor later configures after an unrelated focus change, so the
-        // initial size must be right.
-        //
-        // The real size will be re-sent after the first buffer commit when
-        // map_new_toplevel runs apply_layout and the window lands in a
-        // workspace — that pass also reflects any rule-driven placement.
-        let area = self.workarea();
+        // Send only the tiled state flags in the initial configure, with NO
+        // size. If we send a size here, Firefox/Floorp cache it as the target
+        // dimensions for their first buffer and then silently ignore the real
+        // size from the post-commit apply_layout pass — the window renders at
+        // the wrong size until some unrelated focus/resize forces a re-ack.
+        // Leaving size=None tells the client "pick a default", then we resize
+        // it authoritatively when it actually joins a workspace.
         surface.with_pending_state(|state| {
-            state.size = Some((area.size.w, area.size.h).into());
-            state.bounds = Some((area.size.w, area.size.h).into());
             mark_tiled(state);
         });
         surface.send_configure();
