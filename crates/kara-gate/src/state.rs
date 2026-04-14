@@ -1118,10 +1118,20 @@ impl XdgShellHandler for Gate {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        // Send initial configure so clients can start drawing.
-        // Size is None (client chooses), then apply_layout sends the real size
-        // AFTER the client maps (first buffer commit). Helper clients that never
-        // commit a buffer never enter the layout.
+        // Send the initial configure with a realistic size + bounds so clients
+        // draw at the correct dimensions from their very first buffer. Firefox
+        // and derivatives (Floorp) cache their first-commit height and only
+        // honor later configures after an unrelated focus change, so the
+        // initial size must be right.
+        //
+        // The real size will be re-sent after the first buffer commit when
+        // map_new_toplevel runs apply_layout and the window lands in a
+        // workspace — that pass also reflects any rule-driven placement.
+        let area = self.workarea();
+        surface.with_pending_state(|state| {
+            state.size = Some((area.size.w, area.size.h).into());
+            state.bounds = Some((area.size.w, area.size.h).into());
+        });
         surface.send_configure();
 
         let window = Window::new_wayland_window(surface);
