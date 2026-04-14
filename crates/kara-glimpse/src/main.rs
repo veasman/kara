@@ -129,11 +129,16 @@ fn main() {
         let (x, y, w, h) = glimpse.selection.end_press();
         let save_path_for_capture = glimpse.save_path.clone();
 
-        // Drop glimpse (destroys layer surface)
-        drop(glimpse);
+        // Unmap the overlay and round-trip so the compositor processes the
+        // destroy before we ask it for a screenshot. If we just drop glimpse,
+        // the destroy request sits in the outgoing buffer and the overlay ends
+        // up baked into the captured frame (and the overlay stays on screen
+        // until the next unrelated render).
+        glimpse.layer.wl_surface().attach(None, 0, 0);
+        glimpse.layer.wl_surface().commit();
+        let _ = event_queue.roundtrip(&mut glimpse);
 
-        // Small delay to let compositor process the surface destruction
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        drop(glimpse);
 
         do_capture(x, y, w, h, save_path_for_capture);
     }
@@ -220,15 +225,24 @@ fn wait_and_copy(capture_path: &str, save_path: Option<String>) {
         eprintln!("kara-glimpse: screenshot file not created: {capture_path}");
         std::process::exit(1);
     }
-    // Copy to clipboard via wl-copy (reads file, daemonizes to serve clipboard)
-    match std::process::Command::new("sh")
-        .args(["-c", &format!("wl-copy --type image/png < '{}'", capture_path.replace('\'', "'\\''"))])
-        .spawn()
-    {
-        Ok(mut child) => {
-            child.wait().ok();
+    // Copy to clipboard via wl-copy. wl-copy forks and daemonizes to keep
+    // serving the selection after we exit, so we must NOT wait on it — doing
+    // so can pin kara-glimpse alive indefinitely. Spawn and walk away.
+    use std::process::Stdio;
+    match std::fs::File::open(capture_path) {
+        Ok(file) => {
+            if std::process::Command::new("wl-copy")
+                .args(["--type", "image/png"])
+                .stdin(Stdio::from(file))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .is_err()
+            {
+                eprintln!("kara-glimpse: failed to run wl-copy, clipboard copy skipped");
+            }
         }
-        Err(_) => eprintln!("kara-glimpse: failed to run wl-copy, clipboard copy skipped"),
+        Err(e) => eprintln!("kara-glimpse: failed to open capture for clipboard: {e}"),
     }
     if let Some(dest) = save_path {
         if let Err(e) = std::fs::copy(capture_path, &dest) {

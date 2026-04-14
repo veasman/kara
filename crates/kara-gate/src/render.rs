@@ -178,23 +178,14 @@ fn render_border_set(
             continue;
         }
 
-        // Compute border position from window's actual render location
+        // Compute border position from the window's actual render location so
+        // borders follow the window even if its geometry offset drifts after a commit.
         let border_loc = if let Some((window, _base)) = windows.get(i) {
             if let Some(map_loc) = space.element_location(window) {
                 let geo = window.geometry();
-                // Window renders at map_loc - geo.loc. Border is border_px outside that.
                 let render_x = map_loc.x - geo.loc.x;
                 let render_y = map_loc.y - geo.loc.y;
-                let loc = (render_x - border_px, render_y - border_px);
-                // Log if live position differs from cached rect
-                if (loc.0 - rect.loc.x).abs() > 0 || (loc.1 - rect.loc.y).abs() > 0 {
-                    tracing::warn!(
-                        "BORDER DRIFT: cached=({},{}) live=({},{}) geo=({},{}) map=({},{})",
-                        rect.loc.x, rect.loc.y, loc.0, loc.1,
-                        geo.loc.x, geo.loc.y, map_loc.x, map_loc.y,
-                    );
-                }
-                loc
+                (render_x - border_px, render_y - border_px)
             } else {
                 (rect.loc.x, rect.loc.y)
             }
