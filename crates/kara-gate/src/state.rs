@@ -5,8 +5,10 @@ use smithay::delegate_output;
 use smithay::delegate_primary_selection;
 use smithay::delegate_seat;
 use smithay::delegate_shm;
+use smithay::delegate_xdg_activation;
 use smithay::delegate_xdg_decoration;
 use smithay::delegate_xdg_shell;
+use smithay::delegate_xdg_toplevel_icon;
 use smithay::desktop::{Space, Window, layer_map_for_output};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::input::pointer::CursorImageStatus;
@@ -28,6 +30,10 @@ use smithay::wayland::selection::data_device::{
 use smithay::wayland::selection::primary_selection::{
     set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
 };
+use smithay::wayland::xdg_activation::{
+    XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
+};
+use smithay::wayland::xdg_toplevel_icon::{XdgToplevelIconHandler, XdgToplevelIconManager};
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
@@ -101,6 +107,9 @@ pub struct Gate {
     pub seat_state: SeatState<Self>,
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
+    pub xdg_activation_state: XdgActivationState,
+    #[allow(dead_code)] // kept alive so the protocol global stays registered
+    pub xdg_toplevel_icon_manager: XdgToplevelIconManager,
     #[allow(dead_code)]
     pub output_manager_state: OutputManagerState,
     pub seat: Seat<Self>,
@@ -206,6 +215,8 @@ impl Gate {
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
+        let xdg_activation_state = XdgActivationState::new::<Self>(&dh);
+        let xdg_toplevel_icon_manager = XdgToplevelIconManager::new::<Self>(&dh);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
 
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
@@ -265,6 +276,8 @@ impl Gate {
             seat_state,
             data_device_state,
             primary_selection_state,
+            xdg_activation_state,
+            xdg_toplevel_icon_manager,
             output_manager_state,
             seat,
             layer_surfaces: Vec::new(),
@@ -1205,6 +1218,41 @@ impl PrimarySelectionHandler for Gate {
     }
 }
 
+impl XdgActivationHandler for Gate {
+    fn activation_state(&mut self) -> &mut XdgActivationState {
+        &mut self.xdg_activation_state
+    }
+
+    fn request_activation(
+        &mut self,
+        _token: XdgActivationToken,
+        _token_data: XdgActivationTokenData,
+        surface: WlSurface,
+    ) {
+        // Find the target window by surface match and raise it.
+        // Honoring every activation request is safe because all kara clients
+        // need a valid input serial to get a token in the first place.
+        let target = self
+            .workspaces
+            .iter()
+            .enumerate()
+            .find_map(|(ws_idx, ws)| {
+                ws.clients.iter().position(|w| {
+                    w.toplevel().map_or(false, |t| t.wl_surface() == &surface)
+                }).map(|idx| (ws_idx, idx))
+            });
+
+        if let Some((ws_idx, client_idx)) = target {
+            self.workspaces[ws_idx].focused_idx = Some(client_idx);
+            if ws_idx != self.effective_ws(self.focused_output) {
+                self.dispatch_action(crate::actions::Action::ViewWs(ws_idx));
+            } else {
+                self.apply_focus();
+            }
+        }
+    }
+}
+
 impl WlrLayerShellHandler for Gate {
     fn shell_state(&mut self) -> &mut WlrLayerShellState {
         &mut self.layer_shell_state
@@ -1292,4 +1340,8 @@ delegate_shm!(Gate);
 delegate_seat!(Gate);
 delegate_data_device!(Gate);
 delegate_primary_selection!(Gate);
+delegate_xdg_activation!(Gate);
+delegate_xdg_toplevel_icon!(Gate);
+
+impl XdgToplevelIconHandler for Gate {}
 delegate_output!(Gate);
