@@ -349,20 +349,41 @@ fn draw_volume_bar(
         let fill_color = if volume.muted {
             theme.text_muted
         } else {
-            lerp_color_u32(theme.text_muted, theme.accent, pct / 100.0)
+            // Four auto-derived tiers from the theme's accent color. Instead of a
+            // smooth lerp (which looked washed out at low volumes) or four separate
+            // config values (which was the old noisy approach), we scale the
+            // accent's lightness in HSL to produce low/normal/loud/max tiers.
+            volume_tier_color(theme.accent, pct)
         };
         fill_rounded_rect(pixmap, x, y, fill_w, h, radius, color_from_u32(fill_color));
     }
 }
 
-fn lerp_color_u32(a: u32, b: u32, t: f32) -> u32 {
-    let t = t.clamp(0.0, 1.0);
-    let lerp = |shift: u32| -> u32 {
-        let ca = ((a >> shift) & 0xFF) as f32;
-        let cb = ((b >> shift) & 0xFF) as f32;
-        (ca + (cb - ca) * t).round().clamp(0.0, 255.0) as u32
+/// Map a volume percentage to one of four brightness tiers of the accent color.
+/// Bands: 0-25% dim, 25-60% normal-dim, 60-85% normal, 85-100% bright (hot).
+fn volume_tier_color(accent: u32, pct: f32) -> u32 {
+    // Scale factors applied to the accent's RGB components. <1.0 darkens, >1.0
+    // brightens (clamped at 255). These were picked by eye to give four visibly
+    // distinct but harmonious tiers without introducing a warning-red or
+    // rewriting through HSL.
+    let scale = if pct < 25.0 {
+        0.55
+    } else if pct < 60.0 {
+        0.80
+    } else if pct < 85.0 {
+        1.00
+    } else {
+        1.25
     };
-    (lerp(16) << 16) | (lerp(8) << 8) | lerp(0)
+    scale_rgb(accent, scale)
+}
+
+fn scale_rgb(rgb: u32, factor: f32) -> u32 {
+    let scale = |shift: u32| -> u32 {
+        let c = ((rgb >> shift) & 0xFF) as f32;
+        (c * factor).round().clamp(0.0, 255.0) as u32
+    };
+    (scale(16) << 16) | (scale(8) << 8) | scale(0)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
