@@ -369,10 +369,6 @@ pub fn run(
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &socket_name) };
     let mut state = Gate::new(display, event_loop.get_signal());
 
-    // If any monitors are explicitly configured, only use those (skip unconfigured ones).
-    // This gives explicit control over which outputs are active.
-    let has_monitor_config = !state.config.monitors.is_empty();
-
     // Only iterate connectors on the primary device for M1/M2.
     // Clone the gbm_device up front so we can pass it to the GbmAllocator
     // inside the connector loop without holding a borrow on the devices map.
@@ -398,16 +394,16 @@ pub fn run(
 
         tracing::info!("detected connector: {output_name}");
 
-        // Look up monitor config — clone relevant fields to avoid borrowing state
+        // Look up monitor config — clone relevant fields to avoid borrowing state.
+        // Every detected connector is used by default; the config is a set of
+        // overrides (resolution, position, rotation, primary, etc.) that
+        // only apply when a matching entry exists. To exclude a monitor,
+        // use `enabled false` explicitly. This is the "auto-detect +
+        // overrides" model used by sway/hyprland — the user can leave full
+        // work-laptop configs in place and unplug monitors freely without
+        // kara refusing to boot on "only the laptop lid".
         let mon_config = state.config.monitors.iter().find(|m| m.name == output_name).cloned();
 
-        // If monitors are configured, skip any connector not in config
-        if has_monitor_config && mon_config.is_none() {
-            tracing::info!("monitor {output_name} not in config, skipping");
-            continue;
-        }
-
-        // Skip explicitly disabled monitors
         if let Some(mc) = mon_config.as_ref() {
             if !mc.enabled {
                 tracing::info!("monitor {output_name} disabled by config, skipping");
@@ -634,10 +630,8 @@ pub fn run(
                 .iter()
                 .find(|m| m.name == output_name)
                 .cloned();
-            if has_monitor_config && mon_config.is_none() {
-                tracing::info!("monitor {output_name} not in config, skipping");
-                continue;
-            }
+            // See the primary loop's comment — monitor config is overrides,
+            // not a gate. `enabled false` explicitly excludes one.
             if let Some(mc) = mon_config.as_ref() {
                 if !mc.enabled {
                     tracing::info!("monitor {output_name} disabled by config, skipping");

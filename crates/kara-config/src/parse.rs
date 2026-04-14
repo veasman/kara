@@ -746,6 +746,57 @@ fn parse_environment_line(tokens: &[String], env: &mut Vec<EnvDirective>, ctx: &
     }
 }
 
+/// Parse a single-line monitor shorthand inside a `monitors { }` container:
+///
+///     "NAME" [key val]... [primary]
+///
+/// Tokens after the name are consumed as key/value pairs via `parse_monitor_line`,
+/// with the bare keyword `primary` accepted as a shortcut for `primary true`.
+fn parse_monitor_oneliner(
+    tokens: &[String],
+    monitors: &mut Vec<MonitorConfig>,
+    ctx: &ParseContext,
+) {
+    if tokens.is_empty() {
+        return;
+    }
+    let name = tokens[0].trim_matches('"').to_string();
+    let mut mc = MonitorConfig {
+        name,
+        resolution: None,
+        refresh: None,
+        position: None,
+        scale: None,
+        rotation: MonitorRotation::Normal,
+        enabled: true,
+        primary: false,
+    };
+
+    let mut i = 1;
+    while i < tokens.len() {
+        // Bare keyword
+        if tokens[i] == "primary" {
+            mc.primary = true;
+            i += 1;
+            continue;
+        }
+        // Key/value pair — reuse the block parser by constructing a tiny
+        // 2-token slice.
+        if i + 1 >= tokens.len() {
+            ctx.warn(&format!(
+                "trailing token in monitor one-liner: '{}'",
+                tokens[i]
+            ));
+            break;
+        }
+        let pair = [tokens[i].clone(), tokens[i + 1].clone()];
+        parse_monitor_line(&pair, &mut mc, ctx);
+        i += 2;
+    }
+
+    monitors.push(mc);
+}
+
 fn parse_monitor_line(tokens: &[String], mon: &mut MonitorConfig, _ctx: &ParseContext) {
     // Bare-keyword shortcut for `primary` — `primary` and `primary true` are
     // both accepted; `primary false` explicitly clears.
@@ -1083,14 +1134,23 @@ fn load_file_recursive(
                 continue;
             }
 
-            // monitors { monitor "NAME" { ... } ... }
+            // Terse monitor block inside `monitors { }`:
+            //   "NAME" {                (preferred)
+            //   monitor "NAME" {        (verbose, still accepted)
             if block == Block::Monitors {
                 let inner_tokens = split_tokens(name);
-                if inner_tokens.first().map(|s| s.as_str()) == Some("monitor") {
-                    let mon_name = inner_tokens
-                        .get(1)
-                        .map(|s| s.trim_matches('"').to_string())
-                        .unwrap_or_default();
+                let mon_name_opt = if inner_tokens.first().map(|s| s.as_str()) == Some("monitor") {
+                    // verbose form: `monitor "NAME" {`
+                    inner_tokens.get(1).cloned()
+                } else if inner_tokens.len() == 1 {
+                    // terse form: `"NAME" {`
+                    inner_tokens.first().cloned()
+                } else {
+                    None
+                };
+
+                if let Some(raw_name) = mon_name_opt {
+                    let mon_name = raw_name.trim_matches('"').to_string();
                     config.monitors.push(MonitorConfig {
                         name: mon_name,
                         resolution: None,
@@ -1168,13 +1228,17 @@ fn load_file_recursive(
                 parse_autostart_line(&tokens, &mut config.autostart, &autostart_condition, &ctx);
             }
             Block::Monitors => {
-                // The `monitors { }` container only holds nested
-                // `monitor "NAME" { ... }` sub-blocks. Any line-level
-                // directive here is a typo — warn and drop.
-                ctx.warn(&format!(
-                    "directive inside `monitors {{ }}` is not valid: {trimmed}",
-                    trimmed = tokens.join(" ")
-                ));
+                // One-liner shorthand: `"NAME" key val key val ... [primary]`
+                // — equivalent to a full `"NAME" { ... }` nested block.
+                // Useful when you only want to set a resolution/position on a
+                // monitor and don't need the vertical real estate of a block.
+                //
+                // Example:
+                //     monitors {
+                //         "DP-2" resolution 1920x1080 position 1080,0 primary
+                //         "DVI-I-1" rotate right
+                //     }
+                parse_monitor_oneliner(&tokens, &mut config.monitors, &ctx);
             }
             Block::Commands => parse_commands_line(&tokens, &mut config.commands),
             Block::Binds => parse_binds_line(&tokens, &mut config.keybinds, &ctx),
