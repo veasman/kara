@@ -1145,30 +1145,83 @@ fn render_frame(
     let sp_borders = crate::render::build_scratchpad_borders(state, &mut renderer, output_idx);
     let sp_dim = crate::render::build_scratchpad_dim(state, &mut renderer, output_idx);
 
-    // Use render_elements_for_region to get ONLY window elements (no layer surfaces).
-    // Layer surfaces are rendered separately with correct positions from LayerMap.
     let output_geo = match state.space.output_geometry(&instance.output) {
         Some(g) => g,
         None => return,
     };
-    let space_elements: Vec<WaylandSurfaceRenderElement<KaraRenderer<'_>>> =
-        state.space.render_elements_for_region(
-            &mut renderer, &output_geo, 1.0, 1.0,
+
+    // Partition mapped space elements into two groups so the scratchpad dim
+    // can be rendered BETWEEN them: workspace windows draw below the dim
+    // (so they get dimmed) and scratchpad windows draw above it (so they
+    // remain visible AND the gaps between tiled scratchpad windows also
+    // show dim instead of bleeding through to unaltered workspace content).
+    //
+    // `space.render_elements_for_region` returns one flat Vec in z-order,
+    // so we walk `space.elements()` directly, render each window via
+    // AsRenderElements, and sort into the right bucket. On outputs with no
+    // visible scratchpad, the scratchpad group is empty and the workspace
+    // group holds everything — same visual result as before.
+    use smithay::backend::renderer::element::AsRenderElements;
+    let mut workspace_elements: Vec<WaylandSurfaceRenderElement<KaraRenderer<'_>>> = Vec::new();
+    let mut scratchpad_elements: Vec<WaylandSurfaceRenderElement<KaraRenderer<'_>>> = Vec::new();
+    let space_windows: Vec<_> = state.space.elements().cloned().collect();
+    for window in space_windows {
+        // Skip windows whose bbox doesn't intersect this output.
+        let loc = match state.space.element_location(&window) {
+            Some(l) => l,
+            None => continue,
+        };
+        let bbox = window.bbox_with_popups();
+        let abs_bbox = smithay::utils::Rectangle::new(
+            (loc.x + bbox.loc.x, loc.y + bbox.loc.y).into(),
+            bbox.size,
+        );
+        if abs_bbox.intersection(output_geo).is_none() {
+            continue;
+        }
+
+        let is_scratchpad = state
+            .scratchpads
+            .iter()
+            .any(|sp| sp.workspace.clients.contains(&window));
+
+        let win_elements = AsRenderElements::<KaraRenderer<'_>>::render_elements::<
+            WaylandSurfaceRenderElement<KaraRenderer<'_>>,
+        >(
+            &window,
+            &mut renderer,
+            loc.to_physical_precise_round(1.0),
+            smithay::utils::Scale::from(1.0),
+            1.0,
         );
 
+        if is_scratchpad {
+            scratchpad_elements.extend(win_elements);
+        } else {
+            workspace_elements.extend(win_elements);
+        }
+    }
+
     // Element order (front-to-back for DrmCompositor — first is topmost):
-    // cursor > keybind_overlay > top layers > sp_borders > sp_dim > space windows > custom
+    //   cursor > keybind > layers > sp_borders > scratchpad_elements
+    //          > sp_dim > workspace_elements > custom
     //
-    // Drawing is back-to-front, so the sequence is:
+    // Drawn back-to-front the sequence is:
     //   custom (wallpaper, bar, workspace borders)
-    //   → space windows (workspace clients, scratchpad raised on top via
-    //     Space::raise_element — Firefox/Floorp stays "on output" so it keeps
-    //     committing frames even while a scratchpad is visible)
-    //   → sp_dim (four rects AROUND the scratchpad hole: dims workspace
-    //     clients while leaving the scratchpad area untouched)
+    //   → workspace windows (dimmed if sp_dim is present)
+    //   → sp_dim (full-screen rect — dims workspace even in the in-scratchpad
+    //     window gaps, which the old four-rects-around-a-hole approach left
+    //     showing through)
+    //   → scratchpad windows (unaffected by the dim)
     //   → sp_borders → layers → keybind overlay → cursor
-    let mut elements: Vec<DrmRenderElement<'_>> =
-        Vec::with_capacity(custom_elements.len() + sp_borders.len() + sp_dim.len() + space_elements.len() + 1);
+    let mut elements: Vec<DrmRenderElement<'_>> = Vec::with_capacity(
+        custom_elements.len()
+            + sp_borders.len()
+            + sp_dim.len()
+            + workspace_elements.len()
+            + scratchpad_elements.len()
+            + 1,
+    );
 
     // Cursor (frontmost)
     if let Some(cursor_elem) = crate::cursor::build_cursor_element(state, &mut renderer, output_idx) {
@@ -1198,15 +1251,19 @@ fn render_frame(
         }
     }
 
-    // Scratchpad borders (in front of dim and scratchpad windows)
+    // Scratchpad borders (in front of everything window-like)
     elements.extend(sp_borders.into_iter().map(DrmRenderElement::Texture));
 
-    // Dim rects around scratchpad area (drawn AFTER workspace windows so they
-    // dim the workspace, but the hole leaves scratchpad content untouched).
+    // Scratchpad windows — above the dim so they're not dimmed themselves,
+    // and so the in-scratchpad window gaps show dim instead of bleeding
+    // workspace content through.
+    elements.extend(scratchpad_elements.into_iter().map(DrmRenderElement::Surface));
+
+    // Full-screen dim (if any visible scratchpad on this output)
     elements.extend(sp_dim.into_iter().map(DrmRenderElement::Texture));
 
-    // Space windows (scratchpad raised to top, regular behind)
-    elements.extend(space_elements.into_iter().map(DrmRenderElement::Surface));
+    // Workspace windows — drawn below the dim so they get dimmed.
+    elements.extend(workspace_elements.into_iter().map(DrmRenderElement::Surface));
 
     // Custom elements: wallpaper, workspace borders, bar (behind everything)
     elements.extend(custom_elements.into_iter().map(DrmRenderElement::Texture));

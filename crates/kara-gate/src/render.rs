@@ -346,17 +346,21 @@ fn make_dim_rect(
     ))
 }
 
-/// Render dim overlay as four rects AROUND the scratchpad area.
-/// This dims the background without affecting scratchpad window content.
+/// Render a full-screen dim rect for a visible scratchpad.
+///
+/// With the caller in render_frame splitting space elements into a workspace
+/// group (below dim) and a scratchpad group (above dim), the dim just needs
+/// to cover the whole output. The scratchpad windows draw on top, so the
+/// in-scratchpad gaps between tiled scratchpad windows now show dim (the
+/// workspace is dimmed through them) instead of showing unaltered workspace
+/// content through a pre-cut hole.
 fn render_dim_overlay(
     state: &Gate,
     renderer: &mut KaraRenderer<'_>,
     output_idx: usize,
 ) -> Vec<TextureRenderElement<KaraTexture>> {
-    // Find the visible scratchpad on this output with highest dim
+    // Pick the highest dim alpha among visible scratchpads on this output.
     let mut best_alpha = 0i32;
-    let mut sp_rect: Option<(i32, i32, i32, i32)> = None;
-
     for sp in &state.scratchpads {
         if !sp.visible || sp.output_idx != output_idx {
             continue;
@@ -364,18 +368,9 @@ fn render_dim_overlay(
         if let Some(sc) = state.config.scratchpads.get(sp.config_idx) {
             if sc.dim_alpha > best_alpha {
                 best_alpha = sc.dim_alpha;
-                let workarea = state.outputs.get(sp.output_idx)
-                    .map(|o| o.workarea)
-                    .unwrap_or_else(|| smithay::utils::Rectangle::new((0, 0).into(), (800, 600).into()));
-                let sw = (workarea.size.w as f32 * sc.width_pct as f32 / 100.0) as i32;
-                let sh = (workarea.size.h as f32 * sc.height_pct as f32 / 100.0) as i32;
-                let sx = workarea.loc.x + (workarea.size.w - sw) / 2;
-                let sy = workarea.loc.y + (workarea.size.h - sh) / 2;
-                sp_rect = Some((sx, sy, sw, sh));
             }
         }
     }
-
     let alpha = match best_alpha {
         a if a > 0 => a as u8,
         _ => return Vec::new(),
@@ -388,39 +383,13 @@ fn render_dim_overlay(
     let ow = out.size.0;
     let oh = out.size.1;
 
-    // sp_rect is in GLOBAL compositor coordinates (workarea.loc + offset).
-    // make_dim_rect interprets its position as OUTPUT-LOCAL — the same
-    // convention the bar uses, where Point::from((0, 0)) means the top-left
-    // of each output. So we subtract the output's location to convert the
-    // hole rect into output-local space before slicing the four dim bars
-    // around it. On a single-monitor setup output.location is (0,0) and
-    // this is a no-op; on multi-monitor it was previously offsetting the
-    // hole by the output's global x and pulling the dim rects across the
-    // scratchpad windows.
-    let (gsx, gsy, sw, sh) = sp_rect.unwrap_or((out.location.x, out.location.y, ow, oh));
-    let sx = gsx - out.location.x;
-    let sy = gsy - out.location.y;
-
-    // Four rects around the scratchpad hole (output-local coords)
+    // One full-screen output-local rect. Partitioning space elements and
+    // ordering the dim between workspace and scratchpad elements in
+    // render_frame is what keeps scratchpad windows visible on top.
     let mut elements = Vec::new();
-
-    // Top bar (full width, from top to scratchpad top)
-    if let Some(e) = make_dim_rect(renderer, 0, 0, ow, sy, alpha) {
+    if let Some(e) = make_dim_rect(renderer, 0, 0, ow, oh, alpha) {
         elements.push(e);
     }
-    // Bottom bar (full width, from scratchpad bottom to output bottom)
-    if let Some(e) = make_dim_rect(renderer, 0, sy + sh, ow, oh - sy - sh, alpha) {
-        elements.push(e);
-    }
-    // Left bar (scratchpad height, from left edge to scratchpad left)
-    if let Some(e) = make_dim_rect(renderer, 0, sy, sx, sh, alpha) {
-        elements.push(e);
-    }
-    // Right bar (scratchpad height, from scratchpad right to right edge)
-    if let Some(e) = make_dim_rect(renderer, sx + sw, sy, ow - sx - sw, sh, alpha) {
-        elements.push(e);
-    }
-
     elements
 }
 
