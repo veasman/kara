@@ -91,7 +91,7 @@ impl Gate {
 
     /// Re-layout after a scratchpad or regular workspace mutation.
     fn relayout_active(&mut self) {
-        if let Some(sp_idx) = self.focused_scratchpad {
+        if let Some(sp_idx) = self.active_scratchpad_for_focus() {
             self.apply_scratchpad_layout(sp_idx);
         } else {
             self.apply_layout();
@@ -100,7 +100,7 @@ impl Gate {
     }
 
     fn kill_focused(&mut self) {
-        if let Some(sp_idx) = self.focused_scratchpad {
+        if let Some(sp_idx) = self.active_scratchpad_for_focus() {
             let ws = &self.scratchpads[sp_idx].workspace;
             if let Some(window) = ws.focused() {
                 window.clone().toplevel().unwrap().send_close();
@@ -115,7 +115,7 @@ impl Gate {
     }
 
     fn do_focus_next(&mut self) {
-        if let Some(sp_idx) = self.focused_scratchpad {
+        if let Some(sp_idx) = self.active_scratchpad_for_focus() {
             self.scratchpads[sp_idx].workspace.focus_next();
         } else {
             let ws_idx = self.effective_ws(self.focused_output);
@@ -125,7 +125,7 @@ impl Gate {
     }
 
     fn do_focus_prev(&mut self) {
-        if let Some(sp_idx) = self.focused_scratchpad {
+        if let Some(sp_idx) = self.active_scratchpad_for_focus() {
             self.scratchpads[sp_idx].workspace.focus_prev();
         } else {
             let ws_idx = self.effective_ws(self.focused_output);
@@ -135,7 +135,7 @@ impl Gate {
     }
 
     fn do_zoom_master(&mut self) {
-        if let Some(sp_idx) = self.focused_scratchpad {
+        if let Some(sp_idx) = self.active_scratchpad_for_focus() {
             self.scratchpads[sp_idx].workspace.zoom_master();
         } else {
             let ws_idx = self.effective_ws(self.focused_output);
@@ -145,7 +145,7 @@ impl Gate {
     }
 
     fn do_toggle_monocle(&mut self) {
-        if let Some(sp_idx) = self.focused_scratchpad {
+        if let Some(sp_idx) = self.active_scratchpad_for_focus() {
             self.scratchpads[sp_idx].workspace.toggle_layout();
             self.apply_scratchpad_layout(sp_idx);
         } else {
@@ -157,7 +157,7 @@ impl Gate {
 
     fn do_toggle_fullscreen(&mut self) {
         // Block fullscreen for scratchpad windows
-        if self.focused_scratchpad.is_some() {
+        if self.active_scratchpad_for_focus().is_some() {
             tracing::debug!("fullscreen not available in scratchpad");
             return;
         }
@@ -190,7 +190,7 @@ impl Gate {
     }
 
     fn do_toggle_float(&mut self) {
-        if let Some(sp_idx) = self.focused_scratchpad {
+        if let Some(sp_idx) = self.active_scratchpad_for_focus() {
             self.scratchpads[sp_idx].workspace.toggle_focused_floating();
         } else {
             let ws_idx = self.effective_ws(self.focused_output);
@@ -215,7 +215,29 @@ impl Gate {
         };
 
         if self.scratchpads[sp_idx].visible {
-            // Hide this scratchpad
+            // Three cases when toggling a visible scratchpad:
+            //
+            // (a) It's on the focused output → hide it.
+            // (b) It's on a different output → MOVE it to the focused output
+            //     instead of hiding. Re-anchor the scratchpad's `output_idx`
+            //     and re-layout so the windows reposition in the new monitor's
+            //     workarea. The user thinks of the scratchpad as one object
+            //     that follows them across monitors.
+            if self.scratchpads[sp_idx].output_idx != self.focused_output {
+                self.scratchpads[sp_idx].output_idx = self.focused_output;
+                self.focused_scratchpad = Some(sp_idx);
+                self.apply_layout();
+                self.apply_scratchpad_layout(sp_idx);
+                self.apply_focus();
+                self.bar_dirty = true;
+                tracing::debug!(
+                    "scratchpad '{sp_name}' moved to {}",
+                    self.outputs[self.focused_output].output.name()
+                );
+                return;
+            }
+
+            // (a) — hide
             let windows: Vec<_> = self.scratchpads[sp_idx].workspace.clients.clone();
 
             // Instant hide — windows, borders, dim all disappear in the same frame.
@@ -286,7 +308,7 @@ impl Gate {
     }
 
     fn do_adjust_mfact(&mut self, delta: f32) {
-        if let Some(sp_idx) = self.focused_scratchpad {
+        if let Some(sp_idx) = self.active_scratchpad_for_focus() {
             self.scratchpads[sp_idx].workspace.adjust_mfact(delta);
             self.apply_scratchpad_layout(sp_idx);
         } else {
@@ -451,6 +473,11 @@ impl Gate {
         self.workspaces[src_ws].remove_client(&window);
         self.space.unmap_elem(&window);
         self.workspaces[dst_ws].add_client(window);
+
+        // The window's new home is the destination monitor; keyboard focus
+        // should follow it so the user can keep typing into the same window
+        // they just moved.
+        self.focused_output = target;
 
         self.bar_dirty = true;
         self.apply_layout();

@@ -272,26 +272,22 @@ fn build_title(ctx: &ModuleContext) -> ModuleContent {
 }
 
 fn build_monitor(ctx: &ModuleContext) -> ModuleContent {
-    // Compact form. The number is wrapped in brackets when this monitor has
-    // keyboard focus, plain otherwise. Color carries the same signal in
-    // case the bracket is too subtle. Sync state is appended after.
+    // Display: `<icon> <number>` for unfocused, `<icon> <number> <sync>` if
+    // sync is on. Focus is conveyed entirely by color (accent vs muted) so
+    // there is no extra punctuation cluttering the module — the user found
+    // bracket and dot prefixes ugly. The number stays plain regardless.
     let n = ctx.monitor_id + 1;
-    let body = if ctx.is_focused_monitor {
-        format!("[{n}]")
-    } else {
-        format!(" {n} ")
-    };
 
     let text = if ctx.icons {
         if ctx.sync_enabled {
-            format!("\u{f0379}{body}\u{f0b38}") // 󰍹 mon  󰬸 sync
+            format!("\u{f0379} {n} \u{f0b38}") // 󰍹 mon  󰬸 sync
         } else {
-            format!("\u{f0379}{body}")
+            format!("\u{f0379} {n}")
         }
     } else if ctx.sync_enabled {
-        format!("mon{body}sync")
+        format!("mon {n} sync")
     } else {
-        format!("mon{body}")
+        format!("mon {n}")
     };
 
     let color = if !ctx.colors {

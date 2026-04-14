@@ -862,37 +862,63 @@ impl Gate {
         }
     }
 
-    /// Set keyboard focus to the currently focused window on the focused output's workspace.
+    /// Returns Some(sp_idx) iff there is a visible scratchpad anchored to the
+    /// currently focused output. Most keybinds (`do_focus_next`,
+    /// `do_kill_focused`, `do_toggle_float`, etc.) should only treat a
+    /// scratchpad as "active" when the user is actually looking at it — so
+    /// they all gate on this method instead of the `focused_scratchpad`
+    /// field, which stays set as a "last toggled" anchor across monitor
+    /// changes and isn't always the right thing to look at.
+    pub fn active_scratchpad_for_focus(&self) -> Option<usize> {
+        self.scratchpads
+            .iter()
+            .position(|sp| sp.visible && sp.output_idx == self.focused_output)
+    }
+
+    /// Determine which single window across the whole desktop should hold
+    /// keyboard focus right now. If a scratchpad is visible on the focused
+    /// output, its focused client wins; otherwise the focused workspace's
+    /// focused client wins. Scratchpads on *other* monitors do not steal
+    /// focus from the focused output — the user can mod+focus_monitor away
+    /// from a scratchpad without losing input on the new monitor.
+    fn compute_focused_window(&self) -> Option<Window> {
+        if let Some(sp_idx) = self.active_scratchpad_for_focus() {
+            return self.scratchpads[sp_idx].workspace.focused().cloned();
+        }
+        let ws_idx = self.effective_ws(self.focused_output);
+        self.workspaces.get(ws_idx).and_then(|ws| ws.focused().cloned())
+    }
+
+    /// Set keyboard focus to the single window across the whole desktop that
+    /// should currently be active. Deactivates every other client in every
+    /// workspace and every scratchpad so the focus border (rendered when
+    /// `set_activated(true)`) lives on exactly one window — even when a
+    /// scratchpad is visible on a different monitor than the focused one.
     pub fn apply_focus(&mut self) {
         let serial = SERIAL_COUNTER.next_serial();
 
-        // If a scratchpad is focused, use its workspace for focus
-        let focused_window = if let Some(sp_idx) = self.focused_scratchpad {
-            self.scratchpads[sp_idx].workspace.focused().cloned()
-        } else {
-            let ws_idx = self.effective_ws(self.focused_output);
-            self.workspaces[ws_idx].focused().cloned()
-        };
+        let focused_window = self.compute_focused_window();
 
-        if let Some(window) = focused_window {
-            // Deactivate all windows in the active workspace
-            if let Some(sp_idx) = self.focused_scratchpad {
-                for w in &self.scratchpads[sp_idx].workspace.clients {
-                    w.set_activated(false);
-                }
-            }
-            let ws_idx = self.effective_ws(self.focused_output);
-            for w in &self.workspaces[ws_idx].clients {
+        // Globally deactivate every client. set_activated() dedupes when the
+        // state already matches, so this is cheap on subsequent calls.
+        for ws in &self.workspaces {
+            for w in &ws.clients {
                 w.set_activated(false);
             }
-            window.set_activated(true);
+        }
+        for sp in &self.scratchpads {
+            for w in &sp.workspace.clients {
+                w.set_activated(false);
+            }
+        }
 
+        if let Some(window) = focused_window {
+            window.set_activated(true);
             if let Some(toplevel) = window.toplevel() {
                 let wl_surface = toplevel.wl_surface().clone();
                 let keyboard = self.seat.get_keyboard().unwrap();
                 keyboard.set_focus(self, Some(wl_surface), serial);
             }
-
             self.space.raise_element(&window, true);
         } else {
             let keyboard = self.seat.get_keyboard().unwrap();
