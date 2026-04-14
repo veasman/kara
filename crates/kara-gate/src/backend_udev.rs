@@ -731,11 +731,26 @@ pub fn run(
                 }
             };
 
+            // NOTE: allocate the primary-plane swapchain from the PRIMARY
+            // GbmDevice, not evdi's. evdi's own GbmDevice returns dumb
+            // buffers backed by software-EGL (llvmpipe), and the MultiRenderer
+            // cross-GPU copy path silently falls back to a CPU texture_copy
+            // when the llvmpipe EGL context can't import AMD dmabufs — which
+            // is slow, not atomic with scanout, and produced the glitchy
+            // black-patch flickering on the user's DisplayLink monitors.
+            //
+            // Allocating from primary_gbm means the compositor's swapchain
+            // lives in AMD memory, render_frame runs a single-GPU MultiRenderer
+            // on AMD, and the resulting dmabuf is handed to evdi's DrmSurface
+            // which wraps it via drmModeAddFB2. The buffer must be Linear +
+            // Xrgb/Argb for this to work, which is exactly what we filtered
+            // evdi_renderer_formats down to above.
             let gbm_allocator = GbmAllocator::new(
-                evdi_gbm.clone(),
+                primary_gbm.clone(),
                 GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
             );
-            let gbm_exporter = GbmFramebufferExporter::new(evdi_gbm.clone(), None);
+            let gbm_exporter = GbmFramebufferExporter::new(primary_gbm.clone(), None);
+            let _ = &evdi_gbm; // evdi's own gbm stays in scope but is unused
 
             // Last arg is cursor_gbm: None disables HW cursor plane. evdi has
             // no cursor plane; the cursor is composited into the primary
@@ -1005,11 +1020,11 @@ pub fn run(
 
 /// Render a frame for a specific output via its DrmCompositor.
 ///
-/// Borrows a short-lived `MultiRenderer` from the `GpuManager` for the
-/// duration of this call. For outputs whose owning node matches the primary
-/// render node, that's a cheap single-GPU collapse. For outputs on scan-out-
-/// only devices (evdi), the `GpuManager` allocates on the primary render node
-/// and copies across to the evdi target via a dmabuf import at `Xrgb8888`.
+/// Every frame is rendered on the primary render node (AMD). Evdi outputs
+/// get their swapchains allocated from the primary GbmDevice at construction
+/// time, so their DrmCompositor renders directly into AMD-backed dmabufs and
+/// then wraps them as evdi framebuffers via `drmModeAddFB2` when scheduling
+/// page flips — no cross-GPU copy, no llvmpipe software fallback.
 fn render_frame(
     instance: &mut OutputInstance,
     gpu_manager: &mut GpuManager<KaraApi>,
@@ -1017,16 +1032,11 @@ fn render_frame(
     state: &mut Gate,
     output_idx: usize,
 ) {
-    let renderer_result = if instance.node == primary_node {
-        gpu_manager.single_renderer(&instance.node)
-    } else {
-        gpu_manager.renderer(&primary_node, &instance.node, Fourcc::Xrgb8888)
-    };
-    let mut renderer = match renderer_result {
+    let mut renderer = match gpu_manager.single_renderer(&primary_node) {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(
-                "failed to obtain MultiRenderer for {:?}: {e}",
+                "failed to obtain primary MultiRenderer for {:?}: {e}",
                 instance.node
             );
             return;
