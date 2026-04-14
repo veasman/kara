@@ -1212,7 +1212,22 @@ impl XdgShellHandler for Gate {
 
             self.apply_layout();
             if let Some(sp_idx) = sp_removed {
-                if self.scratchpads[sp_idx].visible {
+                // If this was the last window in the scratchpad, auto-hide it
+                // and reset `started` so the next toggle re-runs the autostart
+                // command (backlog #22: scratchpad lifecycle).
+                let is_empty = self.scratchpads[sp_idx].workspace.clients.is_empty();
+                if is_empty {
+                    self.scratchpads[sp_idx].visible = false;
+                    self.scratchpads[sp_idx].hiding = false;
+                    self.scratchpads[sp_idx].started = false;
+                    if self.focused_scratchpad == Some(sp_idx) {
+                        self.focused_scratchpad = None;
+                    }
+                    self.scratchpad_border_rects.clear();
+                    self.scratchpad_border_cache.clear();
+                    self.scratchpad_border_offsets.clear();
+                    self.apply_layout();
+                } else if self.scratchpads[sp_idx].visible {
                     self.apply_scratchpad_layout(sp_idx);
                 } else {
                     self.scratchpad_border_rects.clear();
