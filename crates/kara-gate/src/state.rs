@@ -697,6 +697,15 @@ impl Gate {
         let border_px = self.config.general.border_px;
         let geometries = layout_workspace(&self.scratchpads[sp_idx].workspace, sp_rect, border_px);
 
+        // Drop stale base positions for this scratchpad before rebuilding —
+        // otherwise every re-layout (e.g. spawning a new window into a visible
+        // scratchpad) appends fresh entries on top of old ones, and the
+        // border render path's index-based correlation with window_base_positions
+        // gets out of sync → borders drawn at prior-frame coordinates.
+        let sp_windows: Vec<Window> =
+            self.scratchpads[sp_idx].workspace.clients.iter().cloned().collect();
+        self.window_base_positions.retain(|(w, _)| !sp_windows.contains(w));
+
         self.scratchpad_border_rects.clear();
         let mut mapped_windows = Vec::new();
         for geom in &geometries {

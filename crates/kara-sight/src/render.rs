@@ -275,16 +275,22 @@ impl BarRenderer {
                 theme.text_muted
             };
 
+            // Advance by element width only; add `gap` only between elements so
+            // the module occupies exactly 9*elem + 8*gap, matching measure_workspaces.
+            let add_gap = i < 8;
+
             if ctx.icons {
                 let radius = if is_current { dot_size * 0.6 } else { dot_size * 0.45 };
                 fill_circle(pixmap, cx + dot_size / 2.0, center_y, radius, color_from_u32(color));
-                cx += dot_size + gap;
+                cx += dot_size;
+                if add_gap { cx += gap; }
             } else {
                 let digit = format!("{}", i + 1);
                 let text_y = self.text.center_y_offset(center_y);
                 self.text.draw(pixmap, &digit, cx, text_y, color);
                 let digit_w = self.text.measure(&digit) as f32;
-                cx += digit_w + gap;
+                cx += digit_w;
+                if add_gap { cx += gap; }
             }
         }
     }
