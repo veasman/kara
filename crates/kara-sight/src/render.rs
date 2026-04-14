@@ -163,14 +163,18 @@ impl BarRenderer {
     }
 
     fn measure_workspaces(&mut self, ctx: &ModuleContext) -> u32 {
+        // Compute in f32 then ceil so the pill width matches what draw_workspaces
+        // actually renders — otherwise int truncation underreports the content
+        // width and the pill ends up narrower than the dots, leaving visibly
+        // asymmetric padding on the right.
         if ctx.icons {
-            let dot_size = (self.text.font_size * 0.45) as u32;
-            let gap = (self.text.font_size * 0.4) as u32;
-            dot_size * 9 + gap * 8
+            let dot_size = self.text.font_size * 0.45;
+            let gap = self.text.font_size * 0.4;
+            (dot_size * 9.0 + gap * 8.0).ceil() as u32
         } else {
-            let digit_w = self.text.measure("0");
-            let gap = (self.text.font_size * 0.3) as u32;
-            digit_w * 9 + gap * 8
+            let digit_w = self.text.measure("0") as f32;
+            let gap = self.text.font_size * 0.3;
+            (digit_w * 9.0 + gap * 8.0).ceil() as u32
         }
     }
 
