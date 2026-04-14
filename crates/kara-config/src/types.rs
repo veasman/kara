@@ -367,6 +367,11 @@ pub struct MonitorConfig {
     pub scale: Option<f64>,
     pub rotation: MonitorRotation,
     pub enabled: bool,
+    /// Marks this monitor as the primary output. The primary monitor receives
+    /// initial focus when kara starts and is the default destination for new
+    /// windows when no other output has the pointer. At most one monitor
+    /// should set this; if multiple do, the first one wins.
+    pub primary: bool,
 }
 
 // ── Input devices ───────────────────────────────────────────────────

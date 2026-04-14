@@ -819,13 +819,54 @@ pub fn run(
         std::process::exit(1);
     }
 
+    // Sort outputs by their x-coordinate so mod+focus_monitor_next/prev cycles
+    // left-to-right deterministically, regardless of the (HashMap-derived)
+    // order kara opened the GPUs in. `state.outputs` and `output_instances`
+    // are parallel vectors — the render loop calls
+    // `state.outputs.get(idx)` where `idx` is the index in `output_instances`
+    // — so they must be sorted in lockstep. Pair, sort, unpair.
+    {
+        let mut paired: Vec<_> = state
+            .outputs
+            .drain(..)
+            .zip(output_instances.drain(..))
+            .collect();
+        paired.sort_by_key(|(o, _)| (o.location.x, o.location.y));
+        for (o, inst) in paired {
+            state.outputs.push(o);
+            output_instances.push(inst);
+        }
+    }
+
+    // Determine the primary monitor: pick the first MonitorConfig with
+    // `primary` set. Fall back to whichever monitor is at x=0 (leftmost), or
+    // index 0.
+    let primary_idx = {
+        let primary_name = state
+            .config
+            .monitors
+            .iter()
+            .find(|m| m.primary && m.enabled)
+            .map(|m| m.name.clone());
+        let by_config = primary_name.as_ref().and_then(|name| {
+            state
+                .outputs
+                .iter()
+                .position(|o| o.output.name() == *name)
+        });
+        by_config
+            .or_else(|| state.outputs.iter().position(|o| o.location.x == 0))
+            .unwrap_or(0)
+    };
+    state.focused_output = primary_idx;
+
     // Set initial workspace assignments for independent mode
     for (i, out) in state.outputs.iter_mut().enumerate() {
         out.current_ws = i % state.workspaces.len();
     }
 
-    // Center pointer on first output
-    if let Some(out) = state.outputs.first() {
+    // Center pointer on the primary output
+    if let Some(out) = state.outputs.get(primary_idx) {
         state.pointer_location = (
             out.location.x as f64 + out.size.0 as f64 / 2.0,
             out.location.y as f64 + out.size.1 as f64 / 2.0,

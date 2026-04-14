@@ -673,6 +673,16 @@ fn parse_environment_line(tokens: &[String], env: &mut Vec<EnvDirective>, ctx: &
 }
 
 fn parse_monitor_line(tokens: &[String], mon: &mut MonitorConfig, _ctx: &ParseContext) {
+    // Bare-keyword shortcut for `primary` — `primary` and `primary true` are
+    // both accepted; `primary false` explicitly clears.
+    if tokens[0] == "primary" {
+        mon.primary = if tokens.len() >= 2 {
+            matches!(tokens[1].as_str(), "true" | "yes" | "1")
+        } else {
+            true
+        };
+        return;
+    }
     if tokens.len() < 2 { return; }
     match tokens[0].as_str() {
         "resolution" | "mode" | "res" => {
@@ -954,6 +964,7 @@ fn load_file_recursive(
                         scale: None,
                         rotation: MonitorRotation::Normal,
                         enabled: true,
+                        primary: false,
                     });
                     let idx = config.monitors.len() - 1;
                     block = Block::Monitor(idx);

@@ -416,15 +416,24 @@ impl Gate {
         let new_idx = ((self.focused_output as i32 + direction).rem_euclid(count)) as usize;
         self.focused_output = new_idx;
 
-        // Warp pointer to center of new output
+        // Warp pointer to center of new output. The cursor render checks
+        // `cursor_is_idle` (no movement in 1s) before drawing — after a
+        // keybind-driven warp the cursor would otherwise stay invisible
+        // since update_cursor_idle was never called. Reset it explicitly.
         let out = &self.outputs[new_idx];
         self.pointer_location = (
             out.location.x as f64 + out.size.0 as f64 / 2.0,
             out.location.y as f64 + out.size.1 as f64 / 2.0,
         ).into();
+        self.cursor_idle_pos = self.pointer_location;
+        self.cursor_last_moved = std::time::Instant::now();
+
+        // Repaint the bar so its monitor module reflects the new focus.
+        self.bar_dirty = true;
 
         self.apply_focus();
-        tracing::debug!("focused monitor {new_idx}");
+        let name = self.outputs[new_idx].output.name();
+        tracing::debug!("focused monitor {new_idx} ({name})");
     }
 
     fn do_send_monitor(&mut self, direction: i32) {
@@ -442,12 +451,15 @@ impl Gate {
             None => return,
         };
 
-        tracing::debug!("sending window to monitor {target}");
+        let src_name = self.outputs[self.focused_output].output.name();
+        let dst_name = self.outputs[target].output.name();
+        tracing::debug!("sending window {src_name} → {dst_name}");
 
         self.workspaces[src_ws].remove_client(&window);
         self.space.unmap_elem(&window);
         self.workspaces[dst_ws].add_client(window);
 
+        self.bar_dirty = true;
         self.apply_layout();
         self.apply_focus();
     }
