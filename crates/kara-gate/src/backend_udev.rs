@@ -184,13 +184,9 @@ pub fn run(
             .to_string();
         let is_primary_hint = primary.as_ref() == Some(g);
 
-        // Probe the DrmNode BEFORE opening the device. DrmNode::from_path and
-        // node_with_type only stat() — no file open, no libseat interaction.
-        // This lets us skip scan-out-only devices (evdi) early, because
-        // opening an evdi card via libseat in become_master mode was claiming
-        // some session state that caused the subsequent card1 (AMD) open to
-        // be demoted to unprivileged mode — kara could render offscreen but
-        // page flips silently no-oped and the display stayed dark.
+        // Probe the DrmNode BEFORE opening so we know whether this device has
+        // a render node (normal GPU) or is scan-out-only (evdi/DisplayLink).
+        // Both DrmNode::from_path and node_with_type are pure stat() calls.
         let card_node = match DrmNode::from_path(g) {
             Ok(n) => n,
             Err(e) => {
@@ -199,17 +195,9 @@ pub fn run(
             }
         };
         let render_node = card_node.node_with_type(NodeType::Render).and_then(|r| r.ok());
+        let is_scanout_only = render_node.is_none();
 
-        if render_node.is_none() {
-            tracing::info!(
-                "found GPU: {} (scan-out only — not opened in M1, will return in M3)",
-                g.display(),
-            );
-            continue;
-        }
-
-        // Count connected connectors via sysfs so we can pick a "best" device
-        // without opening the device twice.
+        // Count connected connectors via sysfs.
         let sysfs_dir = format!("/sys/class/drm/{card_name}");
         let connected_outputs = std::fs::read_dir(&sysfs_dir)
             .map(|entries| {
@@ -243,7 +231,17 @@ pub fn run(
             }
         };
         let drm_fd = DrmDeviceFd::new(DeviceFd::from(fd));
-        let (drm_device, drm_notifier) = match DrmDevice::new(drm_fd.clone(), true) {
+
+        // `disable_connectors` tells smithay whether to reset every connector's
+        // existing CRTC binding at construction. For the render-capable primary
+        // device we pass `true` (we're about to reconfigure it anyway). For
+        // scan-out-only devices we pass `false` — evdi already has the
+        // DisplayLinkManager daemon talking to it, and an aggressive reset on
+        // one device appears to destabilize shared DRM state enough that the
+        // primary device's subsequent mode set silently no-ops. Non-destructive
+        // open is safe here because M3-a only reads connector info; the actual
+        // mode set will happen in M3-b with its own DrmCompositor.
+        let (drm_device, drm_notifier) = match DrmDevice::new(drm_fd.clone(), !is_scanout_only) {
             Ok(pair) => pair,
             Err(e) => {
                 tracing::warn!("skipping GPU {}: DrmDevice::new failed: {e}", g.display());
@@ -258,11 +256,18 @@ pub fn run(
             }
         };
 
-        tracing::info!(
-            "found GPU: {} ({connected_outputs} connected output(s){}, render node present)",
-            g.display(),
-            if is_primary_hint { ", udev primary" } else { "" },
-        );
+        if is_scanout_only {
+            tracing::info!(
+                "found GPU: {} ({connected_outputs} connected output(s), scan-out only — opened non-destructively for M3 enumeration)",
+                g.display(),
+            );
+        } else {
+            tracing::info!(
+                "found GPU: {} ({connected_outputs} connected output(s){}, render node present)",
+                g.display(),
+                if is_primary_hint { ", udev primary" } else { "" },
+            );
+        }
 
         drm_notifiers.push((card_node, drm_notifier));
         devices.insert(
