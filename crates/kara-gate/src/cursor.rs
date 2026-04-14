@@ -3,7 +3,7 @@
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::texture::{TextureBuffer, TextureRenderElement};
 use smithay::backend::renderer::element::Kind;
-use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
+use crate::backend_udev::{KaraRenderer, KaraTexture};
 use smithay::input::pointer::CursorImageStatus;
 use smithay::utils::{Point, Rectangle, Size, Transform};
 
@@ -59,9 +59,9 @@ pub fn load_xcursor(theme_name: &str, icon_name: &str, size: u32) -> Option<Curs
 /// Returns None if cursor is hidden, not on this output, or theme unavailable.
 pub fn build_cursor_element(
     state: &mut Gate,
-    renderer: &mut GlesRenderer,
+    renderer: &mut KaraRenderer<'_>,
     output_idx: usize,
-) -> Option<TextureRenderElement<GlesTexture>> {
+) -> Option<TextureRenderElement<KaraTexture>> {
     // Don't render cursor if idle
     if state.cursor_is_idle() {
         return None;

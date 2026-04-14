@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
+use crate::backend_udev::{KaraRenderer, KaraTexture};
 use smithay::backend::renderer::element::texture::TextureBuffer;
 use smithay::backend::allocator::Fourcc;
 use smithay::utils::{Size, Transform};
@@ -13,7 +13,7 @@ pub struct Wallpaper {
     rgba: Vec<u8>,
     width: u32,
     height: u32,
-    cached_texture: Option<TextureBuffer<GlesTexture>>,
+    cached_texture: Option<TextureBuffer<KaraTexture>>,
 }
 
 impl Wallpaper {
@@ -45,7 +45,7 @@ impl Wallpaper {
     }
 
     /// Get or create the GPU texture (cached after first upload).
-    pub fn texture(&mut self, renderer: &mut GlesRenderer) -> Option<&TextureBuffer<GlesTexture>> {
+    pub fn texture(&mut self, renderer: &mut KaraRenderer<'_>) -> Option<&TextureBuffer<KaraTexture>> {
         if self.cached_texture.is_none() {
             self.cached_texture = TextureBuffer::from_memory(
                 renderer,

@@ -13,10 +13,11 @@ use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 use smithay::backend::drm::compositor::{DrmCompositor, FrameFlags};
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType};
-use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::renderer::element::texture::TextureRenderElement;
-use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
+use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::renderer::multigpu::{GpuManager, MultiRenderer, MultiTexture};
+use smithay::backend::renderer::multigpu::gbm::GbmGlesBackend;
 use smithay::backend::renderer::ImportDma;
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::{Event as SessionEvent, Session};
@@ -37,13 +38,33 @@ use smithay::utils::{Buffer, Physical, Rectangle, Scale};
 use crate::render::build_custom_elements;
 use crate::state::Gate;
 
+/// The multi-GPU graphics API kara uses: GBM + GLES. Single-GPU systems still
+/// go through this; the `MultiRenderer` zero-cost-falls-back to a single
+/// `GlesRenderer` when render + target nodes match.
+pub type KaraApi = GbmGlesBackend<GlesRenderer, DrmDeviceFd>;
+
+/// Short-lived renderer borrowed from the GpuManager for one frame. Both
+/// lifetimes on `MultiRenderer` collapse onto `'a`, which is bound to the
+/// `&mut GpuManager` borrow — the renderer must not outlive the scope of the
+/// function that obtained it.
+pub type KaraRenderer<'a> = MultiRenderer<'a, 'a, KaraApi, KaraApi>;
+
+/// `TextureId` of our `MultiRenderer` — kept as a type alias so renderers in
+/// render.rs / cursor.rs / kara-sight don't have to spell out the full path.
+pub type KaraTexture = MultiTexture;
+
 /// Combined render element for DRM output: custom textures + wayland surfaces.
-pub enum DrmRenderElement {
-    Texture(TextureRenderElement<GlesTexture>),
-    Surface(WaylandSurfaceRenderElement<GlesRenderer>),
+///
+/// The `'a` lifetime is tied to the `KaraRenderer` borrow that built the
+/// surface elements — all DrmRenderElement values must be consumed (passed to
+/// `DrmCompositor::render_frame`) and dropped before the renderer goes out of
+/// scope.
+pub enum DrmRenderElement<'a> {
+    Texture(TextureRenderElement<KaraTexture>),
+    Surface(WaylandSurfaceRenderElement<KaraRenderer<'a>>),
 }
 
-impl Element for DrmRenderElement {
+impl<'a> Element for DrmRenderElement<'a> {
     fn id(&self) -> &Id {
         match self {
             Self::Texture(e) => e.id(),
@@ -73,18 +94,18 @@ impl Element for DrmRenderElement {
     }
 }
 
-impl RenderElement<GlesRenderer> for DrmRenderElement {
+impl<'a> RenderElement<KaraRenderer<'a>> for DrmRenderElement<'a> {
     fn draw(
         &self,
-        frame: &mut <GlesRenderer as smithay::backend::renderer::RendererSuper>::Frame<'_, '_>,
+        frame: &mut <KaraRenderer<'a> as smithay::backend::renderer::RendererSuper>::Frame<'_, '_>,
         src: Rectangle<f64, Buffer>,
         dst: Rectangle<i32, Physical>,
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
-    ) -> Result<(), <GlesRenderer as smithay::backend::renderer::RendererSuper>::Error> {
+    ) -> Result<(), <KaraRenderer<'a> as smithay::backend::renderer::RendererSuper>::Error> {
         match self {
-            Self::Texture(e) => RenderElement::<GlesRenderer>::draw(e, frame, src, dst, damage, opaque_regions),
-            Self::Surface(e) => RenderElement::<GlesRenderer>::draw(e, frame, src, dst, damage, opaque_regions),
+            Self::Texture(e) => RenderElement::<KaraRenderer<'a>>::draw(e, frame, src, dst, damage, opaque_regions),
+            Self::Surface(e) => RenderElement::<KaraRenderer<'a>>::draw(e, frame, src, dst, damage, opaque_regions),
         }
     }
 }
@@ -298,18 +319,31 @@ pub fn run(
         primary_node,
     );
 
-    // --- 4. GBM + EGL + GlesRenderer on the primary device ---
-    // M1 only uses a single renderer pinned to the primary device. M2 will
-    // replace this with smithay's MultiRenderer / GpuManager.
-    let gbm_device = devices[&primary_node].gbm_device.clone();
-    let egl_display = unsafe { EGLDisplay::new(gbm_device.clone()) }
-        .expect("failed to create EGL display");
-    let egl_context =
-        EGLContext::new(&egl_display).expect("failed to create EGL context");
-    let mut renderer = unsafe { GlesRenderer::new(egl_context) }
-        .expect("failed to create GLES renderer");
+    // --- 4. GbmGlesBackend + GpuManager ---
+    //
+    // Each frame borrows a short-lived `MultiRenderer` from the GpuManager via
+    // `single_renderer(&instance.node)`. On a single-GPU system the render
+    // and target devices match, so the MultiRenderer collapses onto a bare
+    // GlesRenderer with no copy overhead. M3 adds evdi-owning outputs via
+    // `renderer(render_node, target_node, Xrgb8888)` for the cross-GPU path.
+    let mut api_backend = KaraApi::default();
+    for (node, device) in &devices {
+        if let Err(e) = api_backend.add_node(*node, device.gbm_device.clone()) {
+            tracing::warn!("failed to register {} with GbmGlesBackend: {e}", device.card_name);
+        }
+    }
+    let mut gpu_manager: GpuManager<KaraApi> = GpuManager::new(api_backend)
+        .expect("failed to create GpuManager");
 
-    let renderer_formats = renderer.dmabuf_formats().into_iter().collect::<Vec<_>>();
+    // Dmabuf formats supported by the primary render node. Obtained via a
+    // scoped MultiRenderer so the mut borrow on gpu_manager doesn't outlive
+    // this block.
+    let renderer_formats: Vec<_> = {
+        let renderer = gpu_manager
+            .single_renderer(&primary_node)
+            .expect("failed to obtain primary MultiRenderer for format probe");
+        renderer.dmabuf_formats().into_iter().collect()
+    };
     let cursor_size = devices[&primary_node].drm_device.cursor_size();
 
     // --- 5. Enumerate connected outputs on the primary device ---
@@ -328,7 +362,10 @@ pub fn run(
     // This gives explicit control over which outputs are active.
     let has_monitor_config = !state.config.monitors.is_empty();
 
-    // Only iterate connectors on the primary device for M1.
+    // Only iterate connectors on the primary device for M1/M2.
+    // Clone the gbm_device up front so we can pass it to the GbmAllocator
+    // inside the connector loop without holding a borrow on the devices map.
+    let primary_gbm: GbmDevice<DrmDeviceFd> = devices[&primary_node].gbm_device.clone();
     let resources = devices[&primary_node]
         .drm_device
         .resource_handles()
@@ -474,10 +511,10 @@ pub fn run(
         };
 
         let gbm_allocator = GbmAllocator::new(
-            gbm_device.clone(),
+            primary_gbm.clone(),
             GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
         );
-        let gbm_exporter = GbmFramebufferExporter::new(gbm_device.clone(), None);
+        let gbm_exporter = GbmFramebufferExporter::new(primary_gbm.clone(), None);
 
         let drm_compositor = match DrmCompositor::new(
             &output,
@@ -491,7 +528,7 @@ pub fn run(
             ],
             renderer_formats.clone(),
             cursor_size,
-            Some(gbm_device.clone()),
+            Some(primary_gbm.clone()),
         ) {
             Ok(c) => c,
             Err(e) => {
@@ -636,7 +673,7 @@ pub fn run(
 
     // --- 7. Initial render + main loop ---
     for (idx, instance) in output_instances.iter_mut().enumerate() {
-        render_frame(instance, &mut renderer, &mut state, idx);
+        render_frame(instance, &mut gpu_manager, &mut state, idx);
     }
 
     loop {
@@ -729,22 +766,35 @@ pub fn run(
         // 6. Render outputs not waiting for a pending frame
         for (idx, instance) in output_instances.iter_mut().enumerate() {
             if !instance.frame_pending {
-                render_frame(instance, &mut renderer, &mut state, idx);
+                render_frame(instance, &mut gpu_manager, &mut state, idx);
             }
         }
     }
 }
 
 /// Render a frame for a specific output via its DrmCompositor.
+///
+/// Borrows a short-lived `MultiRenderer` from the `GpuManager` for the
+/// duration of this call. All render elements built inside this function
+/// carry the renderer's borrow lifetime and must be consumed (passed to
+/// `drm_compositor.render_frame`) before the function returns.
 fn render_frame(
     instance: &mut OutputInstance,
-    renderer: &mut GlesRenderer,
+    gpu_manager: &mut GpuManager<KaraApi>,
     state: &mut Gate,
     output_idx: usize,
 ) {
-    let custom_elements = build_custom_elements(state, renderer, output_idx);
-    let sp_borders = crate::render::build_scratchpad_borders(state, renderer, output_idx);
-    let sp_dim = crate::render::build_scratchpad_dim(state, renderer, output_idx);
+    let mut renderer = match gpu_manager.single_renderer(&instance.node) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("failed to obtain MultiRenderer for {:?}: {e}", instance.node);
+            return;
+        }
+    };
+
+    let custom_elements = build_custom_elements(state, &mut renderer, output_idx);
+    let sp_borders = crate::render::build_scratchpad_borders(state, &mut renderer, output_idx);
+    let sp_dim = crate::render::build_scratchpad_dim(state, &mut renderer, output_idx);
 
     // Use render_elements_for_region to get ONLY window elements (no layer surfaces).
     // Layer surfaces are rendered separately with correct positions from LayerMap.
@@ -752,9 +802,10 @@ fn render_frame(
         Some(g) => g,
         None => return,
     };
-    let space_elements: Vec<_> = state.space.render_elements_for_region(
-        renderer, &output_geo, 1.0, 1.0,
-    );
+    let space_elements: Vec<WaylandSurfaceRenderElement<KaraRenderer<'_>>> =
+        state.space.render_elements_for_region(
+            &mut renderer, &output_geo, 1.0, 1.0,
+        );
 
     // Element order (front-to-back for DrmCompositor — first is topmost):
     // cursor > keybind_overlay > top layers > sp_borders > sp_dim > space windows > custom
@@ -767,17 +818,17 @@ fn render_frame(
     //   → sp_dim (four rects AROUND the scratchpad hole: dims workspace
     //     clients while leaving the scratchpad area untouched)
     //   → sp_borders → layers → keybind overlay → cursor
-    let mut elements: Vec<DrmRenderElement> =
+    let mut elements: Vec<DrmRenderElement<'_>> =
         Vec::with_capacity(custom_elements.len() + sp_borders.len() + sp_dim.len() + space_elements.len() + 1);
 
     // Cursor (frontmost)
-    if let Some(cursor_elem) = crate::cursor::build_cursor_element(state, renderer, output_idx) {
+    if let Some(cursor_elem) = crate::cursor::build_cursor_element(state, &mut renderer, output_idx) {
         elements.push(DrmRenderElement::Texture(cursor_elem));
     }
 
     // Keybind overlay (in front of everything except cursor)
     elements.extend(
-        crate::render::build_keybind_overlay(state, renderer, output_idx)
+        crate::render::build_keybind_overlay(state, &mut renderer, output_idx)
             .into_iter()
             .map(DrmRenderElement::Texture),
     );
@@ -789,9 +840,9 @@ fn render_frame(
         for layer in map.layers().rev() {
             if matches!(layer.layer(), smithay::wayland::shell::wlr_layer::Layer::Top | smithay::wayland::shell::wlr_layer::Layer::Overlay) {
                 if let Some(geo) = map.layer_geometry(layer) {
-                    let layer_elements = AsRenderElements::<GlesRenderer>::render_elements::<
-                        WaylandSurfaceRenderElement<GlesRenderer>,
-                    >(layer, renderer, geo.loc.to_physical_precise_round(1.0), smithay::utils::Scale::from(1.0), 1.0);
+                    let layer_elements = AsRenderElements::<KaraRenderer<'_>>::render_elements::<
+                        WaylandSurfaceRenderElement<KaraRenderer<'_>>,
+                    >(layer, &mut renderer, geo.loc.to_physical_precise_round(1.0), smithay::utils::Scale::from(1.0), 1.0);
                     elements.extend(layer_elements.into_iter().map(DrmRenderElement::Surface));
                 }
             }
@@ -812,7 +863,7 @@ fn render_frame(
     elements.extend(custom_elements.into_iter().map(DrmRenderElement::Texture));
 
     match instance.drm_compositor.render_frame(
-        renderer,
+        &mut renderer,
         &elements,
         [0.05, 0.05, 0.05, 1.0],
         FrameFlags::empty(),
@@ -828,7 +879,7 @@ fn render_frame(
             // Screenshot capture — render to offscreen and save PNG
             if let Some(path) = state.screenshot_path.take() {
                 let region = state.screenshot_region.take();
-                capture_screenshot(renderer, &elements, state, output_idx, &path, region);
+                capture_screenshot(&mut renderer, &elements, state, output_idx, &path, region);
             }
         }
         Err(err) => {
@@ -837,9 +888,9 @@ fn render_frame(
     }
 }
 
-fn capture_screenshot(
-    renderer: &mut GlesRenderer,
-    elements: &[DrmRenderElement],
+fn capture_screenshot<'a>(
+    renderer: &mut KaraRenderer<'a>,
+    elements: &[DrmRenderElement<'a>],
     state: &Gate,
     output_idx: usize,
     path: &str,
@@ -853,7 +904,9 @@ fn capture_screenshot(
         None => return,
     };
 
-    // Create offscreen render target
+    // Create an offscreen GlesRenderbuffer. MultiRenderer<GbmGles, GbmGles>
+    // forwards `Offscreen<GlesRenderbuffer>` to the underlying GlesRenderer,
+    // so this works without needing a dmabuf round-trip.
     let mut offscreen: smithay::backend::renderer::gles::GlesRenderbuffer =
         match Offscreen::<smithay::backend::renderer::gles::GlesRenderbuffer>::create_buffer(
             renderer,
@@ -897,7 +950,7 @@ fn capture_screenshot(
         for elem in elements.iter().rev() {
             let geo = elem.geometry(smithay::utils::Scale::from(1.0));
             let src = elem.src();
-            RenderElement::<GlesRenderer>::draw(&*elem, &mut frame, src, geo, &[geo], &[]).ok();
+            RenderElement::<KaraRenderer<'a>>::draw(&*elem, &mut frame, src, geo, &[geo], &[]).ok();
         }
     }
 

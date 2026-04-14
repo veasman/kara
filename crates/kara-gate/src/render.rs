@@ -5,18 +5,18 @@
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::texture::{TextureBuffer, TextureRenderElement};
 use smithay::backend::renderer::element::Kind;
-use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::utils::{Point, Size, Transform};
 
+use crate::backend_udev::{KaraRenderer, KaraTexture};
 use crate::state::Gate;
 
 /// Render the bar to a texture for a specific output.
 /// CPU-side rasterization is cached and only redone when bar_dirty is set.
 pub fn render_bar(
     state: &mut Gate,
-    renderer: &mut GlesRenderer,
+    renderer: &mut KaraRenderer<'_>,
     output_idx: usize,
-) -> Vec<TextureRenderElement<GlesTexture>> {
+) -> Vec<TextureRenderElement<KaraTexture>> {
     if !state.config.bar.enabled {
         return Vec::new();
     }
@@ -159,8 +159,8 @@ fn render_border_set(
     space: &smithay::desktop::Space<smithay::desktop::Window>,
     border_px: i32,
     output: Option<&crate::state::OutputState>,
-    renderer: &mut GlesRenderer,
-) -> Vec<TextureRenderElement<GlesTexture>> {
+    renderer: &mut KaraRenderer<'_>,
+) -> Vec<TextureRenderElement<KaraTexture>> {
     if cache.len() != rects.len() {
         return Vec::new();
     }
@@ -231,10 +231,10 @@ fn render_border_set(
 /// Build all custom render elements for a specific output (wallpaper + borders + bar).
 pub fn build_custom_elements(
     state: &mut Gate,
-    renderer: &mut GlesRenderer,
+    renderer: &mut KaraRenderer<'_>,
     output_idx: usize,
-) -> Vec<TextureRenderElement<GlesTexture>> {
-    let mut elements: Vec<TextureRenderElement<GlesTexture>> = Vec::new();
+) -> Vec<TextureRenderElement<KaraTexture>> {
+    let mut elements: Vec<TextureRenderElement<KaraTexture>> = Vec::new();
 
     let has_fullscreen = state.outputs.get(output_idx)
         .map(|o| o.fullscreen_window.is_some())
@@ -280,18 +280,18 @@ pub fn build_custom_elements(
 /// Build dim overlay for visible scratchpads. Renders BEHIND space windows.
 pub fn build_scratchpad_dim(
     state: &Gate,
-    renderer: &mut GlesRenderer,
+    renderer: &mut KaraRenderer<'_>,
     output_idx: usize,
-) -> Vec<TextureRenderElement<GlesTexture>> {
+) -> Vec<TextureRenderElement<KaraTexture>> {
     render_dim_overlay(state, renderer, output_idx)
 }
 
 /// Build scratchpad border elements. Renders IN FRONT of space windows.
 pub fn build_scratchpad_borders(
     state: &mut Gate,
-    renderer: &mut GlesRenderer,
+    renderer: &mut KaraRenderer<'_>,
     output_idx: usize,
-) -> Vec<TextureRenderElement<GlesTexture>> {
+) -> Vec<TextureRenderElement<KaraTexture>> {
     let mut elements = Vec::new();
     let has_fullscreen = state.outputs.get(output_idx)
         .map(|o| o.fullscreen_window.is_some())
@@ -319,10 +319,10 @@ pub fn build_scratchpad_borders(
 
 /// Helper: create a dim rect texture at a position.
 fn make_dim_rect(
-    renderer: &mut GlesRenderer,
+    renderer: &mut KaraRenderer<'_>,
     x: i32, y: i32, w: i32, h: i32,
     alpha: u8,
-) -> Option<TextureRenderElement<GlesTexture>> {
+) -> Option<TextureRenderElement<KaraTexture>> {
     if w <= 0 || h <= 0 {
         return None;
     }
@@ -345,9 +345,9 @@ fn make_dim_rect(
 /// This dims the background without affecting scratchpad window content.
 fn render_dim_overlay(
     state: &Gate,
-    renderer: &mut GlesRenderer,
+    renderer: &mut KaraRenderer<'_>,
     output_idx: usize,
-) -> Vec<TextureRenderElement<GlesTexture>> {
+) -> Vec<TextureRenderElement<KaraTexture>> {
     // Find the visible scratchpad on this output with highest dim
     let mut best_alpha = 0i32;
     let mut sp_rect: Option<(i32, i32, i32, i32)> = None;
@@ -412,9 +412,9 @@ fn render_dim_overlay(
 /// Build the keybind overlay texture when visible.
 pub fn build_keybind_overlay(
     state: &Gate,
-    renderer: &mut GlesRenderer,
+    renderer: &mut KaraRenderer<'_>,
     output_idx: usize,
-) -> Vec<TextureRenderElement<GlesTexture>> {
+) -> Vec<TextureRenderElement<KaraTexture>> {
     if !state.keybind_overlay_visible {
         return Vec::new();
     }
