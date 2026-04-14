@@ -48,12 +48,13 @@ impl BarRenderer {
 
         let mut pixmap = Pixmap::new(width, height)?;
 
-        // Draw background
+        // Draw background. Bar background is ALWAYS flat — corner rounding
+        // is a module-level concern now, controlled by `module_radius` and
+        // applied per-pill inside `draw_module`.
         if bar_config.background {
-            let radius = bar_config.radius.max(0) as f32;
             fill_rounded_rect(
                 &mut pixmap, 0.0, 0.0, width as f32, height as f32,
-                radius, color_from_u32(theme.bg),
+                0.0, color_from_u32(theme.bg),
             );
         }
 
@@ -76,12 +77,12 @@ impl BarRenderer {
 
         // Measure all modules
         let uses_pills = bar_config.module_style == BarModuleStyle::Pill;
-        let pill_pad = if uses_pills { bar_config.padding_x.max(0) as u32 } else { 0 };
-        let item_gap = bar_config.gap.max(0) as u32;
-        let content_margin = bar_config.content_margin_x.max(0) as u32;
+        let pill_pad = if uses_pills { bar_config.module_padding_x.max(0) as u32 } else { 0 };
+        let item_gap = bar_config.module_gap.max(0) as u32;
+        let content_margin = bar_config.edge_padding_x.max(0) as u32;
 
         // Compute the vertical content area (where pills sit, and where content is centered)
-        let content_y = bar_config.content_margin_y.max(0);
+        let content_y = bar_config.edge_padding_y.max(0);
         let content_h = (height as i32 - content_y * 2).max(1);
 
         // Layout LEFT section (left to right)
@@ -200,11 +201,11 @@ impl BarRenderer {
         }
 
         let bar_height = bar_config.height;
-        let pill_pad = if uses_pills { bar_config.padding_x.max(0) } else { 0 };
+        let pill_pad = if uses_pills { bar_config.module_padding_x.max(0) } else { 0 };
 
         // Draw pill background (symmetric vertical inset)
         if uses_pills {
-            let radius = bar_config.radius.max(0) as f32;
+            let radius = bar_config.module_radius.max(0) as f32;
             draw_pill(pixmap, x as f32, content_y as f32, width as f32, content_h as f32, radius, theme);
         }
 

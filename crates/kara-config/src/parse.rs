@@ -380,9 +380,9 @@ fn parse_bar_line(tokens: &[String], bar: &mut Bar, ctx: &ParseContext) {
                 bar.height = v;
             }
         }
-        "radius" => {
+        "module_radius" => {
             if let Ok(v) = val.parse() {
-                bar.radius = v;
+                bar.module_radius = v;
             }
         }
         "modules" => match val {
@@ -407,40 +407,37 @@ fn parse_bar_line(tokens: &[String], bar: &mut Bar, ctx: &ParseContext) {
                 bar.minimal = true;
             }
         }
-        "margin_x" => {
+        "edge_padding_x" => {
             if let Ok(v) = val.parse() {
-                bar.margin_x = v;
+                bar.edge_padding_x = v;
             }
         }
-        "margin_y" => {
+        "edge_padding_y" => {
             if let Ok(v) = val.parse() {
-                bar.margin_y = v;
+                bar.edge_padding_y = v;
             }
         }
-        "content_margin_x" => {
+        "module_gap" => {
             if let Ok(v) = val.parse() {
-                bar.content_margin_x = v;
+                bar.module_gap = v;
             }
         }
-        "content_margin_y" => {
+        "module_padding_x" => {
             if let Ok(v) = val.parse() {
-                bar.content_margin_y = v;
+                bar.module_padding_x = v;
             }
         }
-        "gap" => {
+        "module_padding_y" => {
             if let Ok(v) = val.parse() {
-                bar.gap = v;
+                bar.module_padding_y = v;
             }
         }
-        "padding_x" => {
-            if let Ok(v) = val.parse() {
-                bar.padding_x = v;
-            }
-        }
-        "padding_y" => {
-            if let Ok(v) = val.parse() {
-                bar.padding_y = v;
-            }
+        // Removed field names — warn if anyone still has them.
+        "radius" | "margin_x" | "margin_y" | "content_margin_x"
+        | "content_margin_y" | "gap" | "padding_x" | "padding_y" => {
+            ctx.warn(&format!(
+                "bar field '{key}' was renamed in the config rehash — see example/kara-gate.conf"
+            ));
         }
         "volume_bar_enabled" => {
             if let Some(b) = parse_bool(val) {
@@ -940,14 +937,12 @@ fn sanitize(config: &mut Config) {
 
     let b = &mut config.bar;
     b.height = b.height.max(18);
-    b.gap = b.gap.max(0);
-    b.padding_x = b.padding_x.max(0);
-    b.padding_y = b.padding_y.max(0);
-    b.radius = b.radius.max(0);
-    b.margin_x = b.margin_x.max(0);
-    b.margin_y = b.margin_y.max(0);
-    b.content_margin_x = b.content_margin_x.max(0);
-    b.content_margin_y = b.content_margin_y.max(0);
+    b.module_gap = b.module_gap.max(0);
+    b.module_padding_x = b.module_padding_x.max(0);
+    b.module_padding_y = b.module_padding_y.max(0);
+    b.module_radius = b.module_radius.max(0);
+    b.edge_padding_x = b.edge_padding_x.max(0);
+    b.edge_padding_y = b.edge_padding_y.max(0);
     b.volume_bar_width = b.volume_bar_width.max(0);
     b.volume_bar_height = b.volume_bar_height.max(0);
     b.volume_bar_radius = b.volume_bar_radius.max(0);

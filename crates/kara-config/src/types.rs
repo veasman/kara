@@ -173,35 +173,49 @@ pub struct BarModule {
     pub arg: Option<String>,
 }
 
+/// Bar configuration. One concept per field. See the example config for the
+/// old → new name mapping if you're migrating.
+///
+/// Spatial model, from the outside in:
+///   bar (full width, `height` tall, flat background)
+///     → `edge_padding_x/y` inset
+///       → row of modules separated by `module_gap`
+///         → each module (pill or flat) has its own
+///           `module_padding_x/y` inside and `module_radius` corners
+///
+/// The bar itself never has rounded corners — rounding is a module-level
+/// concern.
 #[derive(Debug, Clone)]
 pub struct Bar {
     pub enabled: bool,
     pub background: bool,
     pub position: BarPosition,
     pub height: i32,
-    pub radius: i32,
+
     pub module_style: BarModuleStyle,
     pub icons: bool,
     pub colors: bool,
     pub minimal: bool,
-    /// Reserved: outer horizontal inset from screen edge (not yet wired)
-    pub margin_x: i32,
-    /// Reserved: outer vertical inset from screen edge (not yet wired)
-    pub margin_y: i32,
-    /// Horizontal padding from bar edge to first/last module
-    pub content_margin_x: i32,
-    /// Vertical inset of pill/content area from bar top/bottom edges
-    pub content_margin_y: i32,
-    /// Space between adjacent modules
-    pub gap: i32,
-    /// Horizontal padding inside pill backgrounds (pill mode only)
-    pub padding_x: i32,
-    /// Vertical padding inside pill backgrounds (pill mode only)
-    pub padding_y: i32,
+
+    /// Inset from bar left/right edge to first/last module.
+    pub edge_padding_x: i32,
+    /// Vertical inset of the module content area from bar top/bottom edges.
+    pub edge_padding_y: i32,
+    /// Space between adjacent modules.
+    pub module_gap: i32,
+    /// Horizontal padding inside a pill module background. Pill mode only.
+    pub module_padding_x: i32,
+    /// Vertical padding inside a pill module background. Pill mode only.
+    pub module_padding_y: i32,
+    /// Corner radius of pill module backgrounds. Applies only to modules,
+    /// never to the bar itself. 0 = square corners.
+    pub module_radius: i32,
+
     pub volume_bar_enabled: bool,
     pub volume_bar_width: i32,
     pub volume_bar_height: i32,
     pub volume_bar_radius: i32,
+
     pub modules: Vec<BarModule>,
 }
 
@@ -212,18 +226,16 @@ impl Default for Bar {
             background: true,
             position: BarPosition::Top,
             height: 24,
-            radius: 18,
             module_style: BarModuleStyle::Flat,
             icons: true,
             colors: true,
             minimal: false,
-            margin_x: 18,
-            margin_y: 10,
-            content_margin_x: 14,
-            content_margin_y: 2,
-            gap: 18,
-            padding_x: 12,
-            padding_y: 6,
+            edge_padding_x: 14,
+            edge_padding_y: 2,
+            module_gap: 18,
+            module_padding_x: 12,
+            module_padding_y: 6,
+            module_radius: 8,
             volume_bar_enabled: true,
             volume_bar_width: 46,
             volume_bar_height: 6,
