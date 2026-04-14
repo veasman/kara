@@ -1050,15 +1050,17 @@ impl Gate {
             return;
         }
 
-        // Focused scratchpad absorbs new windows
-        if let Some(sp_idx) = self.focused_scratchpad {
-            if self.scratchpads[sp_idx].visible {
-                tracing::debug!("new window routed to focused scratchpad");
-                self.scratchpads[sp_idx].workspace.add_client(window);
-                self.apply_scratchpad_layout(sp_idx);
-                self.apply_focus();
-                return;
-            }
+        // Focused scratchpad absorbs new windows ONLY if the user is
+        // currently looking at it. With multi-monitor + sandboxed scratchpads,
+        // a scratchpad on M1 must not capture a window the user spawned
+        // while focused on M2 — fall through to regular workspace routing
+        // on the focused output instead.
+        if let Some(sp_idx) = self.active_scratchpad_for_focus() {
+            tracing::debug!("new window routed to focused scratchpad");
+            self.scratchpads[sp_idx].workspace.add_client(window);
+            self.apply_scratchpad_layout(sp_idx);
+            self.apply_focus();
+            return;
         }
 
         // Regular workspace routing via rules

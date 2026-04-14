@@ -457,6 +457,28 @@ pub fn run(
             refresh: (drm_mode.vrefresh() * 1000) as i32,
         };
 
+        // Resolve the user's rotation config and convert to a smithay
+        // Transform. The transform is what the compositor applies when it
+        // composites elements onto the output's framebuffer; the underlying
+        // DRM mode is still the unrotated physical resolution.
+        let mon_rotation = mon_config
+            .as_ref()
+            .map(|mc| mc.rotation)
+            .unwrap_or(kara_config::MonitorRotation::Normal);
+        let transform = monitor_rotation_to_transform(mon_rotation);
+
+        // For 90°/270° rotations the OUTPUT's logical (user-facing) size is
+        // the mode size with width/height swapped — a 1920x1080 panel in
+        // portrait reports as 1080x1920 logical, and the workarea/window
+        // tile geometry must use the swapped dimensions.
+        let logical_size = if matches!(transform,
+            Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270)
+        {
+            (mode_size.1 as i32, mode_size.0 as i32)
+        } else {
+            (mode_size.0 as i32, mode_size.1 as i32)
+        };
+
         // Position override — use configured position instead of auto x_offset
         let mon_position = if let Some(Some((px, py))) = mon_config.as_ref().map(|mc| mc.position) {
             (px, py)
@@ -475,28 +497,20 @@ pub fn run(
         );
         output.change_current_state(
             Some(output_mode),
-            Some(Transform::Normal),
+            Some(transform),
             None,
             Some(mon_position.into()),
         );
         output.set_preferred(output_mode);
 
-        // Map in space and add to Gate
+        // Map in space and add to Gate using the logical (rotated) size so
+        // downstream layout/tile logic sees the correct usable area.
         state.space.map_output(&output, mon_position);
         state.add_output(
             output.clone(),
-            (mode_size.0 as i32, mode_size.1 as i32),
+            logical_size,
             mon_position.into(),
         );
-
-        // Log rotation config (not yet applied to DRM — needs GPU-side rotation support)
-        let mon_rotation = mon_config.as_ref().map(|mc| mc.rotation).unwrap_or(kara_config::MonitorRotation::Normal);
-        if mon_rotation != kara_config::MonitorRotation::Normal {
-            tracing::warn!(
-                "monitor {output_name}: rotation '{:?}' configured but not yet applied (needs GPU rotation support)",
-                mon_rotation
-            );
-        }
 
         // Create DRM surface + compositor for this output
         let drm_surface = match drm_device.create_surface(crtc_handle, drm_mode, &[*conn_handle]) {
@@ -685,6 +699,23 @@ pub fn run(
                 refresh: (drm_mode.vrefresh() * 1000) as i32,
             };
 
+            // Same rotation handling as the primary loop — see the matching
+            // block above. Evdi monitors hung off a DisplayLink dock can also
+            // be portrait-rotated and the user's config controls them with
+            // the same `monitor "..." { rotate left }` syntax.
+            let mon_rotation = mon_config
+                .as_ref()
+                .map(|mc| mc.rotation)
+                .unwrap_or(kara_config::MonitorRotation::Normal);
+            let transform = monitor_rotation_to_transform(mon_rotation);
+            let logical_size = if matches!(transform,
+                Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270)
+            {
+                (mode_size.1 as i32, mode_size.0 as i32)
+            } else {
+                (mode_size.0 as i32, mode_size.1 as i32)
+            };
+
             let mon_position = if let Some(Some((px, py))) =
                 mon_config.as_ref().map(|mc| mc.position)
             {
@@ -704,7 +735,7 @@ pub fn run(
             );
             output.change_current_state(
                 Some(output_mode),
-                Some(Transform::Normal),
+                Some(transform),
                 None,
                 Some(mon_position.into()),
             );
@@ -713,7 +744,7 @@ pub fn run(
             state.space.map_output(&output, mon_position);
             state.add_output(
                 output.clone(),
-                (mode_size.0 as i32, mode_size.1 as i32),
+                logical_size,
                 mon_position.into(),
             );
 
@@ -1291,6 +1322,21 @@ fn capture_screenshot<'a>(
             }
         }
         Err(e) => tracing::error!("screenshot: copy_framebuffer failed: {e:?}"),
+    }
+}
+
+/// Map a kara monitor rotation config to a smithay `Transform`.
+///
+/// Convention: kara's `rotate left` matches xrandr's `--rotate left` —
+/// monitor's top edge points left, content rotated 90° counter-clockwise.
+/// In smithay's `Transform` enum that's `_270` (rotate 270° clockwise).
+/// `rotate right` is 90° clockwise (`_90`); `rotate flipped` is 180°.
+fn monitor_rotation_to_transform(r: kara_config::MonitorRotation) -> Transform {
+    match r {
+        kara_config::MonitorRotation::Normal => Transform::Normal,
+        kara_config::MonitorRotation::Left => Transform::_270,
+        kara_config::MonitorRotation::Right => Transform::_90,
+        kara_config::MonitorRotation::Flipped => Transform::_180,
     }
 }
 
