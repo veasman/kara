@@ -138,6 +138,10 @@ pub struct Gate {
     /// Helper clients like wl-copy create a toplevel purely to obtain an input serial
     /// for set_selection and never commit a buffer — they must not enter the layout.
     pub unmapped_windows: Vec<Window>,
+    /// Helper-client toplevels (e.g. wl-clipboard) given transient keyboard focus so
+    /// they can call `wl_data_device.set_selection`, but never added to a workspace.
+    /// Focus is restored to the active workspace when the helper is destroyed.
+    pub hidden_helpers: Vec<Window>,
 
     // Multi-monitor: per-output state
     pub outputs: Vec<OutputState>,
@@ -291,6 +295,7 @@ impl Gate {
             previous_ws: 0,
             keybinds,
             unmapped_windows: Vec::new(),
+            hidden_helpers: Vec::new(),
             wallpaper: None,
             outputs: Vec::new(),
             output_bounds: (800, 600),
@@ -888,13 +893,27 @@ impl Gate {
 
         tracing::debug!("map new toplevel: app_id={:?}", app_id);
 
-        // Filter known transient helper clients that create an xdg_toplevel purely
-        // to satisfy a protocol requirement (e.g. wl-clipboard needs a surface to
-        // obtain an input serial for wl_data_device.set_selection). They briefly
-        // attach a buffer and then destroy themselves. Tiling them causes real
-        // windows to flicker-resize during paste/yank.
+        // Known transient helper clients (e.g. wl-clipboard) create an xdg_toplevel
+        // purely to satisfy protocol requirements: they need a surface that receives
+        // keyboard focus so wl_data_device.set_selection has a valid input serial,
+        // and they destroy themselves milliseconds later. Tiling them causes real
+        // windows to flicker-resize during yank/paste, but filtering them entirely
+        // breaks clipboard writes. Compromise: give the helper a tiny configure and
+        // transient keyboard focus without adding it to any workspace.
         if is_helper_client(&app_id) {
-            tracing::debug!("ignoring helper client: {app_id}");
+            tracing::debug!("routing helper client to hidden focus: {app_id}");
+            if let Some(toplevel) = window.toplevel() {
+                toplevel.with_pending_state(|state| {
+                    state.size = Some((1, 1).into());
+                });
+                toplevel.send_configure();
+
+                let serial = SERIAL_COUNTER.next_serial();
+                let focus_surface = toplevel.wl_surface().clone();
+                let keyboard = self.seat.get_keyboard().unwrap();
+                keyboard.set_focus(self, Some(focus_surface), serial);
+            }
+            self.hidden_helpers.push(window);
             return;
         }
 
@@ -1116,6 +1135,16 @@ impl XdgShellHandler for Gate {
             w.toplevel().map_or(false, |t| t == &surface)
         }) {
             self.unmapped_windows.remove(idx);
+            return;
+        }
+
+        // Drop hidden helper windows (e.g. wl-clipboard) and restore keyboard
+        // focus to the active workspace window.
+        if let Some(idx) = self.hidden_helpers.iter().position(|w| {
+            w.toplevel().map_or(false, |t| t == &surface)
+        }) {
+            self.hidden_helpers.remove(idx);
+            self.apply_focus();
             return;
         }
 
