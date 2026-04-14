@@ -25,7 +25,7 @@ optdepends=(
 	'playerctl: media module'
 	'brightnessctl: brightness keybinds'
 	'wl-clipboard: screenshot clipboard copy'
-	'kitty: default terminal'
+	'foot: default terminal'
 	'bibata-cursor-theme: default cursor theme'
 )
 provides=('kara' 'kara-gate' 'kara-summon' 'kara-glimpse' 'kara-whisper')
