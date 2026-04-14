@@ -199,6 +199,10 @@ enum Block {
     /// condition lives in `autostart_condition` alongside the block state,
     /// so this variant stays Copy.
     AutostartWhen,
+    /// Container block: `monitors { monitor "X" { ... } monitor "Y" { ... } }`.
+    /// Individual monitor entries inside are still Block::Monitor(idx); when
+    /// one closes the parent returns to Monitors instead of None.
+    Monitors,
     Commands,
     Binds,
     Environment,
@@ -216,6 +220,7 @@ fn root_block_name(name: &str) -> Option<Block> {
         // scratchpad is handled specially (has a name argument)
         "rules" => Some(Block::Rules),
         "autostart" => Some(Block::Autostart),
+        "monitors" => Some(Block::Monitors),
         "commands" => Some(Block::Commands),
         "binds" => Some(Block::Binds),
         "environment" | "env" => Some(Block::Environment),
@@ -1078,6 +1083,31 @@ fn load_file_recursive(
                 continue;
             }
 
+            // monitors { monitor "NAME" { ... } ... }
+            if block == Block::Monitors {
+                let inner_tokens = split_tokens(name);
+                if inner_tokens.first().map(|s| s.as_str()) == Some("monitor") {
+                    let mon_name = inner_tokens
+                        .get(1)
+                        .map(|s| s.trim_matches('"').to_string())
+                        .unwrap_or_default();
+                    config.monitors.push(MonitorConfig {
+                        name: mon_name,
+                        resolution: None,
+                        refresh: None,
+                        position: None,
+                        scale: None,
+                        rotation: MonitorRotation::Normal,
+                        enabled: true,
+                        primary: false,
+                    });
+                    let idx = config.monitors.len() - 1;
+                    parent_block = block;
+                    block = Block::Monitor(idx);
+                    continue;
+                }
+            }
+
             // input { device "name" { ... } } — or just input { ... } for defaults
             if block == Block::Input {
                 let tokens = split_tokens(name);
@@ -1136,6 +1166,15 @@ fn load_file_recursive(
             }
             Block::AutostartWhen => {
                 parse_autostart_line(&tokens, &mut config.autostart, &autostart_condition, &ctx);
+            }
+            Block::Monitors => {
+                // The `monitors { }` container only holds nested
+                // `monitor "NAME" { ... }` sub-blocks. Any line-level
+                // directive here is a typo — warn and drop.
+                ctx.warn(&format!(
+                    "directive inside `monitors {{ }}` is not valid: {trimmed}",
+                    trimmed = tokens.join(" ")
+                ));
             }
             Block::Commands => parse_commands_line(&tokens, &mut config.commands),
             Block::Binds => parse_binds_line(&tokens, &mut config.keybinds, &ctx),

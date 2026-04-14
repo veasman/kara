@@ -891,6 +891,25 @@ pub fn run(
     };
     state.focused_output = primary_idx;
 
+    // Log any monitor config entries that didn't match a connected output —
+    // they're silently dropped. This lets the user leave work + home
+    // monitors in the same config file without commenting blocks in and out:
+    // whichever aren't plugged in right now just log a debug line and
+    // don't affect runtime state.
+    let connected_names: std::collections::HashSet<String> = state
+        .outputs
+        .iter()
+        .map(|o| o.output.name())
+        .collect();
+    for mc in &state.config.monitors {
+        if !connected_names.contains(&mc.name) {
+            tracing::info!(
+                "monitor config for '{}' — not connected right now, ignored",
+                mc.name
+            );
+        }
+    }
+
     // Set initial workspace assignments for independent mode
     for (i, out) in state.outputs.iter_mut().enumerate() {
         out.current_ws = i % state.workspaces.len();
