@@ -197,19 +197,24 @@ pub fn run(
         let render_node = card_node.node_with_type(NodeType::Render).and_then(|r| r.ok());
         let is_scanout_only = render_node.is_none();
 
-        // Count connected connectors via sysfs.
-        let sysfs_dir = format!("/sys/class/drm/{card_name}");
-        let connected_outputs = std::fs::read_dir(&sysfs_dir)
+        // Count connected connectors via sysfs. Connector entries live in
+        // `/sys/class/drm/` as siblings of the card (e.g. `card0-DVI-I-1`),
+        // NOT inside `/sys/class/drm/card0/`. The previous code iterated the
+        // card's own directory, which happens to work on amdgpu (symlink
+        // quirk) but always returns zero on evdi — the actual connectors
+        // were never counted.
+        let card_prefix = format!("{card_name}-");
+        let connected_outputs = std::fs::read_dir("/sys/class/drm")
             .map(|entries| {
                 entries
                     .filter_map(|e| e.ok())
                     .filter(|e| {
-                        let name = e.file_name().to_string_lossy().to_string();
-                        if !name.starts_with(&card_name) || name == card_name {
-                            return false;
-                        }
-                        let status_path = e.path().join("status");
-                        std::fs::read_to_string(status_path)
+                        e.file_name()
+                            .to_string_lossy()
+                            .starts_with(&card_prefix)
+                    })
+                    .filter(|e| {
+                        std::fs::read_to_string(e.path().join("status"))
                             .map(|s| s.trim() == "connected")
                             .unwrap_or(false)
                     })
@@ -551,6 +556,11 @@ pub fn run(
     // OutputInstances on them. This pass just logs what we'd find so we can
     // verify connector discovery end-to-end before M3-b actually wires up
     // cross-GPU rendering.
+    //
+    // force_probe=true (second arg to get_connector) is required here: on
+    // amdgpu the kernel maintains fresh cached connector state, but evdi
+    // doesn't re-populate it until explicitly asked, so a freshly-opened
+    // FD returns "disconnected" for connectors that sysfs says are connected.
     for (node, entry) in devices.iter() {
         if *node == primary_node {
             continue;
@@ -567,14 +577,19 @@ pub fn run(
         };
         let mut any_connected = false;
         for conn_handle in device_resources.connectors() {
-            let conn_info = match entry.drm_device.get_connector(*conn_handle, false) {
+            let conn_info = match entry.drm_device.get_connector(*conn_handle, true) {
                 Ok(info) => info,
                 Err(_) => continue,
             };
+            let conn_name = format_connector_name(&conn_info);
+            let state_str = format!("{:?}", conn_info.state());
             if conn_info.state() != connector::State::Connected {
+                tracing::info!(
+                    "{}: evdi connector {conn_name} probe result: {state_str}",
+                    entry.card_name,
+                );
                 continue;
             }
-            let conn_name = format_connector_name(&conn_info);
             let mode_str = conn_info
                 .modes()
                 .iter()
