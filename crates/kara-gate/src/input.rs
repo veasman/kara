@@ -315,15 +315,23 @@ impl Gate {
         let pointer = self.seat.get_pointer().unwrap();
         let mut frame = AxisFrame::new(Event::time_msec(&event));
 
+        // Populate BOTH continuous `value` AND discrete `v120` when libinput
+        // provides both. Firefox/Floorp on Wayland specifically require v120
+        // (high-resolution scroll) to translate scroll events into line
+        // scrolls — without it the browser's internal delta computes to 0
+        // and page scrolling silently breaks. The old `if / else if` meant
+        // kara sent one or the other but never both.
         if let Some(amount) = event.amount(Axis::Horizontal) {
             frame = frame.value(Axis::Horizontal, amount);
-        } else if let Some(discrete) = event.amount_v120(Axis::Horizontal) {
+        }
+        if let Some(discrete) = event.amount_v120(Axis::Horizontal) {
             frame = frame.v120(Axis::Horizontal, discrete as i32);
         }
 
         if let Some(amount) = event.amount(Axis::Vertical) {
             frame = frame.value(Axis::Vertical, amount);
-        } else if let Some(discrete) = event.amount_v120(Axis::Vertical) {
+        }
+        if let Some(discrete) = event.amount_v120(Axis::Vertical) {
             frame = frame.v120(Axis::Vertical, discrete as i32);
         }
 
