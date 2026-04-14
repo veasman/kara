@@ -450,63 +450,100 @@ pub fn build_keybind_overlay(
         &state.config.general.font
     };
 
-    // Build keybind lines
-    let mut lines: Vec<String> = Vec::new();
-    lines.push(format!("Keybinds  (~/.config/kara/kara-gate.conf)"));
-    lines.push(String::new()); // blank separator
+    // Build a grouped, human-readable keybind table.
+    //
+    // Goal: this overlay is the entrypoint for the "kara helpers" vision — a
+    // user with a fresh install should be able to hit mod+/ once and immediately
+    // understand what every key does. Keep the rendering simple but the labels
+    // friendly.
+    let groups = build_keybind_groups(&state.keybinds);
 
-    for bind in state.keybinds.iter() {
-        let mut combo = String::new();
-        if bind.mods.logo { combo.push_str("mod+"); }
-        if bind.mods.shift { combo.push_str("Shift+"); }
-        if bind.mods.ctrl { combo.push_str("Ctrl+"); }
-        if bind.mods.alt { combo.push_str("Alt+"); }
+    // Columns: if many keybinds, split across two columns so the list fits
+    // without scrolling. Pick 2 columns when total rows > half-screen.
+    let max_rows_per_col = ((h as f32 - 100.0) / line_height).max(4.0) as usize;
+    let total_rows: usize = groups.iter().map(|g| g.1.len() + 2).sum::<usize>();
+    let use_two_cols = total_rows > max_rows_per_col;
 
-        let key_name = xkbcommon::xkb::keysym_get_name(
-            xkbcommon::xkb::Keysym::new(bind.sym),
-        );
-        combo.push_str(&key_name);
+    // Render each group into a flat list of (text, is_header, is_title) tuples.
+    let mut lines: Vec<(String, LineKind)> = Vec::new();
+    lines.push(("Keybinds".to_string(), LineKind::Title));
+    lines.push(("~/.config/kara/kara-gate.conf".to_string(), LineKind::Subtitle));
+    lines.push((String::new(), LineKind::Body));
 
-        let action_str = format!("{:?}", bind.action);
-        lines.push(format!("{:<30} {}", combo, action_str));
+    for (group_name, entries) in &groups {
+        lines.push(((*group_name).to_string(), LineKind::Section));
+        for (combo, label) in entries {
+            lines.push((format!("{:<22} {}", combo, label), LineKind::Body));
+        }
+        lines.push((String::new(), LineKind::Body));
     }
 
-    // Draw text
-    let text_color_r = ((state.config.theme.text >> 16) & 0xFF) as u8;
-    let text_color_g = ((state.config.theme.text >> 8) & 0xFF) as u8;
-    let text_color_b = (state.config.theme.text & 0xFF) as u8;
+    // Precompute colors for the four line kinds. Accent for the title, a
+    // slightly brighter text color for section headers, muted for the config
+    // path subtitle, and normal text for body rows.
+    let text_rgb = split_rgb(state.config.theme.text);
+    let accent_rgb = split_rgb(state.config.theme.accent);
+    let muted_rgb = split_rgb(state.config.theme.text_muted);
 
-    let start_x = 40.0_f32;
-    let start_y = 40.0_f32;
+    // Two-column layout: split lines at the first blank line after row
+    // max_rows_per_col. Column 2 starts halfway across the screen.
+    let col1_x = 60.0_f32;
+    let col2_x = if use_two_cols { (w as f32 / 2.0) + 20.0 } else { 0.0 };
+    let start_y = 60.0_f32;
+    let col_split = if use_two_cols {
+        // Pick the split point at the first blank line past mid.
+        let mut split = lines.len();
+        let mut row = 0usize;
+        for (idx, (text, _)) in lines.iter().enumerate() {
+            if row >= max_rows_per_col && text.is_empty() {
+                split = idx + 1;
+                break;
+            }
+            row += 1;
+        }
+        split
+    } else {
+        lines.len()
+    };
 
-    for (i, line) in lines.iter().enumerate() {
+    for (i, (line, kind)) in lines.iter().enumerate() {
         if line.is_empty() {
             continue;
         }
 
-        let y = start_y + (i as f32) * line_height;
+        let (col_x, row_in_col) = if i < col_split {
+            (col1_x, i)
+        } else {
+            (col2_x, i - col_split)
+        };
+
+        let y = start_y + (row_in_col as f32) * line_height;
         if y + font_size > h as f32 {
-            break; // don't render past output
+            continue;
         }
 
-        let (r, g, b) = if i == 0 {
-            // Title in accent color
-            let ar = ((state.config.theme.accent >> 16) & 0xFF) as u8;
-            let ag = ((state.config.theme.accent >> 8) & 0xFF) as u8;
-            let ab = (state.config.theme.accent & 0xFF) as u8;
-            (ar, ag, ab)
-        } else {
-            (text_color_r, text_color_g, text_color_b)
+        let (r, g, b) = match kind {
+            LineKind::Title => accent_rgb,
+            LineKind::Subtitle => muted_rgb,
+            LineKind::Section => accent_rgb,
+            LineKind::Body => text_rgb,
+        };
+
+        // Title is larger; section headers are slightly bigger than body.
+        let line_metrics = match kind {
+            LineKind::Title => cosmic_text::Metrics::new(font_size * 1.6, font_size * 1.6),
+            LineKind::Section => cosmic_text::Metrics::new(font_size * 1.1, font_size * 1.1),
+            _ => metrics,
         };
 
         let attrs = cosmic_text::Attrs::new().family(cosmic_text::Family::Name(font_family));
-        let mut buffer = cosmic_text::Buffer::new(&mut font_system, metrics);
+        let mut buffer = cosmic_text::Buffer::new(&mut font_system, line_metrics);
         buffer.set_text(&mut font_system, line, &attrs, cosmic_text::Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut font_system, false);
 
         for run in buffer.layout_runs() {
             for glyph in run.glyphs.iter() {
-                let physical = glyph.physical((start_x, y), 1.0);
+                let physical = glyph.physical((col_x, y), 1.0);
                 let image = match swash_cache.get_image(&mut font_system, physical.cache_key) {
                     Some(img) => img,
                     None => continue,
@@ -632,4 +669,143 @@ fn rounded_rect_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia
 
     pb.close();
     pb.finish()
+}
+
+// ── Keybind overlay helpers ────────────────────────────────────────────
+
+#[derive(Copy, Clone)]
+enum LineKind {
+    Title,
+    Subtitle,
+    Section,
+    Body,
+}
+
+fn split_rgb(color: u32) -> (u8, u8, u8) {
+    (
+        ((color >> 16) & 0xFF) as u8,
+        ((color >> 8) & 0xFF) as u8,
+        (color & 0xFF) as u8,
+    )
+}
+
+/// Group keybinds by action category into an ordered list of
+/// (section_title, [(combo_string, action_label)]) entries.
+fn build_keybind_groups(
+    keybinds: &[crate::input::Keybind],
+) -> Vec<(&'static str, Vec<(String, String)>)> {
+    use crate::actions::Action;
+
+    let mut windows: Vec<(String, String)> = Vec::new();
+    let mut workspaces: Vec<(String, String)> = Vec::new();
+    let mut scratchpads: Vec<(String, String)> = Vec::new();
+    let mut layout: Vec<(String, String)> = Vec::new();
+    let mut monitors: Vec<(String, String)> = Vec::new();
+    let mut launch: Vec<(String, String)> = Vec::new();
+    let mut session: Vec<(String, String)> = Vec::new();
+
+    for bind in keybinds.iter() {
+        let combo = format_keybind_combo(bind);
+        let label = format_action_label(&bind.action);
+
+        let bucket: &mut Vec<(String, String)> = match &bind.action {
+            Action::FocusNext
+            | Action::FocusPrev
+            | Action::KillClient
+            | Action::ToggleFloat
+            | Action::ToggleFullscreen => &mut windows,
+            Action::ViewWs(_) | Action::SendWs(_) => &mut workspaces,
+            Action::ToggleScratchpad(_) => &mut scratchpads,
+            Action::ZoomMaster
+            | Action::ToggleMonocle
+            | Action::DecreaseMfact
+            | Action::IncreaseMfact => &mut layout,
+            Action::FocusMonitorNext
+            | Action::FocusMonitorPrev
+            | Action::SendMonitorNext
+            | Action::SendMonitorPrev
+            | Action::ToggleSync => &mut monitors,
+            Action::Spawn(_) | Action::SpawnRaw(_) => &mut launch,
+            Action::ShowKeybinds | Action::Reload | Action::Quit => &mut session,
+        };
+
+        bucket.push((combo, label));
+    }
+
+    let mut groups: Vec<(&'static str, Vec<(String, String)>)> = Vec::new();
+    if !windows.is_empty()    { groups.push(("Windows", windows)); }
+    if !workspaces.is_empty() { groups.push(("Workspaces", workspaces)); }
+    if !scratchpads.is_empty(){ groups.push(("Scratchpads", scratchpads)); }
+    if !layout.is_empty()     { groups.push(("Layout", layout)); }
+    if !monitors.is_empty()   { groups.push(("Monitors", monitors)); }
+    if !launch.is_empty()     { groups.push(("Launch", launch)); }
+    if !session.is_empty()    { groups.push(("Session", session)); }
+    groups
+}
+
+fn format_keybind_combo(bind: &crate::input::Keybind) -> String {
+    let mut combo = String::new();
+    if bind.mods.logo  { combo.push_str("mod+"); }
+    if bind.mods.ctrl  { combo.push_str("Ctrl+"); }
+    if bind.mods.alt   { combo.push_str("Alt+"); }
+    if bind.mods.shift { combo.push_str("Shift+"); }
+
+    let raw = xkbcommon::xkb::keysym_get_name(xkbcommon::xkb::Keysym::new(bind.sym));
+    combo.push_str(pretty_key_name(&raw));
+    combo
+}
+
+fn pretty_key_name(raw: &str) -> &str {
+    match raw {
+        "slash" => "/",
+        "backslash" => "\\",
+        "comma" => ",",
+        "period" => ".",
+        "semicolon" => ";",
+        "apostrophe" => "'",
+        "grave" => "`",
+        "minus" => "-",
+        "equal" => "=",
+        "bracketleft" => "[",
+        "bracketright" => "]",
+        "Return" => "Enter",
+        "space" => "Space",
+        "Escape" => "Esc",
+        "BackSpace" => "Backspace",
+        "Prior" => "PageUp",
+        "Next" => "PageDown",
+        _ => raw,
+    }
+}
+
+fn format_action_label(action: &crate::actions::Action) -> String {
+    use crate::actions::Action;
+    match action {
+        Action::Spawn(name) => format!("Launch: {name}"),
+        Action::SpawnRaw(cmd) => {
+            let short = if cmd.len() > 28 { format!("{}…", &cmd[..27]) } else { cmd.clone() };
+            format!("Run: {short}")
+        }
+        Action::KillClient       => "Close window".into(),
+        Action::FocusNext        => "Focus next window".into(),
+        Action::FocusPrev        => "Focus previous window".into(),
+        Action::ZoomMaster       => "Zoom / swap with master".into(),
+        Action::ToggleMonocle    => "Toggle monocle layout".into(),
+        Action::ToggleFullscreen => "Toggle fullscreen".into(),
+        Action::ToggleFloat      => "Toggle floating".into(),
+        Action::ToggleScratchpad(Some(name)) => format!("Toggle scratchpad: {name}"),
+        Action::ToggleScratchpad(None) => "Toggle scratchpad".into(),
+        Action::DecreaseMfact    => "Shrink master".into(),
+        Action::IncreaseMfact    => "Grow master".into(),
+        Action::FocusMonitorNext => "Focus next monitor".into(),
+        Action::FocusMonitorPrev => "Focus previous monitor".into(),
+        Action::SendMonitorNext  => "Move window to next monitor".into(),
+        Action::SendMonitorPrev  => "Move window to previous monitor".into(),
+        Action::ToggleSync       => "Toggle monitor sync".into(),
+        Action::ViewWs(n)        => format!("View workspace {}", n + 1),
+        Action::SendWs(n)        => format!("Move window to workspace {}", n + 1),
+        Action::ShowKeybinds     => "Show keybinds (this menu)".into(),
+        Action::Reload           => "Reload config".into(),
+        Action::Quit             => "Quit kara".into(),
+    }
 }
