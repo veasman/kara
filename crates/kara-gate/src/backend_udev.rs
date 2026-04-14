@@ -4,7 +4,7 @@
 //! DRM/GBM for display output, and libinput for input devices.
 //! Supports multiple monitors.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -12,7 +12,7 @@ use std::time::Duration;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 use smithay::backend::drm::compositor::{DrmCompositor, FrameFlags};
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
-use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmEvent};
+use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType};
 use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::renderer::element::texture::TextureRenderElement;
@@ -89,7 +89,9 @@ impl RenderElement<GlesRenderer> for DrmRenderElement {
     }
 }
 
-/// Per-output DRM state.
+/// Per-output DRM state. Each output belongs to exactly one device (`node`);
+/// for M1 that's always the single primary render node, but M3 will add
+/// outputs owned by evdi devices that render elsewhere.
 struct OutputInstance {
     drm_compositor: DrmCompositor<
         GbmAllocator<DrmDeviceFd>,
@@ -99,7 +101,30 @@ struct OutputInstance {
     >,
     output: Output,
     crtc: crtc::Handle,
+    /// DRM node that owns this output's CRTC. Vblank routing keys on
+    /// `(node, crtc)` so multiple devices don't collide on the same handle.
+    node: DrmNode,
     frame_pending: bool,
+}
+
+/// Per-GPU runtime state. Every DRM device kara can see is opened and stashed
+/// here, even if it can't render on its own (evdi). M1 only actively drives
+/// outputs on the primary render node; later milestones route other devices
+/// through the GpuManager for cross-GPU scan-out.
+struct DeviceEntry {
+    #[allow(dead_code)] // M2 will also read this via &mut elsewhere
+    drm_device: DrmDevice,
+    #[allow(dead_code)] // M2 will construct an EGLDisplay per device
+    drm_fd: DrmDeviceFd,
+    gbm_device: GbmDevice<DrmDeviceFd>,
+    /// Render node path (e.g. `/dev/dri/renderD128`). `None` for scan-out-only
+    /// devices like evdi that have no rendering hardware.
+    render_node: Option<DrmNode>,
+    /// Number of connected outputs at enumeration time — used to pick the
+    /// primary render node.
+    connected_outputs: usize,
+    /// Card-level sysfs name, kept around for logging.
+    card_name: String,
 }
 
 pub fn run(
@@ -118,28 +143,38 @@ pub fn run(
     let udev_backend =
         UdevBackend::new(&seat_name).expect("failed to create udev backend");
 
-    // Discover all GPUs. Pick the one with the most connected outputs
-    // by checking sysfs (avoids opening/closing DRM fds which breaks sessions).
+    // Discover every GPU kara can see. For M1 we open *all* of them (including
+    // scan-out-only evdi devices from a DisplayLink dock), stash them in a
+    // HashMap keyed by DrmNode, then pick a "primary render node" — the
+    // device with the most connected outputs that actually has a render node
+    // — as the target for all compositor output in this milestone.
+    // Later milestones route non-primary devices through GpuManager.
     let all_gpus = udev::all_gpus(&seat_name).unwrap_or_default();
     let primary = udev::primary_gpu(&seat_name).ok().flatten();
 
-    let mut best_gpu: Option<(std::path::PathBuf, usize)> = None;
+    let mut devices: HashMap<DrmNode, DeviceEntry> = HashMap::new();
+    let mut drm_notifiers: Vec<(DrmNode, smithay::backend::drm::DrmDeviceNotifier)> = Vec::new();
+
     for g in &all_gpus {
-        let is_primary = primary.as_ref() == Some(g);
-        // Count connected connectors via sysfs
-        let card_name = g.file_name()
+        let card_name = g
+            .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("");
-        let sysfs_dir = format!("/sys/class/drm/{}", card_name);
-        let conn_count = std::fs::read_dir(&sysfs_dir)
+            .unwrap_or("")
+            .to_string();
+        let is_primary_hint = primary.as_ref() == Some(g);
+
+        // Count connected connectors via sysfs so we can pick a "best" device
+        // without opening the device twice.
+        let sysfs_dir = format!("/sys/class/drm/{card_name}");
+        let connected_outputs = std::fs::read_dir(&sysfs_dir)
             .map(|entries| {
-                entries.filter_map(|e| e.ok())
+                entries
+                    .filter_map(|e| e.ok())
                     .filter(|e| {
                         let name = e.file_name().to_string_lossy().to_string();
-                        if !name.starts_with(card_name) || name == card_name {
+                        if !name.starts_with(&card_name) || name == card_name {
                             return false;
                         }
-                        // Check connector status
                         let status_path = e.path().join("status");
                         std::fs::read_to_string(status_path)
                             .map(|s| s.trim() == "connected")
@@ -148,40 +183,118 @@ pub fn run(
                     .count()
             })
             .unwrap_or(0);
-        tracing::info!(
-            "found GPU: {} — {conn_count} connected output(s){}",
-            g.display(),
-            if is_primary { " (primary)" } else { "" }
-        );
-        let prev = best_gpu.as_ref().map(|(_, c)| *c).unwrap_or(0);
-        if conn_count > prev {
-            best_gpu = Some((g.clone(), conn_count));
-        }
-    }
 
-    let gpu_path = best_gpu.map(|(p, _)| p)
-        .or(primary)
-        .or_else(|| all_gpus.into_iter().next())
-        .expect("no GPU found");
-    tracing::info!("using GPU: {}", gpu_path.display());
-
-    // --- 3. Open DRM device via session ---
-    let gpu_fd = session
-        .open(
-            &gpu_path,
+        // Open via libseat so the device follows VT switches.
+        let fd = match session.open(
+            g,
             smithay::reexports::rustix::fs::OFlags::RDWR
                 | smithay::reexports::rustix::fs::OFlags::CLOEXEC
                 | smithay::reexports::rustix::fs::OFlags::NOCTTY,
-        )
-        .expect("failed to open GPU device");
+        ) {
+            Ok(fd) => fd,
+            Err(e) => {
+                tracing::warn!("skipping GPU {}: open failed: {e}", g.display());
+                continue;
+            }
+        };
+        let drm_fd = DrmDeviceFd::new(DeviceFd::from(fd));
+        let (drm_device, drm_notifier) = match DrmDevice::new(drm_fd.clone(), true) {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::warn!("skipping GPU {}: DrmDevice::new failed: {e}", g.display());
+                continue;
+            }
+        };
+        let gbm_device = match GbmDevice::new(drm_fd.clone()) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("skipping GPU {}: GbmDevice::new failed: {e}", g.display());
+                continue;
+            }
+        };
 
-    let drm_fd = DrmDeviceFd::new(DeviceFd::from(gpu_fd));
-    let (mut drm_device, drm_notifier) =
-        DrmDevice::new(drm_fd.clone(), true).expect("failed to create DRM device");
+        // DrmNode for this card, plus its matching render node (if any).
+        let card_node = match DrmNode::from_path(g) {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!("skipping GPU {}: DrmNode::from_path failed: {e}", g.display());
+                continue;
+            }
+        };
+        let render_node = card_node.node_with_type(NodeType::Render).and_then(|r| r.ok());
 
-    // --- 4. GBM + EGL + GlesRenderer ---
-    let gbm_device =
-        GbmDevice::new(drm_fd.clone()).expect("failed to create GBM device");
+        if render_node.is_some() {
+            tracing::info!(
+                "found GPU: {} ({connected_outputs} connected output(s){}, render node present)",
+                g.display(),
+                if is_primary_hint { ", udev primary" } else { "" },
+            );
+        } else {
+            tracing::info!(
+                "found GPU: {} ({connected_outputs} connected output(s), scan-out only — skipped until M3)",
+                g.display(),
+            );
+        }
+
+        drm_notifiers.push((card_node, drm_notifier));
+        devices.insert(
+            card_node,
+            DeviceEntry {
+                drm_device,
+                drm_fd,
+                gbm_device,
+                render_node,
+                connected_outputs,
+                card_name,
+            },
+        );
+    }
+
+    if devices.is_empty() {
+        panic!("no usable GPUs found");
+    }
+
+    // Pick the primary render node: device with the most connected outputs
+    // among render-capable devices. Fall back to udev's primary hint, then to
+    // any render-capable device.
+    let primary_node: DrmNode = {
+        let render_capable: Vec<(DrmNode, usize)> = devices
+            .iter()
+            .filter(|(_, d)| d.render_node.is_some())
+            .map(|(n, d)| (*n, d.connected_outputs))
+            .collect();
+
+        if render_capable.is_empty() {
+            panic!("no render-capable GPU found");
+        }
+
+        // Best by connected output count, ties broken by udev primary hint.
+        let primary_hint_node = primary
+            .as_ref()
+            .and_then(|p| DrmNode::from_path(p).ok())
+            .and_then(|n| n.node_with_type(NodeType::Primary).and_then(|r| r.ok()))
+            .or_else(|| primary.as_ref().and_then(|p| DrmNode::from_path(p).ok()));
+
+        render_capable
+            .iter()
+            .max_by_key(|(node, count)| {
+                let hint_bonus = if Some(*node) == primary_hint_node { 1 } else { 0 };
+                (*count, hint_bonus)
+            })
+            .map(|(n, _)| *n)
+            .unwrap()
+    };
+
+    tracing::info!(
+        "primary render node: {} ({})",
+        devices[&primary_node].card_name,
+        primary_node,
+    );
+
+    // --- 4. GBM + EGL + GlesRenderer on the primary device ---
+    // M1 only uses a single renderer pinned to the primary device. M2 will
+    // replace this with smithay's MultiRenderer / GpuManager.
+    let gbm_device = devices[&primary_node].gbm_device.clone();
     let egl_display = unsafe { EGLDisplay::new(gbm_device.clone()) }
         .expect("failed to create EGL display");
     let egl_context =
@@ -190,15 +303,14 @@ pub fn run(
         .expect("failed to create GLES renderer");
 
     let renderer_formats = renderer.dmabuf_formats().into_iter().collect::<Vec<_>>();
-    let cursor_size = drm_device.cursor_size();
+    let cursor_size = devices[&primary_node].drm_device.cursor_size();
 
-    // --- 5. Enumerate ALL connected outputs ---
-    let resources = drm_device
-        .resource_handles()
-        .expect("failed to get DRM resources");
-
+    // --- 5. Enumerate connected outputs on the primary device ---
+    // M1 only drives outputs on the primary render node. Evdi/other-render
+    // devices are in `devices` but we don't create OutputInstances for them
+    // yet — M3 adds the cross-GPU plumbing.
     let mut output_instances: Vec<OutputInstance> = Vec::new();
-    let mut used_crtcs: HashSet<crtc::Handle> = HashSet::new();
+    let mut used_crtcs: HashSet<(DrmNode, crtc::Handle)> = HashSet::new();
     let mut x_offset: i32 = 0;
 
     // Set WAYLAND_DISPLAY and create Gate before output setup
@@ -208,6 +320,13 @@ pub fn run(
     // If any monitors are explicitly configured, only use those (skip unconfigured ones).
     // This gives explicit control over which outputs are active.
     let has_monitor_config = !state.config.monitors.is_empty();
+
+    // Only iterate connectors on the primary device for M1.
+    let resources = devices[&primary_node]
+        .drm_device
+        .resource_handles()
+        .expect("failed to get DRM resources");
+    let drm_device = &mut devices.get_mut(&primary_node).unwrap().drm_device;
 
     for conn_handle in resources.connectors() {
         let conn_info = match drm_device.get_connector(*conn_handle, false) {
@@ -276,14 +395,20 @@ pub fn run(
         };
 
         // Find an available CRTC
-        let crtc_handle = match find_crtc_for_connector(&drm_device, &resources, *conn_handle, &used_crtcs) {
+        let crtc_handle = match find_crtc_for_connector(
+            drm_device,
+            &resources,
+            *conn_handle,
+            primary_node,
+            &used_crtcs,
+        ) {
             Some(c) => c,
             None => {
                 tracing::warn!("no CRTC available for {:?}", conn_info.interface());
                 continue;
             }
         };
-        used_crtcs.insert(crtc_handle);
+        used_crtcs.insert((primary_node, crtc_handle));
 
         let mode_size = drm_mode.size();
         let output_mode = OutputMode {
@@ -378,6 +503,7 @@ pub fn run(
             drm_compositor,
             output,
             crtc: crtc_handle,
+            node: primary_node,
             frame_pending: false,
         });
 
@@ -433,24 +559,28 @@ pub fn run(
         })
         .expect("failed to insert session source");
 
-    // DRM device notifier — vblank signals per-CRTC frame completion
-    let vblank_crtcs: Arc<std::sync::Mutex<Vec<crtc::Handle>>> =
+    // DRM device notifiers — one per device. Vblank events are tagged with
+    // their owning DrmNode so we can route them to the right OutputInstance
+    // even when multiple devices share CRTC handle values.
+    let vblank_crtcs: Arc<std::sync::Mutex<Vec<(DrmNode, crtc::Handle)>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
-    let vblank_crtcs_clone = vblank_crtcs.clone();
-    loop_handle
-        .insert_source(drm_notifier, move |event, _metadata, _state: &mut Gate| {
-            match event {
-                DrmEvent::VBlank(crtc) => {
-                    if let Ok(mut crtcs) = vblank_crtcs_clone.lock() {
-                        crtcs.push(crtc);
+    for (node, notifier) in drm_notifiers.drain(..) {
+        let vblank_crtcs_clone = vblank_crtcs.clone();
+        loop_handle
+            .insert_source(notifier, move |event, _metadata, _state: &mut Gate| {
+                match event {
+                    DrmEvent::VBlank(crtc) => {
+                        if let Ok(mut crtcs) = vblank_crtcs_clone.lock() {
+                            crtcs.push((node, crtc));
+                        }
+                    }
+                    DrmEvent::Error(err) => {
+                        tracing::error!("DRM error on {node}: {err}");
                     }
                 }
-                DrmEvent::Error(err) => {
-                    tracing::error!("DRM error: {err}");
-                }
-            }
-        })
-        .expect("failed to insert DRM notifier");
+            })
+            .expect("failed to insert DRM notifier");
+    }
 
     // Udev hotplug
     loop_handle
@@ -525,11 +655,16 @@ pub fn run(
             break;
         }
 
-        // 3. Process vblank events — acknowledge completed frames per-CRTC
+        // 3. Process vblank events — acknowledge completed frames per
+        // (DrmNode, CRTC). CRTC handles can collide between devices so we
+        // always match on the pair.
         if let Ok(mut crtcs) = vblank_crtcs.lock() {
-            for vblank_crtc in crtcs.drain(..) {
+            for (vblank_node, vblank_crtc) in crtcs.drain(..) {
                 for instance in output_instances.iter_mut() {
-                    if instance.crtc == vblank_crtc && instance.frame_pending {
+                    if instance.node == vblank_node
+                        && instance.crtc == vblank_crtc
+                        && instance.frame_pending
+                    {
                         let _ = instance.drm_compositor.frame_submitted();
                         instance.frame_pending = false;
                     }
@@ -799,9 +934,11 @@ fn find_crtc_for_connector(
     device: &DrmDevice,
     resources: &smithay::reexports::drm::control::ResourceHandles,
     connector: connector::Handle,
-    used: &HashSet<crtc::Handle>,
+    node: DrmNode,
+    used: &HashSet<(DrmNode, crtc::Handle)>,
 ) -> Option<crtc::Handle> {
     let conn_info = device.get_connector(connector, false).ok()?;
+    let is_free = |c: &crtc::Handle| !used.contains(&(node, *c));
 
     for encoder_handle in conn_info.encoders() {
         let encoder = match device.get_encoder(*encoder_handle) {
@@ -811,12 +948,12 @@ fn find_crtc_for_connector(
 
         let compatible = resources.filter_crtcs(encoder.possible_crtcs());
         for &crtc in &compatible {
-            if !used.contains(&crtc) {
+            if is_free(&crtc) {
                 return Some(crtc);
             }
         }
     }
 
     // Fallback: first unused CRTC
-    resources.crtcs().iter().find(|c| !used.contains(c)).copied()
+    resources.crtcs().iter().find(|c| is_free(c)).copied()
 }
