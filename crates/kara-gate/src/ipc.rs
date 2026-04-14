@@ -77,11 +77,13 @@ impl Gate {
     fn handle_ipc_request(&mut self, request: Request) -> Response {
         match request {
             Request::GetWorkspaces => {
+                // Per-monitor pools: report occupancy for the focused
+                // output's pool (the one the user is currently viewing).
                 let occupied: Vec<bool> = self
                     .workspaces
-                    .iter()
-                    .map(|ws| !ws.clients.is_empty())
-                    .collect();
+                    .get(self.focused_output)
+                    .map(|pool| pool.iter().map(|ws| !ws.clients.is_empty()).collect())
+                    .unwrap_or_default();
                 Response::Workspaces {
                     current: self.current_ws,
                     occupied,
@@ -89,7 +91,14 @@ impl Gate {
             }
 
             Request::GetActiveWindow => {
-                let ws = &self.workspaces[self.current_ws];
+                let ws_opt = self
+                    .workspaces
+                    .get(self.focused_output)
+                    .and_then(|pool| pool.get(self.current_ws));
+                let ws = match ws_opt {
+                    Some(ws) => ws,
+                    None => return Response::ActiveWindow { title: String::new(), app_id: String::new() },
+                };
                 let (title, app_id) = ws
                     .focused()
                     .and_then(|w| w.toplevel())
@@ -201,8 +210,12 @@ impl Gate {
             }
 
             Request::GetWindowGeometries => {
-                let ws_idx = self.effective_ws(self.focused_output);
-                let ws = &self.workspaces[ws_idx];
+                let out = self.focused_output;
+                let ws_idx = self.effective_ws(out);
+                let ws = match self.workspaces.get(out).and_then(|pool| pool.get(ws_idx)) {
+                    Some(ws) => ws,
+                    None => return Response::WindowGeometries { windows: Vec::new() },
+                };
                 let area = self.workarea();
                 let geos = crate::layout::layout_workspace(ws, area, self.config.general.border_px);
                 let windows: Vec<WindowGeometry> = geos.iter()

@@ -140,8 +140,19 @@ pub struct Gate {
     pub bar_renderer: kara_sight::BarRenderer,
     pub status_cache: kara_sight::StatusCache,
 
-    // Window management
-    pub workspaces: Vec<Workspace>,
+    // Window management.
+    //
+    // Per-monitor isolated workspace pools: `workspaces[output_idx][ws_idx]`
+    // gives the workspace currently owned by output_idx at slot ws_idx.
+    // Each output has its own WORKSPACE_COUNT (9) workspaces with its own
+    // windows, currently displayed via `outputs[output_idx].current_ws`.
+    //
+    // mod+1..9 on monitor 3 only switches monitor 3's view; spawning on
+    // monitor 3 always lands in monitor 3's currently-displayed workspace,
+    // not in some other monitor's pool. `Gate::workspaces` stays in lockstep
+    // with `Gate::outputs` — every `add_output` pushes a fresh pool, every
+    // future `remove_output` would pop one (M5 work).
+    pub workspaces: Vec<Vec<Workspace>>,
     pub current_ws: usize,
     pub previous_ws: usize,
     pub keybinds: std::sync::Arc<Vec<Keybind>>,
@@ -187,7 +198,9 @@ pub struct Gate {
 
     // Animation
     pub animations: crate::animation::AnimationManager,
-    pub pending_sends: Vec<(Window, usize)>,
+    /// Windows queued for transfer to a per-monitor workspace slot once
+    /// their out-animation completes. Tuple is `(window, output_idx, ws_idx)`.
+    pub pending_sends: Vec<(Window, usize, usize)>,
     // Base positions from apply_layout(), keyed by window identity for offset calculation
     pub window_base_positions: Vec<(Window, smithay::utils::Point<i32, Logical>)>,
 
@@ -262,14 +275,9 @@ impl Gate {
                 }
             }).collect();
 
-        let workspaces: Vec<Workspace> = (0..WORKSPACE_COUNT)
-            .map(|id| {
-                let mut ws = Workspace::new(id);
-                ws.gap_px = config.general.gap_px;
-                ws.mfact = config.general.default_mfact;
-                ws
-            })
-            .collect();
+        // Per-monitor workspace pools start empty — each `add_output` call
+        // pushes a fresh Vec<Workspace> of length WORKSPACE_COUNT.
+        let workspaces: Vec<Vec<Workspace>> = Vec::new();
 
         let bar_renderer = kara_sight::BarRenderer::new(
             &config.general.font,
@@ -365,9 +373,11 @@ impl Gate {
         self.apply_cursor_theme();
         self.load_cursor_theme();
 
-        // Apply general config to workspaces
-        for ws in &mut self.workspaces {
-            ws.gap_px = self.config.general.gap_px;
+        // Apply general config to every workspace in every per-monitor pool
+        for pool in self.workspaces.iter_mut() {
+            for ws in pool.iter_mut() {
+                ws.gap_px = self.config.general.gap_px;
+            }
         }
 
         // Update bar font
@@ -461,6 +471,20 @@ impl Gate {
         };
         self.recompute_workarea_for(&mut out_state);
         self.outputs.push(out_state);
+
+        // Per-monitor workspace pool: each new output gets its own fresh
+        // 9-workspace pool, with this output's gap/mfact preferences from
+        // config. The outer Vec stays in lockstep with `self.outputs`.
+        let new_pool: Vec<Workspace> = (0..WORKSPACE_COUNT)
+            .map(|id| {
+                let mut ws = Workspace::new(id);
+                ws.gap_px = self.config.general.gap_px;
+                ws.mfact = self.config.general.default_mfact;
+                ws
+            })
+            .collect();
+        self.workspaces.push(new_pool);
+
         self.recompute_output_bounds();
     }
 
@@ -541,19 +565,26 @@ impl Gate {
     }
 
     /// Build the workspace context for bar rendering on a specific output.
+    /// Each output's bar reflects ITS OWN per-monitor workspace pool — the
+    /// occupied dots and the focused-window title are local to the output.
     pub fn bar_workspace_context(&self, output_idx: usize) -> kara_sight::WorkspaceContext {
         let ws_idx = self.effective_ws(output_idx);
 
         let mut occupied = [false; 9];
-        for (i, ws) in self.workspaces.iter().enumerate() {
-            if i < 9 {
-                occupied[i] = !ws.clients.is_empty();
+        if let Some(pool) = self.workspaces.get(output_idx) {
+            for (i, ws) in pool.iter().enumerate() {
+                if i < 9 {
+                    occupied[i] = !ws.clients.is_empty();
+                }
             }
         }
 
-        let focused_title = self.workspaces[ws_idx]
-            .focused()
-            .and_then(|w| w.toplevel())
+        let focused_title = self
+            .workspaces
+            .get(output_idx)
+            .and_then(|pool| pool.get(ws_idx))
+            .and_then(|ws| ws.focused().cloned())
+            .and_then(|w| w.toplevel().cloned())
             .map(|t| {
                 smithay::wayland::compositor::with_states(t.wl_surface(), |states| {
                     states
@@ -584,10 +615,14 @@ impl Gate {
         self.border_rects.clear();
         self.window_base_positions.clear();
 
-        // Collect which workspaces are visible on which outputs
-        let output_ws: Vec<(usize, (i32, i32), Rectangle<i32, Logical>, Point<i32, Logical>, Option<Window>)> =
+        // Collect each output's effective (output_idx, ws_idx) pair plus the
+        // tile parameters needed to lay it out. With per-monitor workspace
+        // pools the (output_idx, ws_idx) tuple uniquely identifies which
+        // workspace to render where.
+        let output_ws: Vec<(usize, usize, (i32, i32), Rectangle<i32, Logical>, Point<i32, Logical>, Option<Window>)> =
             self.outputs.iter().enumerate().map(|(i, out)| {
                 (
+                    i,
                     self.effective_ws(i),
                     out.size,
                     out.workarea,
@@ -598,26 +633,29 @@ impl Gate {
 
         let border_px = self.config.general.border_px;
 
-        // Track which workspaces are visible (to unmap windows on non-visible workspaces)
-        let mut visible_ws: Vec<usize> = output_ws.iter().map(|(ws, ..)| *ws).collect();
-        visible_ws.sort();
-        visible_ws.dedup();
-
-        // Unmap windows from non-visible workspaces
-        for (i, ws) in self.workspaces.iter().enumerate() {
-            if !visible_ws.contains(&i) {
-                for w in &ws.clients {
-                    self.space.unmap_elem(w);
+        // Unmap windows from non-visible workspaces. With per-monitor pools,
+        // visibility is per (output, ws_idx) — every workspace not currently
+        // displayed on its owning output gets its windows unmapped.
+        let visible: std::collections::HashSet<(usize, usize)> = output_ws
+            .iter()
+            .map(|(out_idx, ws_idx, ..)| (*out_idx, *ws_idx))
+            .collect();
+        for (out_idx, pool) in self.workspaces.iter().enumerate() {
+            for (ws_idx, ws) in pool.iter().enumerate() {
+                if !visible.contains(&(out_idx, ws_idx)) {
+                    for w in &ws.clients {
+                        self.space.unmap_elem(w);
+                    }
                 }
             }
         }
 
         // Layout each output's workspace
-        for (ws_idx, out_size, workarea, location, fs_window) in &output_ws {
+        for (out_idx, ws_idx, out_size, workarea, location, fs_window) in &output_ws {
             // Fullscreen on this output
             if let Some(fs_window) = fs_window {
                 let fs_window = fs_window.clone();
-                let ws = &self.workspaces[*ws_idx];
+                let ws = &self.workspaces[*out_idx][*ws_idx];
                 for w in &ws.clients {
                     if *w != fs_window {
                         self.space.unmap_elem(w);
@@ -634,7 +672,7 @@ impl Gate {
                 continue;
             }
 
-            let ws = &self.workspaces[*ws_idx];
+            let ws = &self.workspaces[*out_idx][*ws_idx];
             let geometries = layout_workspace(ws, *workarea, border_px);
 
             for geom in &geometries {
@@ -832,13 +870,19 @@ impl Gate {
             self.space.unmap_elem(window);
 
             // Check if this window has a pending send
-            if let Some(pos) = self.pending_sends.iter().position(|(w, _)| w == window) {
-                let (window, target_ws) = self.pending_sends.remove(pos);
-                for ws in &mut self.workspaces {
-                    ws.remove_client(&window);
+            if let Some(pos) = self.pending_sends.iter().position(|(w, _, _)| w == window) {
+                let (window, target_out, target_ws) = self.pending_sends.remove(pos);
+                // Remove from any pool that currently owns this window —
+                // search across every output's per-monitor pool.
+                for pool in self.workspaces.iter_mut() {
+                    for ws in pool.iter_mut() {
+                        ws.remove_client(&window);
+                    }
                 }
-                if target_ws < self.workspaces.len() {
-                    self.workspaces[target_ws].add_client(window);
+                if let Some(pool) = self.workspaces.get_mut(target_out) {
+                    if target_ws < pool.len() {
+                        pool[target_ws].add_client(window);
+                    }
                 }
                 needs_relayout = true;
             }
@@ -886,7 +930,10 @@ impl Gate {
             return self.scratchpads[sp_idx].workspace.focused().cloned();
         }
         let ws_idx = self.effective_ws(self.focused_output);
-        self.workspaces.get(ws_idx).and_then(|ws| ws.focused().cloned())
+        self.workspaces
+            .get(self.focused_output)
+            .and_then(|pool| pool.get(ws_idx))
+            .and_then(|ws| ws.focused().cloned())
     }
 
     /// Set keyboard focus to the single window across the whole desktop that
@@ -899,11 +946,14 @@ impl Gate {
 
         let focused_window = self.compute_focused_window();
 
-        // Globally deactivate every client. set_activated() dedupes when the
-        // state already matches, so this is cheap on subsequent calls.
-        for ws in &self.workspaces {
-            for w in &ws.clients {
-                w.set_activated(false);
+        // Globally deactivate every client across every per-monitor pool
+        // and every scratchpad. set_activated() dedupes when the state
+        // already matches, so this is cheap on subsequent calls.
+        for pool in &self.workspaces {
+            for ws in pool {
+                for w in &ws.clients {
+                    w.set_activated(false);
+                }
             }
         }
         for sp in &self.scratchpads {
@@ -1032,7 +1082,7 @@ impl Gate {
             target_ws.is_some(),
         );
 
-        self.workspaces[ws_idx].add_client_floating(window.clone(), should_float);
+        self.workspaces[self.focused_output][ws_idx].add_client_floating(window.clone(), should_float);
 
         self.apply_layout();
         self.apply_focus();
@@ -1055,8 +1105,9 @@ impl Gate {
 
     /// Focus a specific window (e.g., on click)
     pub fn focus_window(&mut self, target: &Window) {
-        let ws_idx = self.effective_ws(self.focused_output);
-        let ws = &mut self.workspaces[ws_idx];
+        let out = self.focused_output;
+        let ws_idx = self.effective_ws(out);
+        let ws = &mut self.workspaces[out][ws_idx];
         let mut changed = false;
         if let Some(idx) = ws.clients.iter().position(|w| w == target) {
             if ws.focused_idx != Some(idx) {
@@ -1129,13 +1180,16 @@ impl CompositorHandler for Gate {
         }
 
         // If this commit is for a known window, refresh it.
-        // Check all workspaces + scratchpads, not just space.elements(),
-        // because windows may be unmapped from space (e.g. scratchpad overlay active).
+        // Check all per-monitor workspace pools + scratchpads, not just
+        // space.elements(), because windows may be unmapped from space
+        // (e.g. scratchpad overlay active or a non-displayed workspace).
         let window = self.space.elements().find(|w| {
             w.toplevel().map_or(false, |t| t.wl_surface() == surface)
         }).cloned().or_else(|| {
-            // Check workspace clients not currently in space
-            self.workspaces.iter().flat_map(|ws| ws.clients.iter())
+            self.workspaces
+                .iter()
+                .flat_map(|pool| pool.iter())
+                .flat_map(|ws| ws.clients.iter())
                 .chain(self.scratchpads.iter().flat_map(|sp| sp.workspace.clients.iter()))
                 .find(|w| w.toplevel().map_or(false, |t| t.wl_surface() == surface))
                 .cloned()
@@ -1248,9 +1302,14 @@ impl XdgShellHandler for Gate {
                 }
             }
 
-            for ws in &mut self.workspaces {
-                if ws.remove_client(&window) {
-                    break;
+            // Search every per-monitor pool for the destroyed window. Stop
+            // at the first hit — a window only lives in one pool/workspace
+            // at a time.
+            'find_owner: for pool in self.workspaces.iter_mut() {
+                for ws in pool.iter_mut() {
+                    if ws.remove_client(&window) {
+                        break 'find_owner;
+                    }
                 }
             }
 
@@ -1348,26 +1407,32 @@ impl XdgActivationHandler for Gate {
         _token_data: XdgActivationTokenData,
         surface: WlSurface,
     ) {
-        // Find the target window by surface match and raise it.
+        // Find the target window by surface match and raise it. Search
+        // every per-monitor pool. The target tuple is (output, ws_idx, client_idx).
         // Honoring every activation request is safe because all kara clients
         // need a valid input serial to get a token in the first place.
-        let target = self
-            .workspaces
-            .iter()
-            .enumerate()
-            .find_map(|(ws_idx, ws)| {
-                ws.clients.iter().position(|w| {
+        let mut target: Option<(usize, usize, usize)> = None;
+        'find: for (out_idx, pool) in self.workspaces.iter().enumerate() {
+            for (ws_idx, ws) in pool.iter().enumerate() {
+                if let Some(client_idx) = ws.clients.iter().position(|w| {
                     w.toplevel().map_or(false, |t| t.wl_surface() == &surface)
-                }).map(|idx| (ws_idx, idx))
-            });
-
-        if let Some((ws_idx, client_idx)) = target {
-            self.workspaces[ws_idx].focused_idx = Some(client_idx);
-            if ws_idx != self.effective_ws(self.focused_output) {
-                self.dispatch_action(crate::actions::Action::ViewWs(ws_idx));
-            } else {
-                self.apply_focus();
+                }) {
+                    target = Some((out_idx, ws_idx, client_idx));
+                    break 'find;
+                }
             }
+        }
+
+        if let Some((out_idx, ws_idx, client_idx)) = target {
+            self.workspaces[out_idx][ws_idx].focused_idx = Some(client_idx);
+            if out_idx != self.focused_output || ws_idx != self.effective_ws(self.focused_output) {
+                self.focused_output = out_idx;
+                if let Some(out) = self.outputs.get_mut(out_idx) {
+                    out.current_ws = ws_idx;
+                }
+                self.apply_layout();
+            }
+            self.apply_focus();
         }
     }
 }

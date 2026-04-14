@@ -1032,12 +1032,15 @@ pub fn run(
             });
 
             // Windows not in space (unmapped due to scratchpad, other workspace, etc.)
-            for ws in &state.workspaces {
-                for w in &ws.clients {
-                    if state.space.element_location(w).is_none() {
-                        w.send_frame(output, time, Some(Duration::ZERO), |_, _| {
-                            Some(output.clone())
-                        });
+            // Walk every per-monitor workspace pool.
+            for pool in &state.workspaces {
+                for ws in pool {
+                    for w in &ws.clients {
+                        if state.space.element_location(w).is_none() {
+                            w.send_frame(output, time, Some(Duration::ZERO), |_, _| {
+                                Some(output.clone())
+                            });
+                        }
                     }
                 }
             }

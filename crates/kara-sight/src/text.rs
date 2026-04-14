@@ -290,14 +290,17 @@ fn build_monitor(ctx: &ModuleContext) -> ModuleContent {
         format!("mon {n}")
     };
 
+    // Color logic: focused monitor uses accent (high contrast), unfocused
+    // uses regular text (NOT text_muted, which the user found unreadable on
+    // their daily driver). Sync mode gets accent_soft as a tertiary state.
     let color = if !ctx.colors {
-        ctx.theme.text_muted
+        ctx.theme.text
     } else if ctx.is_focused_monitor {
         ctx.theme.accent
     } else if ctx.sync_enabled {
         ctx.theme.accent_soft
     } else {
-        ctx.theme.text_muted
+        ctx.theme.text
     };
 
     ModuleContent { text, color }
