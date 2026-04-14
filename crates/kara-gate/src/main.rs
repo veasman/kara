@@ -20,12 +20,50 @@ use signal_hook::consts::{SIGHUP, SIGUSR1};
 
 use crate::state::{ClientState, Gate};
 
+/// Initialize tracing: write to stdout AND truncate-then-append to /tmp/kara-gate.log
+/// so the log can be tailed from another terminal without restarting the compositor.
+fn init_tracing() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::EnvFilter;
+
+    let log_path = "/tmp/kara-gate.log";
+    // Truncate on startup so each session starts with a clean file.
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(log_path);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path);
+
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("kara_gate=debug,smithay=info"));
+
+    let stdout_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stdout);
+
+    let registry = tracing_subscriber::registry()
+        .with(env_filter)
+        .with(stdout_layer);
+
+    if let Ok(file) = file {
+        let make_writer = move || file.try_clone().expect("clone kara log fd");
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(make_writer);
+        registry.with(file_layer).init();
+    } else {
+        registry.init();
+    }
+}
+
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter("kara_gate=debug,smithay=info")
-        .init();
+    init_tracing();
 
     tracing::info!("starting kara-gate");
+    tracing::info!("debug log: /tmp/kara-gate.log (tail -f from another terminal)");
 
     let event_loop: EventLoop<Gate> =
         EventLoop::try_new().expect("failed to create event loop");

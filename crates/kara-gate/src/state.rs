@@ -39,6 +39,17 @@ use crate::input::Keybind;
 use crate::layout::layout_workspace;
 use crate::workspace::{Workspace, WORKSPACE_COUNT};
 
+/// Known transient helper clients that create invisible xdg_toplevels to satisfy
+/// protocol requirements (input serials, etc.) and immediately destroy them. These
+/// must never be tiled or they cause real windows to flicker-resize.
+fn is_helper_client(app_id: &str) -> bool {
+    matches!(
+        app_id,
+        "io.github.bugaevc.wl-clipboard"
+    )
+}
+
+
 /// Per-scratchpad runtime state.
 pub struct ScratchpadState {
     pub config_idx: usize,
@@ -109,6 +120,10 @@ pub struct Gate {
     pub current_ws: usize,
     pub previous_ws: usize,
     pub keybinds: std::sync::Arc<Vec<Keybind>>,
+    /// Toplevels created via xdg_shell but not yet mapped (no buffer attached).
+    /// Helper clients like wl-copy create a toplevel purely to obtain an input serial
+    /// for set_selection and never commit a buffer — they must not enter the layout.
+    pub unmapped_windows: Vec<Window>,
 
     // Multi-monitor: per-output state
     pub outputs: Vec<OutputState>,
@@ -255,6 +270,7 @@ impl Gate {
             current_ws: 0,
             previous_ws: 0,
             keybinds,
+            unmapped_windows: Vec::new(),
             wallpaper: None,
             outputs: Vec::new(),
             output_bounds: (800, 600),
@@ -828,17 +844,124 @@ impl Gate {
         }
     }
 
+    /// Route a newly-mapped toplevel (first buffer commit) to a scratchpad or workspace,
+    /// apply rules, re-layout, focus, and animate in.
+    ///
+    /// Called from the commit handler the first time an unmapped toplevel receives a
+    /// buffer. Helper clients that never commit a buffer (e.g. wl-copy) skip this path
+    /// entirely and are never tiled.
+    fn map_new_toplevel(&mut self, window: Window) {
+        let surface = match window.toplevel() {
+            Some(t) => t.wl_surface().clone(),
+            None => return,
+        };
+
+        // Resolve app_id now — by first commit, clients have set it.
+        let app_id = compositor::with_states(&surface, |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|d| d.lock().ok())
+                .and_then(|attrs| attrs.app_id.clone())
+        })
+        .unwrap_or_default();
+
+        tracing::debug!("map new toplevel: app_id={:?}", app_id);
+
+        // Filter known transient helper clients that create an xdg_toplevel purely
+        // to satisfy a protocol requirement (e.g. wl-clipboard needs a surface to
+        // obtain an input serial for wl_data_device.set_selection). They briefly
+        // attach a buffer and then destroy themselves. Tiling them causes real
+        // windows to flicker-resize during paste/yank.
+        if is_helper_client(&app_id) {
+            tracing::debug!("ignoring helper client: {app_id}");
+            return;
+        }
+
+        // Scratchpad capture (app_id match)
+        if !app_id.is_empty() {
+            if let Some(sp_idx) = self.check_scratchpad_capture(&app_id) {
+                tracing::debug!("captured scratchpad '{}' window: {app_id}",
+                    self.config.scratchpads.get(sp_idx).map(|s| s.name.as_str()).unwrap_or("?"));
+                self.scratchpads[sp_idx].workspace.add_client(window);
+                if self.scratchpads[sp_idx].visible {
+                    self.apply_scratchpad_layout(sp_idx);
+                }
+                return;
+            }
+        }
+
+        // Autostart capture: next window goes to the waiting scratchpad
+        if let Some(sp_idx) = self.scratchpads.iter().position(|sp| sp.pending_capture) {
+            self.scratchpads[sp_idx].pending_capture = false;
+            tracing::debug!("autostart capture for scratchpad '{}'",
+                self.config.scratchpads.get(sp_idx).map(|s| s.name.as_str()).unwrap_or("?"));
+            self.scratchpads[sp_idx].workspace.add_client(window);
+            if self.scratchpads[sp_idx].visible {
+                self.apply_scratchpad_layout(sp_idx);
+                self.apply_focus();
+            }
+            return;
+        }
+
+        // Focused scratchpad absorbs new windows
+        if let Some(sp_idx) = self.focused_scratchpad {
+            if self.scratchpads[sp_idx].visible {
+                tracing::debug!("new window routed to focused scratchpad");
+                self.scratchpads[sp_idx].workspace.add_client(window);
+                self.apply_scratchpad_layout(sp_idx);
+                self.apply_focus();
+                return;
+            }
+        }
+
+        // Regular workspace routing via rules
+        let (should_float, target_ws) = if app_id.is_empty() {
+            (false, None)
+        } else {
+            self.check_rules(&app_id)
+        };
+
+        let ws_idx = target_ws.unwrap_or_else(|| self.effective_ws(self.focused_output));
+
+        self.workspaces[ws_idx].add_client_floating(window.clone(), should_float);
+
+        self.apply_layout();
+        self.apply_focus();
+
+        // Animate window in
+        let preset = self.config.animations.preset;
+        if preset != kara_config::AnimationPreset::Instant {
+            if let Some(loc) = self.space.element_location(&window) {
+                let geom = window.geometry();
+                let wa = self.workarea();
+                self.animations.animate_in(
+                    window, preset, self.config.animations.duration_ms,
+                    loc.x, loc.y, geom.size.w, geom.size.h,
+                    wa.loc.x, wa.loc.y, wa.size.w, wa.size.h,
+                    crate::animation::SlideDirection::Auto,
+                );
+            }
+        }
+    }
+
     /// Focus a specific window (e.g., on click)
     pub fn focus_window(&mut self, target: &Window) {
         let ws_idx = self.effective_ws(self.focused_output);
         let ws = &mut self.workspaces[ws_idx];
+        let mut changed = false;
         if let Some(idx) = ws.clients.iter().position(|w| w == target) {
             if ws.focused_idx != Some(idx) {
                 ws.last_focused_idx = ws.focused_idx;
                 ws.focused_idx = Some(idx);
+                changed = true;
             }
         }
-        self.apply_focus();
+        // Skip the re-activate pass when nothing changed — avoids redundant
+        // set_activated churn on same-window clicks.
+        if changed {
+            self.apply_focus();
+        }
     }
 }
 
@@ -912,7 +1035,32 @@ impl CompositorHandler for Gate {
         if let Some(window) = window {
             window.on_commit();
         }
+
+        // If this commit is for a still-unmapped toplevel, check whether it now has
+        // a buffer attached. If so, it's transitioning from "created" to "mapped" —
+        // route it to a workspace and lay out. Clients that never commit a buffer
+        // (wl-copy, etc.) are never added to the layout.
+        let pending_idx = self.unmapped_windows.iter().position(|w| {
+            w.toplevel().map_or(false, |t| t.wl_surface() == surface)
+        });
+        if let Some(idx) = pending_idx {
+            if toplevel_has_buffer(surface) {
+                let window = self.unmapped_windows.remove(idx);
+                self.map_new_toplevel(window);
+            }
+        }
     }
+}
+
+/// Check whether a toplevel's surface has a committed buffer — i.e. is mapped.
+fn toplevel_has_buffer(surface: &WlSurface) -> bool {
+    compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .get::<smithay::backend::renderer::utils::RendererSurfaceStateUserData>()
+            .map(|s| s.lock().unwrap().buffer().is_some())
+            .unwrap_or(false)
+    })
 }
 
 impl BufferHandler for Gate {
@@ -932,93 +1080,25 @@ impl XdgShellHandler for Gate {
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         // Send initial configure so clients can start drawing.
-        // Size is None (client chooses), then apply_layout sends the real size.
+        // Size is None (client chooses), then apply_layout sends the real size
+        // AFTER the client maps (first buffer commit). Helper clients that never
+        // commit a buffer never enter the layout.
         surface.send_configure();
 
-        let window = Window::new_wayland_window(surface.clone());
-
-        // Get app_id for rule matching
-        let app_id = compositor::with_states(surface.wl_surface(), |states| {
-            states
-                .data_map
-                .get::<XdgToplevelSurfaceData>()
-                .and_then(|d| d.lock().ok())
-                .and_then(|attrs| attrs.app_id.clone())
-        })
-        .unwrap_or_default();
-
-        tracing::debug!("new toplevel: app_id={:?}", app_id);
-
-        // Check if this window should be captured by a scratchpad (app_id match)
-        if !app_id.is_empty() {
-            if let Some(sp_idx) = self.check_scratchpad_capture(&app_id) {
-                tracing::debug!("captured scratchpad '{}' window: {app_id}",
-                    self.config.scratchpads.get(sp_idx).map(|s| s.name.as_str()).unwrap_or("?"));
-                self.scratchpads[sp_idx].workspace.add_client(window);
-                if self.scratchpads[sp_idx].visible {
-                    self.apply_scratchpad_layout(sp_idx);
-                }
-                return;
-            }
-        }
-
-        // Check if any scratchpad is waiting for its autostart window
-        if let Some(sp_idx) = self.scratchpads.iter().position(|sp| sp.pending_capture) {
-            self.scratchpads[sp_idx].pending_capture = false;
-            tracing::debug!("autostart capture for scratchpad '{}'",
-                self.config.scratchpads.get(sp_idx).map(|s| s.name.as_str()).unwrap_or("?"));
-            self.scratchpads[sp_idx].workspace.add_client(window);
-            if self.scratchpads[sp_idx].visible {
-                self.apply_scratchpad_layout(sp_idx);
-                self.apply_focus();
-            }
-            return;
-        }
-
-        // If a scratchpad is focused, new windows go into it
-        if let Some(sp_idx) = self.focused_scratchpad {
-            if self.scratchpads[sp_idx].visible {
-                tracing::debug!("new window routed to focused scratchpad");
-                self.scratchpads[sp_idx].workspace.add_client(window);
-                self.apply_scratchpad_layout(sp_idx);
-                self.apply_focus();
-                return;
-            }
-        }
-
-        // Check window rules
-        let (should_float, target_ws) = if app_id.is_empty() {
-            (false, None)
-        } else {
-            self.check_rules(&app_id)
-        };
-
-        let ws_idx = target_ws.unwrap_or_else(|| self.effective_ws(self.focused_output));
-
-        // Add to workspace with floating state
-        self.workspaces[ws_idx].add_client_floating(window.clone(), should_float);
-
-        // Re-layout and focus
-        self.apply_layout();
-        self.apply_focus();
-
-        // Animate window in
-        let preset = self.config.animations.preset;
-        if preset != kara_config::AnimationPreset::Instant {
-            if let Some(loc) = self.space.element_location(&window) {
-                let geom = window.geometry();
-                let wa = self.workarea();
-                self.animations.animate_in(
-                    window, preset, self.config.animations.duration_ms,
-                    loc.x, loc.y, geom.size.w, geom.size.h,
-                    wa.loc.x, wa.loc.y, wa.size.w, wa.size.h,
-                    crate::animation::SlideDirection::Auto,
-                );
-            }
-        }
+        let window = Window::new_wayland_window(surface);
+        self.unmapped_windows.push(window);
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        // Drop unmapped helper windows (e.g. wl-copy) silently — they were never
+        // added to the layout.
+        if let Some(idx) = self.unmapped_windows.iter().position(|w| {
+            w.toplevel().map_or(false, |t| t == &surface)
+        }) {
+            self.unmapped_windows.remove(idx);
+            return;
+        }
+
         // Find and remove the window from whichever workspace it's on
         let target = self.space.elements().find(|w| {
             w.toplevel().map_or(false, |t| t == &surface)
