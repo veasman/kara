@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
+use smithay::backend::allocator::{Fourcc, Modifier};
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 use smithay::backend::drm::compositor::{DrmCompositor, FrameFlags};
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
@@ -550,64 +551,237 @@ pub fn run(
         x_offset += mode_size.0 as i32;
     }
 
-    // --- 5b. Diagnostic: list connectors on non-primary devices (M3-a) ---
+    // --- 5b. Enumerate connected connectors on non-primary (evdi) devices ---
     //
-    // Evdi / DisplayLink devices live in `devices` but we don't yet build
-    // OutputInstances on them. This pass just logs what we'd find so we can
-    // verify connector discovery end-to-end before M3-b actually wires up
-    // cross-GPU rendering.
+    // M3-b: for each evdi connector that's actually connected, create an
+    // Output, a DRM surface, and a DrmCompositor with `gbm: None` (software
+    // cursor) and a format set filtered to Linear modifiers only (evdi can
+    // only scan out Linear buffers). The OutputInstance is tagged with the
+    // evdi DrmNode, and render_frame dispatches to the cross-GPU render path
+    // via `gpu_manager.renderer(primary, evdi, Xrgb8888)`.
     //
-    // force_probe=true (second arg to get_connector) is required here: on
-    // amdgpu the kernel maintains fresh cached connector state, but evdi
-    // doesn't re-populate it until explicitly asked, so a freshly-opened
-    // FD returns "disconnected" for connectors that sysfs says are connected.
-    for (node, entry) in devices.iter() {
-        if *node == primary_node {
-            continue;
-        }
-        let device_resources = match entry.drm_device.resource_handles() {
+    // force_probe=true is required on get_connector: evdi doesn't maintain
+    // fresh cached state, so a freshly-opened fd reports connectors as
+    // disconnected until explicitly probed.
+    //
+    // Evdi-compatible renderer formats: filter to Linear-only. AMD dmabuf
+    // exports can include a bunch of tiled modifiers; passing those to an
+    // evdi DrmCompositor makes primary-plane allocation fail.
+    let evdi_renderer_formats: Vec<_> = renderer_formats
+        .iter()
+        .filter(|f| f.modifier == Modifier::Linear)
+        .filter(|f| matches!(f.code, Fourcc::Xrgb8888 | Fourcc::Argb8888))
+        .copied()
+        .collect();
+
+    let evdi_nodes: Vec<DrmNode> = devices
+        .keys()
+        .copied()
+        .filter(|n| *n != primary_node)
+        .collect();
+
+    for evdi_node in evdi_nodes {
+        let entry = match devices.get_mut(&evdi_node) {
+            Some(e) => e,
+            None => continue,
+        };
+        let card_name = entry.card_name.clone();
+        let evdi_gbm: GbmDevice<DrmDeviceFd> = entry.gbm_device.clone();
+
+        let evdi_resources = match entry.drm_device.resource_handles() {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!(
-                    "{}: failed to get DRM resources: {e}",
-                    entry.card_name,
-                );
+                tracing::warn!("{card_name}: failed to get DRM resources: {e}");
                 continue;
             }
         };
-        let mut any_connected = false;
-        for conn_handle in device_resources.connectors() {
-            let conn_info = match entry.drm_device.get_connector(*conn_handle, true) {
+        let evdi_drm = &mut entry.drm_device;
+
+        for conn_handle in evdi_resources.connectors() {
+            let conn_info = match evdi_drm.get_connector(*conn_handle, true) {
                 Ok(info) => info,
                 Err(_) => continue,
             };
-            let conn_name = format_connector_name(&conn_info);
-            let state_str = format!("{:?}", conn_info.state());
-            if conn_info.state() != connector::State::Connected {
-                tracing::info!(
-                    "{}: evdi connector {conn_name} probe result: {state_str}",
-                    entry.card_name,
+            if conn_info.state() != connector::State::Connected || conn_info.modes().is_empty() {
+                tracing::debug!(
+                    "{card_name}: {} {:?}",
+                    format_connector_name(&conn_info),
+                    conn_info.state()
                 );
                 continue;
             }
-            let mode_str = conn_info
-                .modes()
+
+            let output_name = format_connector_name(&conn_info);
+            tracing::info!("{card_name}: detected connector {output_name}");
+
+            let mon_config = state
+                .config
+                .monitors
                 .iter()
-                .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
-                .or_else(|| conn_info.modes().first())
-                .map(|m| {
-                    let (w, h) = m.size();
-                    format!("{w}x{h}@{}Hz", m.vrefresh())
-                })
-                .unwrap_or_else(|| "no mode".to_string());
-            tracing::info!(
-                "{}: evdi connector {conn_name} connected ({mode_str}) — M3-b will drive this",
-                entry.card_name,
+                .find(|m| m.name == output_name)
+                .cloned();
+            if has_monitor_config && mon_config.is_none() {
+                tracing::info!("monitor {output_name} not in config, skipping");
+                continue;
+            }
+            if let Some(mc) = mon_config.as_ref() {
+                if !mc.enabled {
+                    tracing::info!("monitor {output_name} disabled by config, skipping");
+                    continue;
+                }
+            }
+
+            // Mode selection (same logic as primary loop)
+            let drm_mode = if let Some(Some((w, h))) =
+                mon_config.as_ref().map(|mc| mc.resolution)
+            {
+                let refresh = mon_config.as_ref().and_then(|mc| mc.refresh).unwrap_or(0);
+                conn_info
+                    .modes()
+                    .iter()
+                    .find(|m| {
+                        let (mw, mh) = m.size();
+                        mw as i32 == w
+                            && mh as i32 == h
+                            && (refresh == 0 || m.vrefresh() == refresh)
+                    })
+                    .or_else(|| {
+                        conn_info
+                            .modes()
+                            .iter()
+                            .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
+                    })
+                    .copied()
+                    .unwrap_or(conn_info.modes()[0])
+            } else {
+                conn_info
+                    .modes()
+                    .iter()
+                    .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
+                    .copied()
+                    .unwrap_or(conn_info.modes()[0])
+            };
+
+            let crtc_handle = match find_crtc_for_connector(
+                evdi_drm,
+                &evdi_resources,
+                *conn_handle,
+                evdi_node,
+                &used_crtcs,
+            ) {
+                Some(c) => c,
+                None => {
+                    tracing::warn!(
+                        "no CRTC available for {output_name} on {card_name}"
+                    );
+                    continue;
+                }
+            };
+            used_crtcs.insert((evdi_node, crtc_handle));
+
+            let mode_size = drm_mode.size();
+            let output_mode = OutputMode {
+                size: Size::from((mode_size.0 as i32, mode_size.1 as i32)),
+                refresh: (drm_mode.vrefresh() * 1000) as i32,
+            };
+
+            let mon_position = if let Some(Some((px, py))) =
+                mon_config.as_ref().map(|mc| mc.position)
+            {
+                (px, py)
+            } else {
+                (x_offset, 0)
+            };
+
+            let output = Output::new(
+                output_name.clone(),
+                PhysicalProperties {
+                    size: (0, 0).into(),
+                    subpixel: Subpixel::Unknown,
+                    make: "kara-gate".to_string(),
+                    model: "displaylink".to_string(),
+                },
             );
-            any_connected = true;
-        }
-        if !any_connected {
-            tracing::debug!("{}: no connected connectors", entry.card_name);
+            output.change_current_state(
+                Some(output_mode),
+                Some(Transform::Normal),
+                None,
+                Some(mon_position.into()),
+            );
+            output.set_preferred(output_mode);
+
+            state.space.map_output(&output, mon_position);
+            state.add_output(
+                output.clone(),
+                (mode_size.0 as i32, mode_size.1 as i32),
+                mon_position.into(),
+            );
+
+            let drm_surface = match evdi_drm.create_surface(
+                crtc_handle,
+                drm_mode,
+                &[*conn_handle],
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!(
+                        "{card_name}: failed to create DRM surface for {output_name}: {e}"
+                    );
+                    continue;
+                }
+            };
+
+            let gbm_allocator = GbmAllocator::new(
+                evdi_gbm.clone(),
+                GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
+            );
+            let gbm_exporter = GbmFramebufferExporter::new(evdi_gbm.clone(), None);
+
+            // Last arg is cursor_gbm: None disables HW cursor plane. evdi has
+            // no cursor plane; the cursor is composited into the primary
+            // framebuffer on the render GPU instead.
+            let drm_compositor = match DrmCompositor::new(
+                &output,
+                drm_surface,
+                None,
+                gbm_allocator,
+                gbm_exporter,
+                [
+                    smithay::reexports::drm::buffer::DrmFourcc::Xrgb8888,
+                    smithay::reexports::drm::buffer::DrmFourcc::Argb8888,
+                ],
+                evdi_renderer_formats.clone(),
+                cursor_size,
+                None,
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(
+                        "{card_name}: failed to create DrmCompositor for {output_name}: {e:?}"
+                    );
+                    continue;
+                }
+            };
+
+            tracing::info!(
+                "{card_name}: output {output_name}: {}x{}@{}Hz at pos=({},{}) crtc={:?}",
+                mode_size.0,
+                mode_size.1,
+                drm_mode.vrefresh(),
+                mon_position.0,
+                mon_position.1,
+                crtc_handle,
+            );
+
+            output_instances.push(OutputInstance {
+                drm_compositor,
+                output,
+                crtc: crtc_handle,
+                node: evdi_node,
+                frame_pending: false,
+            });
+
+            x_offset += mode_size.0 as i32;
         }
     }
 
@@ -730,7 +904,7 @@ pub fn run(
 
     // --- 7. Initial render + main loop ---
     for (idx, instance) in output_instances.iter_mut().enumerate() {
-        render_frame(instance, &mut gpu_manager, &mut state, idx);
+        render_frame(instance, &mut gpu_manager, primary_node, &mut state, idx);
     }
 
     loop {
@@ -823,7 +997,7 @@ pub fn run(
         // 6. Render outputs not waiting for a pending frame
         for (idx, instance) in output_instances.iter_mut().enumerate() {
             if !instance.frame_pending {
-                render_frame(instance, &mut gpu_manager, &mut state, idx);
+                render_frame(instance, &mut gpu_manager, primary_node, &mut state, idx);
             }
         }
     }
@@ -832,19 +1006,29 @@ pub fn run(
 /// Render a frame for a specific output via its DrmCompositor.
 ///
 /// Borrows a short-lived `MultiRenderer` from the `GpuManager` for the
-/// duration of this call. All render elements built inside this function
-/// carry the renderer's borrow lifetime and must be consumed (passed to
-/// `drm_compositor.render_frame`) before the function returns.
+/// duration of this call. For outputs whose owning node matches the primary
+/// render node, that's a cheap single-GPU collapse. For outputs on scan-out-
+/// only devices (evdi), the `GpuManager` allocates on the primary render node
+/// and copies across to the evdi target via a dmabuf import at `Xrgb8888`.
 fn render_frame(
     instance: &mut OutputInstance,
     gpu_manager: &mut GpuManager<KaraApi>,
+    primary_node: DrmNode,
     state: &mut Gate,
     output_idx: usize,
 ) {
-    let mut renderer = match gpu_manager.single_renderer(&instance.node) {
+    let renderer_result = if instance.node == primary_node {
+        gpu_manager.single_renderer(&instance.node)
+    } else {
+        gpu_manager.renderer(&primary_node, &instance.node, Fourcc::Xrgb8888)
+    };
+    let mut renderer = match renderer_result {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!("failed to obtain MultiRenderer for {:?}: {e}", instance.node);
+            tracing::error!(
+                "failed to obtain MultiRenderer for {:?}: {e}",
+                instance.node
+            );
             return;
         }
     };
