@@ -160,6 +160,12 @@ pub struct Gate {
     /// Helper clients like wl-copy create a toplevel purely to obtain an input serial
     /// for set_selection and never commit a buffer — they must not enter the layout.
     pub unmapped_windows: Vec<Window>,
+    /// Pending routing hints for autostart entries. When an `autostart {
+    /// run "X" app_id "X" monitor N workspace M }` fires, its target is
+    /// stored here. The next window that maps with a matching app_id gets
+    /// routed to (N, M) and the entry is removed. Entries are dropped if
+    /// not matched within a reasonable time to avoid stale routing.
+    pub pending_autostart_routes: Vec<(String /* app_id */, usize /* output */, usize /* ws */)>,
     /// Helper-client toplevels (e.g. wl-clipboard) given transient keyboard focus so
     /// they can call `wl_data_device.set_selection`, but never added to a workspace.
     /// Focus is restored to the active workspace when the helper is destroyed.
@@ -319,6 +325,7 @@ impl Gate {
             previous_ws: 0,
             keybinds,
             unmapped_windows: Vec::new(),
+            pending_autostart_routes: Vec::new(),
             hidden_helpers: Vec::new(),
             wallpaper: None,
             outputs: Vec::new(),
@@ -1061,6 +1068,31 @@ impl Gate {
             self.apply_scratchpad_layout(sp_idx);
             self.apply_focus();
             return;
+        }
+
+        // Check pending autostart routes FIRST. If this app_id was queued
+        // for placement at a specific (output, workspace) by a recent
+        // autostart entry, consume the route and place the window there
+        // regardless of where the user's focus currently is.
+        if !app_id.is_empty() {
+            if let Some(pos) = self
+                .pending_autostart_routes
+                .iter()
+                .position(|(a, _, _)| a == &app_id)
+            {
+                let (_, target_out, target_ws) = self.pending_autostart_routes.remove(pos);
+                if target_out < self.workspaces.len() && target_ws < self.workspaces[target_out].len() {
+                    self.workspaces[target_out][target_ws]
+                        .add_client_floating(window.clone(), false);
+                    tracing::info!(
+                        "autostart route: {app_id} → output {target_out} ws {}",
+                        target_ws + 1,
+                    );
+                    self.apply_layout();
+                    self.apply_focus();
+                    return;
+                }
+            }
         }
 
         // Regular workspace routing via rules

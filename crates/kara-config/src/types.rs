@@ -278,12 +278,24 @@ pub enum Rule {
 
 // ── Autostart ───────────────────────────────────────────────────────
 
+/// Condition that gates when an autostart entry runs. All `required_monitors`
+/// must be connected and none of `forbidden_monitors` may be connected.
+/// An empty condition (both lists empty) always matches — used for the base
+/// set of autostart entries written directly inside `autostart { }` with no
+/// enclosing `when` block.
+#[derive(Debug, Clone, Default)]
+pub struct AutostartCondition {
+    pub required_monitors: Vec<String>,
+    pub forbidden_monitors: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AutostartEntry {
     pub command: String,
     pub app_id: Option<String>,
     pub workspace: Option<usize>,
     pub monitor: Option<usize>,
+    pub condition: AutostartCondition,
 }
 
 // ── Keybinds ────────────────────────────────────────────────────────

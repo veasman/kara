@@ -598,13 +598,60 @@ impl Gate {
     // ── Autostart ──────────────────────────────────────────────────
 
     /// Run autostart commands from config (only once, skipped on reload).
+    ///
+    /// An entry fires when its `when` condition matches the current set of
+    /// connected outputs. Entries with routing hints (`app_id` + `monitor`
+    /// and/or `workspace`) are queued in `pending_autostart_routes`; the
+    /// corresponding window gets routed to the target (monitor, workspace)
+    /// at map-time via `map_new_toplevel`.
     pub fn run_autostart(&mut self) {
         if self.autostart_done {
             return;
         }
         self.autostart_done = true;
 
-        for entry in &self.config.autostart {
+        // Snapshot of connected output names for the condition check.
+        let connected: std::collections::HashSet<String> = self
+            .outputs
+            .iter()
+            .map(|o| o.output.name())
+            .collect();
+
+        // Collect the entries we're actually going to run so we don't hold
+        // an immutable borrow on self.config while mutating self.
+        let entries_to_run: Vec<kara_config::AutostartEntry> = self
+            .config
+            .autostart
+            .iter()
+            .filter(|e| {
+                e.condition.required_monitors.iter().all(|m| connected.contains(m))
+                    && e.condition
+                        .forbidden_monitors
+                        .iter()
+                        .all(|m| !connected.contains(m))
+            })
+            .cloned()
+            .collect();
+
+        for entry in entries_to_run {
+            // Register a pending route BEFORE spawning so the window can't
+            // beat us to the map handler (rare but possible on fast spawns).
+            if let Some(app_id) = entry.app_id.as_ref() {
+                if entry.monitor.is_some() || entry.workspace.is_some() {
+                    let target_out = entry
+                        .monitor
+                        .filter(|m| *m < self.outputs.len())
+                        .unwrap_or(self.focused_output);
+                    let target_ws = entry.workspace.unwrap_or_else(|| self.effective_ws(target_out));
+                    self.pending_autostart_routes
+                        .push((app_id.clone(), target_out, target_ws));
+                    tracing::info!(
+                        "autostart: queued route app_id={app_id:?} → output {target_out} ws {}",
+                        target_ws + 1,
+                    );
+                }
+            }
+
             tracing::info!("autostart: {}", entry.command);
             if let Err(e) = Command::new("sh")
                 .args(["-c", &entry.command])

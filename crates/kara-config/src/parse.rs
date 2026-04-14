@@ -195,6 +195,10 @@ enum Block {
     Scratchpad(usize),
     Rules,
     Autostart,
+    /// Nested `when monitor "NAME"` block inside autostart. The actual
+    /// condition lives in `autostart_condition` alongside the block state,
+    /// so this variant stays Copy.
+    AutostartWhen,
     Commands,
     Binds,
     Environment,
@@ -591,7 +595,12 @@ fn parse_rules_line(tokens: &[String], rules: &mut Vec<Rule>, ctx: &ParseContext
     }
 }
 
-fn parse_autostart_line(tokens: &[String], entries: &mut Vec<AutostartEntry>, ctx: &ParseContext) {
+fn parse_autostart_line(
+    tokens: &[String],
+    entries: &mut Vec<AutostartEntry>,
+    condition: &AutostartCondition,
+    ctx: &ParseContext,
+) {
     if tokens.len() < 2 || tokens[0] != "run" {
         if !tokens.is_empty() {
             ctx.warn(&format!("unknown autostart directive '{}'", tokens[0]));
@@ -615,7 +624,67 @@ fn parse_autostart_line(tokens: &[String], entries: &mut Vec<AutostartEntry>, ct
         i += 2;
     }
 
-    entries.push(AutostartEntry { command, app_id, workspace, monitor });
+    // Routing hints require an app_id so kara can match the spawned window
+    // at map time. Warn if routing without app_id and drop the hint.
+    if (workspace.is_some() || monitor.is_some()) && app_id.is_none() {
+        ctx.warn(&format!(
+            "autostart '{command}': monitor/workspace routing requires app_id; hint ignored"
+        ));
+        workspace = None;
+        monitor = None;
+    }
+
+    entries.push(AutostartEntry {
+        command,
+        app_id,
+        workspace,
+        monitor,
+        condition: condition.clone(),
+    });
+}
+
+/// Parse the header of a `when monitor "NAME"` / `when not monitor "NAME"`
+/// block, returning the condition. Multiple clauses AND together.
+///
+/// Supported: `when monitor "X"`, `when not monitor "X"`,
+/// and combinations like `when monitor "X" not monitor "Y"`.
+fn parse_autostart_when(name: &str) -> Option<AutostartCondition> {
+    let tokens = split_tokens(name);
+    if tokens.first().map(|s| s.as_str()) != Some("when") {
+        return None;
+    }
+    let mut cond = AutostartCondition::default();
+    let mut i = 1;
+    let mut negate = false;
+    while i < tokens.len() {
+        match tokens[i].as_str() {
+            "not" => {
+                negate = true;
+                i += 1;
+            }
+            "monitor" => {
+                if let Some(name) = tokens.get(i + 1) {
+                    let name = name.trim_matches('"').to_string();
+                    if negate {
+                        cond.forbidden_monitors.push(name);
+                    } else {
+                        cond.required_monitors.push(name);
+                    }
+                    negate = false;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "and" => {
+                i += 1;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    Some(cond)
 }
 
 fn parse_commands_line(tokens: &[String], commands: &mut HashMap<String, String>) {
@@ -884,6 +953,9 @@ fn load_file_recursive(
 
     let mut block = Block::None;
     let mut parent_block = Block::None;
+    // Current condition for the nested `when monitor "..." { }` block inside
+    // an `autostart { }` section. Cleared when the when-block closes.
+    let mut autostart_condition: AutostartCondition = AutostartCondition::default();
 
     let mut ctx = ParseContext {
         path: path.to_path_buf(),
@@ -921,6 +993,11 @@ fn load_file_recursive(
                 parent_block = Block::None;
             } else {
                 block = Block::None;
+            }
+            // Leaving a nested AutostartWhen block — clear the condition
+            // so subsequent entries at Autostart level revert to unconditional.
+            if block == Block::Autostart {
+                autostart_condition = AutostartCondition::default();
             }
             continue;
         }
@@ -993,6 +1070,14 @@ fn load_file_recursive(
                 continue;
             }
 
+            // autostart { when monitor "NAME" { ... } }
+            if block == Block::Autostart && split_tokens(name).first().map(|s| s.as_str()) == Some("when") {
+                autostart_condition = parse_autostart_when(name).unwrap_or_default();
+                parent_block = block;
+                block = Block::AutostartWhen;
+                continue;
+            }
+
             // input { device "name" { ... } } — or just input { ... } for defaults
             if block == Block::Input {
                 let tokens = split_tokens(name);
@@ -1045,7 +1130,13 @@ fn load_file_recursive(
                 }
             }
             Block::Rules => parse_rules_line(&tokens, &mut config.rules, &ctx),
-            Block::Autostart => parse_autostart_line(&tokens, &mut config.autostart, &ctx),
+            Block::Autostart => {
+                let cond = AutostartCondition::default();
+                parse_autostart_line(&tokens, &mut config.autostart, &cond, &ctx);
+            }
+            Block::AutostartWhen => {
+                parse_autostart_line(&tokens, &mut config.autostart, &autostart_condition, &ctx);
+            }
             Block::Commands => parse_commands_line(&tokens, &mut config.commands),
             Block::Binds => parse_binds_line(&tokens, &mut config.keybinds, &ctx),
             Block::Environment => parse_environment_line(&tokens, &mut config.environment, &ctx),
