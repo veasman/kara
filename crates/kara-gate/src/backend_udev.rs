@@ -731,26 +731,36 @@ pub fn run(
                 }
             };
 
-            // NOTE: allocate the primary-plane swapchain from the PRIMARY
-            // GbmDevice, not evdi's. evdi's own GbmDevice returns dumb
-            // buffers backed by software-EGL (llvmpipe), and the MultiRenderer
-            // cross-GPU copy path silently falls back to a CPU texture_copy
-            // when the llvmpipe EGL context can't import AMD dmabufs — which
-            // is slow, not atomic with scanout, and produced the glitchy
-            // black-patch flickering on the user's DisplayLink monitors.
+            // Hybrid swapchain: ALLOCATE on the primary GbmDevice (AMD), but
+            // EXPORT framebuffers via evdi's GbmDevice. Why?
             //
-            // Allocating from primary_gbm means the compositor's swapchain
-            // lives in AMD memory, render_frame runs a single-GPU MultiRenderer
-            // on AMD, and the resulting dmabuf is handed to evdi's DrmSurface
-            // which wraps it via drmModeAddFB2. The buffer must be Linear +
-            // Xrgb/Argb for this to work, which is exactly what we filtered
-            // evdi_renderer_formats down to above.
+            // - Evdi has no real GPU. Allocating buffers via evdi's GbmDevice
+            //   returns dumb / software-EGL (llvmpipe) buffers; the
+            //   MultiRenderer cross-GPU path then silently CPU-copies frames
+            //   into them, which is slow and produces glitchy partial
+            //   updates on scanout. We saw this in M3-b's first attempt.
+            //
+            // - Allocating AND exporting on the AMD GbmDevice fails to
+            //   register the framebuffer on evdi: smithay's
+            //   GbmFramebufferExporter takes the "native" framebuffer_from_bo
+            //   path when the exporter's drm_node matches the buffer's
+            //   source node, which calls drmModeAddFB on evdi using an
+            //   AMD-side GEM handle that doesn't exist on evdi → ENOENT
+            //   "Failed to add framebuffer" and DrmCompositor::new aborts.
+            //
+            // - Allocating on primary_gbm and exporting via evdi_gbm makes
+            //   the foreign check in GbmFramebufferExporter::add_framebuffer
+            //   (gbm.rs:74-78) fire, which routes through framebuffer_from_dmabuf
+            //   — the proper cross-device path: export the AMD buffer as a
+            //   dmabuf, re-import it on evdi's GbmDevice, and then drmModeAddFB2
+            //   the imported buffer onto evdi's DrmSurface. Linear + Xrgb/Argb
+            //   is required for the import (we filtered evdi_renderer_formats
+            //   to that subset above).
             let gbm_allocator = GbmAllocator::new(
                 primary_gbm.clone(),
                 GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
             );
-            let gbm_exporter = GbmFramebufferExporter::new(primary_gbm.clone(), None);
-            let _ = &evdi_gbm; // evdi's own gbm stays in scope but is unused
+            let gbm_exporter = GbmFramebufferExporter::new(evdi_gbm.clone(), None);
 
             // Last arg is cursor_gbm: None disables HW cursor plane. evdi has
             // no cursor plane; the cursor is composited into the primary
