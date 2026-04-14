@@ -494,7 +494,7 @@ pub fn run(
         output.change_current_state(
             Some(output_mode),
             Some(transform),
-            None,
+            Some(smithay::output::Scale::Integer(1)),
             Some(mon_position.into()),
         );
         output.set_preferred(output_mode);
@@ -730,7 +730,7 @@ pub fn run(
             output.change_current_state(
                 Some(output_mode),
                 Some(transform),
-                None,
+                Some(smithay::output::Scale::Integer(1)),
                 Some(mon_position.into()),
             );
             output.set_preferred(output_mode);
@@ -1185,12 +1185,20 @@ fn render_frame(
             .iter()
             .any(|sp| sp.workspace.clients.contains(&window));
 
+        // Mirror smithay's Space::render_elements_for_output math:
+        // render_location = element_location - window.geometry().loc - output_geo.loc
+        // The geometry.loc subtraction is what positions CSD clients (Firefox,
+        // GTK) correctly — their buffer origin sits above/left of their
+        // logical content origin by the shadow margin, so the render origin
+        // must back up by that amount to make the content land where the
+        // compositor placed it.
+        let render_loc = loc - window.geometry().loc - output_geo.loc;
         let win_elements = AsRenderElements::<KaraRenderer<'_>>::render_elements::<
             WaylandSurfaceRenderElement<KaraRenderer<'_>>,
         >(
             &window,
             &mut renderer,
-            loc.to_physical_precise_round(1.0),
+            render_loc.to_physical_precise_round(1.0),
             smithay::utils::Scale::from(1.0),
             1.0,
         );

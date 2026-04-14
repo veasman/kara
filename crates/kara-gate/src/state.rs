@@ -995,17 +995,51 @@ impl Gate {
             None => return,
         };
 
-        // Resolve app_id now — by first commit, clients have set it.
-        let app_id = compositor::with_states(&surface, |states| {
-            states
+        // Resolve app_id and title now — by first commit, clients have set both.
+        let (app_id, title) = compositor::with_states(&surface, |states| {
+            let attrs = states
                 .data_map
                 .get::<XdgToplevelSurfaceData>()
-                .and_then(|d| d.lock().ok())
-                .and_then(|attrs| attrs.app_id.clone())
-        })
-        .unwrap_or_default();
+                .and_then(|d| d.lock().ok());
+            match attrs {
+                Some(a) => (a.app_id.clone(), a.title.clone()),
+                None => (None, None),
+            }
+        });
+        let app_id = app_id.unwrap_or_default();
+        let title = title.unwrap_or_default();
 
-        tracing::debug!("map new toplevel: app_id={:?}", app_id);
+        // Detect xdg_toplevel.set_parent — dialogs/child windows (Floorp's
+        // secondary toplevel, GTK modal dialogs, file-pickers) set a parent
+        // and should float over the parent, not split the tile.
+        let has_parent = window
+            .toplevel()
+            .and_then(|t| t.parent())
+            .is_some();
+
+        let (min_size, max_size) = compositor::with_states(&surface, |states| {
+            let mut cached = states.cached_state
+                .get::<smithay::wayland::shell::xdg::SurfaceCachedState>();
+            let c = cached.current();
+            (c.min_size, c.max_size)
+        });
+        let geom = window.geometry();
+        let bbox = window.bbox();
+        let buf_size = compositor::with_states(&surface, |states| {
+            states
+                .data_map
+                .get::<smithay::backend::renderer::utils::RendererSurfaceStateUserData>()
+                .and_then(|s| s.lock().ok().and_then(|l| l.buffer_size()))
+        });
+        tracing::debug!(
+            "map new toplevel: app_id={:?} title={:?} has_parent={} geom={}x{} bbox={}x{} buf={:?} min={}x{} max={}x{}",
+            app_id, title, has_parent,
+            geom.size.w, geom.size.h,
+            bbox.size.w, bbox.size.h,
+            buf_size,
+            min_size.w, min_size.h,
+            max_size.w, max_size.h,
+        );
 
         // Known transient helper clients (e.g. wl-clipboard) create an xdg_toplevel
         // purely to satisfy protocol requirements: they need a surface that receives
@@ -1096,11 +1130,14 @@ impl Gate {
         }
 
         // Regular workspace routing via rules
-        let (should_float, target_ws) = if app_id.is_empty() {
+        let (rule_float, target_ws) = if app_id.is_empty() {
             (false, None)
         } else {
             self.check_rules(&app_id)
         };
+        // Force-float any toplevel whose xdg parent is set — these are
+        // child dialogs / auxiliary windows, not tileable siblings.
+        let should_float = rule_float || has_parent;
 
         let ws_idx = target_ws.unwrap_or_else(|| self.effective_ws(self.focused_output));
 
@@ -1275,14 +1312,19 @@ impl XdgShellHandler for Gate {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        // Send only the tiled state flags in the initial configure, with NO
-        // size. If we send a size here, Firefox/Floorp cache it as the target
-        // dimensions for their first buffer and then silently ignore the real
-        // size from the post-commit apply_layout pass — the window renders at
-        // the wrong size until some unrelated focus/resize forces a re-ack.
-        // Leaving size=None tells the client "pick a default", then we resize
-        // it authoritatively when it actually joins a workspace.
+        // Send the initial configure with a realistic size + bounds so clients
+        // draw at the correct dimensions from their very first buffer. Firefox
+        // and derivatives (Floorp) rely on the initial bounds to decide how
+        // many windows to spawn from their session-restore data — without it
+        // Floorp opens a second helper toplevel that splits the tile.
+        //
+        // The real per-tile size is re-sent after the first buffer commit when
+        // map_new_toplevel runs apply_layout and the window lands in a
+        // workspace.
+        let area = self.workarea();
         surface.with_pending_state(|state| {
+            state.size = Some((area.size.w, area.size.h).into());
+            state.bounds = Some((area.size.w, area.size.h).into());
             mark_tiled(state);
         });
         surface.send_configure();
