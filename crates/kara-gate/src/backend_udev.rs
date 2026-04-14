@@ -383,21 +383,7 @@ pub fn run(
         }
 
         // Build canonical output name for config matching
-        let output_name = format!("{}-{}",
-            match conn_info.interface() {
-                connector::Interface::HDMIA => "HDMI-A",
-                connector::Interface::HDMIB => "HDMI-B",
-                connector::Interface::DisplayPort => "DP",
-                connector::Interface::EmbeddedDisplayPort => "eDP",
-                connector::Interface::VGA => "VGA",
-                connector::Interface::DVII => "DVI-I",
-                connector::Interface::DVID => "DVI-D",
-                connector::Interface::DVIA => "DVI-A",
-                connector::Interface::LVDS => "LVDS",
-                _ => "Unknown",
-            },
-            conn_info.interface_id()
-        );
+        let output_name = format_connector_name(&conn_info);
 
         tracing::info!("detected connector: {output_name}");
 
@@ -552,6 +538,57 @@ pub fn run(
         });
 
         x_offset += mode_size.0 as i32;
+    }
+
+    // --- 5b. Diagnostic: list connectors on non-primary devices (M3-a) ---
+    //
+    // Evdi / DisplayLink devices live in `devices` but we don't yet build
+    // OutputInstances on them. This pass just logs what we'd find so we can
+    // verify connector discovery end-to-end before M3-b actually wires up
+    // cross-GPU rendering.
+    for (node, entry) in devices.iter() {
+        if *node == primary_node {
+            continue;
+        }
+        let device_resources = match entry.drm_device.resource_handles() {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(
+                    "{}: failed to get DRM resources: {e}",
+                    entry.card_name,
+                );
+                continue;
+            }
+        };
+        let mut any_connected = false;
+        for conn_handle in device_resources.connectors() {
+            let conn_info = match entry.drm_device.get_connector(*conn_handle, false) {
+                Ok(info) => info,
+                Err(_) => continue,
+            };
+            if conn_info.state() != connector::State::Connected {
+                continue;
+            }
+            let conn_name = format_connector_name(&conn_info);
+            let mode_str = conn_info
+                .modes()
+                .iter()
+                .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
+                .or_else(|| conn_info.modes().first())
+                .map(|m| {
+                    let (w, h) = m.size();
+                    format!("{w}x{h}@{}Hz", m.vrefresh())
+                })
+                .unwrap_or_else(|| "no mode".to_string());
+            tracing::info!(
+                "{}: evdi connector {conn_name} connected ({mode_str}) — M3-b will drive this",
+                entry.card_name,
+            );
+            any_connected = true;
+        }
+        if !any_connected {
+            tracing::debug!("{}: no connected connectors", entry.card_name);
+        }
     }
 
     if output_instances.is_empty() {
@@ -987,6 +1024,24 @@ fn capture_screenshot<'a>(
         }
         Err(e) => tracing::error!("screenshot: copy_framebuffer failed: {e:?}"),
     }
+}
+
+/// Canonical `<iface>-<id>` name for a DRM connector (e.g. `DP-2`, `DVI-I-1`).
+/// Used for both monitor-config matching and logging.
+fn format_connector_name(conn_info: &connector::Info) -> String {
+    let iface = match conn_info.interface() {
+        connector::Interface::HDMIA => "HDMI-A",
+        connector::Interface::HDMIB => "HDMI-B",
+        connector::Interface::DisplayPort => "DP",
+        connector::Interface::EmbeddedDisplayPort => "eDP",
+        connector::Interface::VGA => "VGA",
+        connector::Interface::DVII => "DVI-I",
+        connector::Interface::DVID => "DVI-D",
+        connector::Interface::DVIA => "DVI-A",
+        connector::Interface::LVDS => "LVDS",
+        _ => "Unknown",
+    };
+    format!("{iface}-{}", conn_info.interface_id())
 }
 
 /// Find a CRTC that can drive the given connector, excluding already-used CRTCs.
