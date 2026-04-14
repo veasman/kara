@@ -653,15 +653,17 @@ impl Gate {
             }
         }
 
-        // If any scratchpad is visible, unmap workspace windows from Space
-        // so they don't render above the dim overlay.
-        if self.any_scratchpad_active() {
-            for (ws_idx, _, _, _, _) in &output_ws {
-                for w in &self.workspaces[*ws_idx].clients {
-                    self.space.unmap_elem(w);
-                }
-            }
-        }
+        // NOTE: previously workspace windows were unmapped from Space while a
+        // scratchpad overlay was visible, to prevent them drawing on top of the
+        // dim. That broke Firefox/Floorp: once smithay sent wl_output.leave for
+        // a surface, Firefox treats it as "invisible" and stops committing new
+        // frames — so the browser froze until the scratchpad was dismissed.
+        //
+        // Instead, keep workspace windows mapped, and rely on the render-order
+        // change in backend_udev.rs that draws the scratchpad dim AFTER the
+        // space elements. The dim has a hole cut out for the scratchpad area,
+        // so scratchpad windows (raised to the top of Space) remain fully
+        // visible while everything else gets dimmed.
     }
 
     /// Apply tiling layout for a scratchpad within its floating rect.

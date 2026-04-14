@@ -614,10 +614,17 @@ fn render_frame(
         renderer, &output_geo, 1.0, 1.0,
     );
 
-    // Element order (front-to-back for DrmCompositor):
-    // cursor > sp borders > space windows > dim (around sp hole) > custom
+    // Element order (front-to-back for DrmCompositor — first is topmost):
+    // cursor > keybind_overlay > top layers > sp_borders > sp_dim > space windows > custom
     //
-    // Dim renders as four rects AROUND the scratchpad area, not over it.
+    // Drawing is back-to-front, so the sequence is:
+    //   custom (wallpaper, bar, workspace borders)
+    //   → space windows (workspace clients, scratchpad raised on top via
+    //     Space::raise_element — Firefox/Floorp stays "on output" so it keeps
+    //     committing frames even while a scratchpad is visible)
+    //   → sp_dim (four rects AROUND the scratchpad hole: dims workspace
+    //     clients while leaving the scratchpad area untouched)
+    //   → sp_borders → layers → keybind overlay → cursor
     let mut elements: Vec<DrmRenderElement> =
         Vec::with_capacity(custom_elements.len() + sp_borders.len() + sp_dim.len() + space_elements.len() + 1);
 
@@ -649,14 +656,15 @@ fn render_frame(
         }
     }
 
-    // Scratchpad borders (in front of windows)
+    // Scratchpad borders (in front of dim and scratchpad windows)
     elements.extend(sp_borders.into_iter().map(DrmRenderElement::Texture));
+
+    // Dim rects around scratchpad area (drawn AFTER workspace windows so they
+    // dim the workspace, but the hole leaves scratchpad content untouched).
+    elements.extend(sp_dim.into_iter().map(DrmRenderElement::Texture));
 
     // Space windows (scratchpad raised to top, regular behind)
     elements.extend(space_elements.into_iter().map(DrmRenderElement::Surface));
-
-    // Dim rects around scratchpad area (dims background, not scratchpad content)
-    elements.extend(sp_dim.into_iter().map(DrmRenderElement::Texture));
 
     // Custom elements: wallpaper, workspace borders, bar (behind everything)
     elements.extend(custom_elements.into_iter().map(DrmRenderElement::Texture));
