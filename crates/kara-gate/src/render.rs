@@ -25,8 +25,15 @@ pub fn render_bar(
         .map(|o| o.size)
         .unwrap_or((800, 600));
 
-    // Re-rasterize bar only when dirty
+    // When the bar dirty flag flips on, drop ALL per-output caches so every
+    // bar gets re-rasterized with fresh status, focus, and workspace state.
+    // Then this output's specific entry is rebuilt below if missing.
     if state.bar_dirty {
+        state.bar_cache.clear();
+        state.bar_dirty = false;
+    }
+
+    if !state.bar_cache.contains_key(&output_idx) {
         let ws_ctx = state.bar_workspace_context(output_idx);
         if let Some(pixmap) = state.bar_renderer.render(
             output_w as u32,
@@ -35,17 +42,15 @@ pub fn render_bar(
             &state.status_cache,
             &ws_ctx,
         ) {
-            state.bar_cache = Some((
-                pixmap.data().to_vec(),
-                pixmap.width(),
-                pixmap.height(),
-            ));
+            state.bar_cache.insert(
+                output_idx,
+                (pixmap.data().to_vec(), pixmap.width(), pixmap.height()),
+            );
         }
-        state.bar_dirty = false;
     }
 
-    let (data, w, h) = match state.bar_cache {
-        Some(ref c) => c,
+    let (data, w, h) = match state.bar_cache.get(&output_idx) {
+        Some(c) => c,
         None => return Vec::new(),
     };
 

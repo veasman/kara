@@ -196,7 +196,12 @@ pub struct Gate {
 
     // Bar rendering cache
     pub bar_dirty: bool,
-    pub bar_cache: Option<(Vec<u8>, u32, u32)>, // (rgba_bytes, width, height)
+    /// Per-output bar cache. The bar's content depends on `output_idx`
+    /// (monitor number, focused-monitor highlight) so a single shared cache
+    /// caused every monitor to display whichever output's pixmap was last
+    /// rasterized while `bar_dirty` was true. Keyed by `output_idx`; the
+    /// entire map is cleared whenever `bar_dirty` flips on.
+    pub bar_cache: std::collections::HashMap<usize, (Vec<u8>, u32, u32)>,
 
     // Cursor rendering
     pub cursor_status: CursorImageStatus,
@@ -327,7 +332,7 @@ impl Gate {
             pending_sends: Vec::new(),
             window_base_positions: Vec::new(),
             bar_dirty: true,
-            bar_cache: None,
+            bar_cache: std::collections::HashMap::new(),
             pointer_location: (0.0, 0.0).into(),
             cursor_status: CursorImageStatus::default_named(),
             cursor_cache: None,
@@ -567,6 +572,7 @@ impl Gate {
             focused_title,
             monitor_id: output_idx,
             sync_enabled: self.config.general.sync_workspaces,
+            is_focused_monitor: output_idx == self.focused_output,
         }
     }
 
@@ -987,6 +993,18 @@ impl Gate {
         };
 
         let ws_idx = target_ws.unwrap_or_else(|| self.effective_ws(self.focused_output));
+
+        let target_output_name = self
+            .outputs
+            .get(self.focused_output)
+            .map(|o| o.output.name())
+            .unwrap_or_default();
+        tracing::info!(
+            "map {app_id:?} → workspace {} (output {} = {target_output_name}, rule_pinned={})",
+            ws_idx + 1,
+            self.focused_output,
+            target_ws.is_some(),
+        );
 
         self.workspaces[ws_idx].add_client_floating(window.clone(), should_float);
 

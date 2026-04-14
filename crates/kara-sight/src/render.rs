@@ -68,6 +68,7 @@ impl BarRenderer {
             focused_title: ws_ctx.focused_title.clone(),
             monitor_id: ws_ctx.monitor_id,
             sync_enabled: ws_ctx.sync_enabled,
+            is_focused_monitor: ws_ctx.is_focused_monitor,
         };
 
         // Separate modules by section
@@ -308,6 +309,9 @@ pub struct WorkspaceContext {
     pub focused_title: String,
     pub monitor_id: usize,
     pub sync_enabled: bool,
+    /// True when this monitor is the keyboard-focused monitor. Used by the
+    /// bar's monitor module to render a "you are here" highlight.
+    pub is_focused_monitor: bool,
 }
 
 // ── Bar-specific drawing ────────────────────────────────────────────

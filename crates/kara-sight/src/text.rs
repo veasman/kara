@@ -22,6 +22,7 @@ pub struct ModuleContext<'a> {
     pub focused_title: String,
     pub monitor_id: usize,
     pub sync_enabled: bool,
+    pub is_focused_monitor: bool,
 }
 
 pub fn build_module_text(kind: &BarModuleKind, arg: Option<&str>, ctx: &ModuleContext) -> ModuleContent {
@@ -277,13 +278,24 @@ fn build_monitor(ctx: &ModuleContext) -> ModuleContent {
         ""
     };
 
+    // Mark this monitor with a leading dot when it has keyboard focus so the
+    // user can tell at a glance which monitor mod+spawn / mod+1..9 will act on.
+    let focus_marker = if ctx.is_focused_monitor { "● " } else { "" };
+
     let text = if ctx.icons {
-        format!("\u{f0379} {}{sync_indicator}", ctx.monitor_id + 1) // 󰍹 monitor icon
+        format!(
+            "{focus_marker}\u{f0379} {}{sync_indicator}",
+            ctx.monitor_id + 1
+        ) // 󰍹 monitor icon
     } else {
-        format!("mon {}{sync_indicator}", ctx.monitor_id + 1)
+        format!("{focus_marker}mon {}{sync_indicator}", ctx.monitor_id + 1)
     };
 
-    let color = if ctx.sync_enabled && ctx.colors {
+    // Highlight the focused monitor's module in accent. Sync mode keeps its
+    // own accent regardless. Otherwise muted.
+    let color = if !ctx.colors {
+        ctx.theme.text_muted
+    } else if ctx.is_focused_monitor || ctx.sync_enabled {
         ctx.theme.accent
     } else {
         ctx.theme.text_muted
