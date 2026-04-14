@@ -416,19 +416,12 @@ impl Gate {
         let new_idx = ((self.focused_output as i32 + direction).rem_euclid(count)) as usize;
         self.focused_output = new_idx;
 
-        // Warp pointer to center of new output. The cursor render checks
-        // `cursor_is_idle` (no movement in 1s) before drawing — after a
-        // keybind-driven warp the cursor would otherwise stay invisible
-        // since update_cursor_idle was never called. Reset it explicitly.
-        let out = &self.outputs[new_idx];
-        self.pointer_location = (
-            out.location.x as f64 + out.size.0 as f64 / 2.0,
-            out.location.y as f64 + out.size.1 as f64 / 2.0,
-        ).into();
-        self.cursor_idle_pos = self.pointer_location;
-        self.cursor_last_moved = std::time::Instant::now();
+        // Mouse stays where it is. The user explicitly wants keyboard focus
+        // and pointer position to be independent — see `handle_pointer_motion_relative`
+        // for the matching change that stops pointer motion from updating
+        // focused_output.
 
-        // Repaint the bar so its monitor module reflects the new focus.
+        // Repaint every bar so the focused-monitor highlight moves.
         self.bar_dirty = true;
 
         self.apply_focus();

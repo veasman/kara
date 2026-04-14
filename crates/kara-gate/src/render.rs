@@ -388,7 +388,18 @@ fn render_dim_overlay(
     let ow = out.size.0;
     let oh = out.size.1;
 
-    let (sx, sy, sw, sh) = sp_rect.unwrap_or((0, 0, ow, oh));
+    // sp_rect is in GLOBAL compositor coordinates (workarea.loc + offset).
+    // make_dim_rect interprets its position as OUTPUT-LOCAL — the same
+    // convention the bar uses, where Point::from((0, 0)) means the top-left
+    // of each output. So we subtract the output's location to convert the
+    // hole rect into output-local space before slicing the four dim bars
+    // around it. On a single-monitor setup output.location is (0,0) and
+    // this is a no-op; on multi-monitor it was previously offsetting the
+    // hole by the output's global x and pulling the dim rects across the
+    // scratchpad windows.
+    let (gsx, gsy, sw, sh) = sp_rect.unwrap_or((out.location.x, out.location.y, ow, oh));
+    let sx = gsx - out.location.x;
+    let sy = gsy - out.location.y;
 
     // Four rects around the scratchpad hole (output-local coords)
     let mut elements = Vec::new();

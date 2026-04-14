@@ -272,31 +272,34 @@ fn build_title(ctx: &ModuleContext) -> ModuleContent {
 }
 
 fn build_monitor(ctx: &ModuleContext) -> ModuleContent {
-    let sync_indicator = if ctx.sync_enabled {
-        if ctx.icons { " \u{f0b38}" } else { " sync" } // 󰬸 sync arrows
+    // Compact form. The number is wrapped in brackets when this monitor has
+    // keyboard focus, plain otherwise. Color carries the same signal in
+    // case the bracket is too subtle. Sync state is appended after.
+    let n = ctx.monitor_id + 1;
+    let body = if ctx.is_focused_monitor {
+        format!("[{n}]")
     } else {
-        ""
+        format!(" {n} ")
     };
-
-    // Mark this monitor with a leading dot when it has keyboard focus so the
-    // user can tell at a glance which monitor mod+spawn / mod+1..9 will act on.
-    let focus_marker = if ctx.is_focused_monitor { "● " } else { "" };
 
     let text = if ctx.icons {
-        format!(
-            "{focus_marker}\u{f0379} {}{sync_indicator}",
-            ctx.monitor_id + 1
-        ) // 󰍹 monitor icon
+        if ctx.sync_enabled {
+            format!("\u{f0379}{body}\u{f0b38}") // 󰍹 mon  󰬸 sync
+        } else {
+            format!("\u{f0379}{body}")
+        }
+    } else if ctx.sync_enabled {
+        format!("mon{body}sync")
     } else {
-        format!("{focus_marker}mon {}{sync_indicator}", ctx.monitor_id + 1)
+        format!("mon{body}")
     };
 
-    // Highlight the focused monitor's module in accent. Sync mode keeps its
-    // own accent regardless. Otherwise muted.
     let color = if !ctx.colors {
         ctx.theme.text_muted
-    } else if ctx.is_focused_monitor || ctx.sync_enabled {
+    } else if ctx.is_focused_monitor {
         ctx.theme.accent
+    } else if ctx.sync_enabled {
+        ctx.theme.accent_soft
     } else {
         ctx.theme.text_muted
     };

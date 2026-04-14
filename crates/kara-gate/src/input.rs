@@ -223,11 +223,10 @@ impl Gate {
         self.pointer_location = (new_x, new_y).into();
         self.update_cursor_idle();
 
-        // Update focused output based on pointer position
-        let new_output = self.output_for_point(self.pointer_location);
-        if new_output != self.focused_output {
-            self.focused_output = new_output;
-        }
+        // NOTE: pointer motion no longer updates `focused_output`. The user's
+        // workflow is keyboard-driven — mod+focus_monitor_next/prev is the
+        // only way to change which monitor receives spawned windows. Pointer
+        // can move freely between monitors without disturbing focus.
 
         let pos = self.pointer_location;
         let serial = SERIAL_COUNTER.next_serial();
