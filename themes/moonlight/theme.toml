@@ -1,0 +1,98 @@
+# kara-beautify: moonlight
+#
+# Cool, nocturnal palette family. Where `default` leans palette-neutral
+# and `fantasy` leans graphic-heavy, `moonlight` lives in the
+# pale-blue / silver / midnight space. Variants are mood dials rather
+# than wholesale aesthetic swaps — same nightfall feel, different
+# depth of night.
+#
+# Variants (names are suggestions — rename freely):
+#   calm    — soft silvery blue, high-moon clear night
+#   deep    — midnight navy, late-night low-light
+#   frost   — icy cyan, waxing-moon crispness
+#
+# Wallpapers live outside the repo. Drop per-variant assets into
+#   ~/.local/share/kara/themes/moonlight/wallpapers/
+# or, for dev from a cargo-run checkout, themes/moonlight/wallpapers/
+# (gitignored). Each variant's `wallpaper = "..."` value is a bare
+# filename resolved against that directory at apply time.
+
+[meta]
+name = "moonlight"
+author = "kara"
+mode = "dark"
+default_variant = "calm"
+
+[wallpaper]
+# Top-level fallback — each variant overrides below.
+
+[palette]
+primary = "#8fa3c4"
+accent_strategy = "balanced"
+contrast = "medium"
+
+[style]
+radius = "small"
+density = "normal"
+surface_style = "soft"
+transparency = 0.92
+blur = false
+
+[fonts]
+ui_family = "FiraCode Nerd Font"
+ui_size = 11
+mono_family = "FiraCode Nerd Font"
+mono_size = 13
+
+[cursor]
+theme = "Bibata-Modern-Classic"
+size = 24
+
+[nvim]
+preset = "semantic"
+transparent = true
+
+[vwm_bar]
+style = "docked"
+background = true
+modules = "flat"
+icons = true
+colors = true
+minimal = false
+height = 24
+radius = 0
+margin_x = 0
+margin_y = 0
+padding_y = 2
+
+# ─── Variants ──────────────────────────────────────────────────────────
+#
+# Each variant is an inline palette — no `preset = ...` reference yet,
+# so users can author their own in ~/.local/share/kara/themes/moonlight/
+# without needing to rebuild kara-theme. Colors here are first-cut
+# guesses that fit the "nightfall" brief; hand-tune them against real
+# wallpapers when those land.
+
+[variants.calm]
+wallpaper = "calm.mp4"
+[variants.calm.palette]
+# Pale slate blue — a clear, high-moon night.
+primary = "#8fa3c4"
+accent_strategy = "balanced"
+contrast = "medium"
+
+[variants.deep]
+wallpaper = "deep.mp4"
+[variants.deep.palette]
+# Midnight navy — dense, late-night low-light.
+primary = "#3b4a6b"
+accent_strategy = "balanced"
+contrast = "medium"
+
+[variants.frost]
+wallpaper = "frost.mp4"
+[variants.frost.palette]
+# Icy cyan — waxing moon over snow.
+primary = "#a6c4c8"
+accent_strategy = "balanced"
+contrast = "medium"

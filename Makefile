@@ -65,23 +65,24 @@ install:
 	install -m 0644 session/kara.desktop "$(DESTDIR)$(DATADIR)/wayland-sessions/kara.desktop"
 	install -d "$(DESTDIR)$(DATADIR)/xdg-desktop-portal"
 	install -m 0644 session/kara-portals.conf "$(DESTDIR)$(DATADIR)/xdg-desktop-portal/kara-portals.conf"
-	# Ship every theme directory under themes/ to $APPDIR/themes/.
+	# Ship every theme's manifest (theme.toml) to $APPDIR/themes/.
 	# We purge the existing themes subdir first so removed-from-repo
 	# themes disappear on upgrade instead of lingering as stale
-	# entries in the theme picker. Any wallpaper (.png/.jpg/.gif/
-	# .mp4/.mkv/.webm/...) is copied verbatim — `find -type f`
-	# doesn't filter by extension so new formats Just Work.
+	# entries in the theme picker.
+	#
+	# WALLPAPERS ARE NOT INSTALLED BY THIS TARGET. Binary blobs are
+	# excluded from the git repo via .gitignore and shipped through
+	# a separate channel (future: `kara-beautify theme fetch`). For
+	# now users drop wallpapers into ~/.local/share/kara/themes/<name>/
+	# wallpapers/ by hand — kara-beautify's theme search path prefers
+	# $XDG_DATA_HOME over the system install, so per-user wallpapers
+	# Just Work alongside a system-installed manifest.
 	rm -rf "$(DESTDIR)$(APPDIR)/themes"
 	@for theme in themes/*/; do \
 		name="$$(basename $$theme)"; \
 		[ -f "$$theme/theme.toml" ] || continue; \
 		install -d "$(DESTDIR)$(APPDIR)/themes/$$name"; \
 		install -m 0644 "$$theme/theme.toml" "$(DESTDIR)$(APPDIR)/themes/$$name/theme.toml"; \
-		if [ -d "$$theme/wallpapers" ]; then \
-			install -d "$(DESTDIR)$(APPDIR)/themes/$$name/wallpapers"; \
-			find "$$theme/wallpapers" -maxdepth 1 -type f \
-				-exec install -m 0644 {} "$(DESTDIR)$(APPDIR)/themes/$$name/wallpapers/" \; ; \
-		fi; \
 	done
 	install -d "$(DESTDIR)$(DATADIR)/licenses/kara"
 	install -m 0644 LICENSE "$(DESTDIR)$(DATADIR)/licenses/kara/LICENSE"

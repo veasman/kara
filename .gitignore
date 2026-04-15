@@ -5,3 +5,11 @@ target/
 .SRCINFO
 pkg/
 /src/
+
+# Wallpapers are NOT tracked in the repo — binary blobs balloon
+# `git clone` for every variant × every theme. Shipped via a
+# separate channel (kara-themes-assets / `kara-beautify theme fetch`,
+# future). For local dev, drop files into themes/<name>/wallpapers/
+# and kara-gate picks them up at runtime; for installed use, drop
+# them into ~/.local/share/kara/themes/<name>/wallpapers/.
+themes/*/wallpapers/
