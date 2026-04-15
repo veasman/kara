@@ -488,6 +488,55 @@ pub fn run(
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &socket_name) };
     let mut state = Gate::new(display, event_loop.get_signal());
 
+    // Pre-scan: count how many connected outputs (across all DRM devices)
+    // would survive the `enabled false` filter from the config. If the
+    // answer is zero — typically because the user's config disables the
+    // laptop's built-in panel and all dock monitors happen to be
+    // unplugged right now — flip a fallback flag that tells both
+    // enumeration loops below to ignore `enabled false`. This lets the
+    // user leave `monitor "eDP-1" { enabled false }` in place for the
+    // docked workflow and still boot cleanly when undocked, instead of
+    // exiting with "no connected displays found".
+    let force_enable_all = {
+        let mut any_enabled = false;
+        'scan: for entry in devices.values_mut() {
+            let drm_device = &mut entry.drm_device;
+            let resources = match drm_device.resource_handles() {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            let conn_handles: Vec<_> = resources.connectors().to_vec();
+            for conn_handle in &conn_handles {
+                let Ok(conn_info) = drm_device.get_connector(*conn_handle, false) else {
+                    continue;
+                };
+                if conn_info.state() != connector::State::Connected
+                    || conn_info.modes().is_empty()
+                {
+                    continue;
+                }
+                let name = format_connector_name(&conn_info);
+                let disabled_by_config = state
+                    .config
+                    .monitors
+                    .iter()
+                    .any(|m| m.name == name && !m.enabled);
+                if !disabled_by_config {
+                    any_enabled = true;
+                    break 'scan;
+                }
+            }
+        }
+        !any_enabled
+    };
+    if force_enable_all {
+        tracing::warn!(
+            "all connected outputs are disabled by config; ignoring `enabled false` to avoid \
+             startup failure (this is the automatic undocked/laptop-alone fallback — remove \
+             `enabled false` from your monitor block or leave as-is for docked use)"
+        );
+    }
+
     // Only iterate connectors on the primary device for M1/M2.
     // Clone the gbm_device up front so we can pass it to the GbmAllocator
     // inside the connector loop without holding a borrow on the devices map.
@@ -524,7 +573,7 @@ pub fn run(
         let mon_config = state.config.monitors.iter().find(|m| m.name == output_name).cloned();
 
         if let Some(mc) = mon_config.as_ref() {
-            if !mc.enabled {
+            if !mc.enabled && !force_enable_all {
                 tracing::info!("monitor {output_name} disabled by config, skipping");
                 continue;
             }
@@ -826,9 +875,12 @@ pub fn run(
                 .find(|m| m.name == output_name)
                 .cloned();
             // See the primary loop's comment — monitor config is overrides,
-            // not a gate. `enabled false` explicitly excludes one.
+            // not a gate. `enabled false` explicitly excludes one, unless
+            // the `force_enable_all` fallback is active (no other connected
+            // output is enabled, so disabling this one would leave zero
+            // active outputs and kara would fail to boot).
             if let Some(mc) = mon_config.as_ref() {
-                if !mc.enabled {
+                if !mc.enabled && !force_enable_all {
                     tracing::info!("monitor {output_name} disabled by config, skipping");
                     continue;
                 }
