@@ -33,6 +33,11 @@ depends=(
 	'gst-plugins-good'
 	'gst-plugins-bad'
 	'gst-libav'
+	# The bar's media module shells out to `playerctl status` and
+	# `playerctl metadata ...` every status tick. Without it the module
+	# silently stays blank, which has bitten the maintainer twice.
+	# Promote to a hard dep instead of optdepends.
+	'playerctl'
 )
 makedepends=(
 	'base-devel'
@@ -42,7 +47,6 @@ makedepends=(
 )
 optdepends=(
 	'wireplumber: volume module (wpctl)'
-	'playerctl: media module'
 	'brightnessctl: brightness keybinds'
 	'wl-clipboard: screenshot clipboard copy'
 	'foot: default terminal'
