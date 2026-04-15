@@ -59,6 +59,49 @@ fn is_helper_client(app_id: &str) -> bool {
     )
 }
 
+/// Try to load a wallpaper at startup from kara-beautify's state.
+///
+/// Resolution priority:
+///   1. `$XDG_STATE_HOME/kara/current_wallpaper` — file containing an
+///      absolute path, written by kara-beautify on every apply
+///   2. `$XDG_DATA_HOME/kara/bg` — symlink pointing at the current
+///      wallpaper file, also maintained by kara-beautify
+///
+/// Returns None if neither is present or the referenced file doesn't
+/// exist. A subsequent `WallpaperChanged` IPC request will replace
+/// this with whatever kara-beautify is currently pointing at.
+fn load_startup_wallpaper() -> Option<crate::wallpaper::Wallpaper> {
+    let home = std::env::var("HOME").ok()?;
+    let state_home = std::env::var("XDG_STATE_HOME")
+        .unwrap_or_else(|_| format!("{home}/.local/state"));
+    let data_home = std::env::var("XDG_DATA_HOME")
+        .unwrap_or_else(|_| format!("{home}/.local/share"));
+
+    // 1. current_wallpaper state file — has the absolute path as its
+    //    entire content (trimmed).
+    let current_path = std::path::PathBuf::from(&state_home)
+        .join("kara")
+        .join("current_wallpaper");
+    if let Ok(raw) = std::fs::read_to_string(&current_path) {
+        let p = std::path::PathBuf::from(raw.trim());
+        if p.is_file() {
+            return crate::wallpaper::Wallpaper::load(&p);
+        }
+    }
+
+    // 2. Symlink fallback.
+    let bg_link = std::path::PathBuf::from(&data_home).join("kara").join("bg");
+    if bg_link.exists() {
+        if let Ok(resolved) = std::fs::canonicalize(&bg_link) {
+            if resolved.is_file() {
+                return crate::wallpaper::Wallpaper::load(&resolved);
+            }
+        }
+    }
+
+    None
+}
+
 /// Mark all four `tiled_*` state flags on an `xdg_toplevel` pending state so that
 /// CSD clients (Firefox/Floorp, GTK apps) know they are inside a tiling layout and
 /// should suppress rounded corners, drop shadows, and client-side resize handles.
@@ -327,7 +370,7 @@ impl Gate {
             unmapped_windows: Vec::new(),
             pending_autostart_routes: Vec::new(),
             hidden_helpers: Vec::new(),
-            wallpaper: None,
+            wallpaper: load_startup_wallpaper(),
             outputs: Vec::new(),
             output_bounds: (800, 600),
             focused_output: 0,

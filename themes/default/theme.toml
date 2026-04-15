@@ -67,6 +67,7 @@ padding_y = 2
 [variants.vague]
 display_name = "Vague"
 preset = "vague"
+wallpaper = "vague-default.png"
 
 [variants.gruvbox]
 display_name = "Gruvbox"

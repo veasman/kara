@@ -245,17 +245,23 @@ pub fn build_custom_elements(
         .map(|o| o.fullscreen_window.is_some())
         .unwrap_or(false);
 
-    // Wallpaper (rendered behind everything, at output-local origin — texture cached)
+    // Wallpaper (rendered behind everything, at output-local origin).
+    // Stretches the image to the output's logical size — aspect-aware
+    // zoom-to-fill (preserving the image's aspect ratio with center-crop)
+    // is a D1.1 enhancement once D1 stabilizes.
     if let Some(ref mut wp) = state.wallpaper {
-        if let Some(tex_buf) = wp.texture(renderer) {
-            elements.push(TextureRenderElement::from_texture_buffer(
-                Point::from((0.0, 0.0)),
-                tex_buf,
-                None,
-                None,
-                None,
-                Kind::Unspecified,
-            ));
+        if let Some(output_state) = state.outputs.get(output_idx) {
+            let (out_w, out_h) = output_state.size;
+            if let Some(tex_buf) = wp.texture(renderer) {
+                elements.push(TextureRenderElement::from_texture_buffer(
+                    Point::from((0.0, 0.0)),
+                    tex_buf,
+                    None,
+                    None,
+                    Some(smithay::utils::Size::from((out_w, out_h))),
+                    Kind::Unspecified,
+                ));
+            }
         }
     }
 
