@@ -82,6 +82,50 @@ fn convert_action(action: &kara_config::BindAction) -> Action {
 }
 
 impl Gate {
+    /// Return true if the currently-focused keyboard surface
+    /// belongs to a layer surface with
+    /// `keyboard_interactivity = exclusive`. Used by the keybind
+    /// dispatcher to suppress global keybinds while an exclusive
+    /// layer (picker, glimpse capture, summon launcher, etc.)
+    /// holds focus — those surfaces expect to consume every key.
+    fn keyboard_focus_is_exclusive_layer(&self) -> bool {
+        use smithay::desktop::layer_map_for_output;
+        use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
+
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return false;
+        };
+        let Some(focus) = keyboard.current_focus() else {
+            return false;
+        };
+
+        // Walk every output's layer map and check whether the
+        // focused wl_surface matches any layer's root surface.
+        // If it does, read that layer's cached
+        // `keyboard_interactivity` to decide whether keybinds
+        // should defer.
+        for out in &self.outputs {
+            let map = layer_map_for_output(&out.output);
+            for layer in map.layers() {
+                if layer.wl_surface() == &focus {
+                    let interactivity = smithay::wayland::compositor::with_states(
+                        layer.wl_surface(),
+                        |states| {
+                            states
+                                .cached_state
+                                .get::<smithay::wayland::shell::wlr_layer::LayerSurfaceCachedState>()
+                                .current()
+                                .keyboard_interactivity
+                        },
+                    );
+                    return matches!(interactivity, KeyboardInteractivity::Exclusive);
+                }
+            }
+        }
+
+        false
+    }
+
     pub fn handle_input_event<B: smithay::backend::input::InputBackend>(
         &mut self,
         event: InputEvent<B>,
@@ -111,6 +155,21 @@ impl Gate {
         let keybinds = self.keybinds.clone();
         let pressed = key_state == KeyState::Pressed;
 
+        // When an exclusive-keyboard layer surface (kara-summon's
+        // picker, kara-glimpse's capture overlay, etc.) holds
+        // focus, the wlr-layer-shell protocol says the surface
+        // consumes ALL keyboard input. Compositor-level keybinds
+        // fire from THIS function regardless of focus, so without
+        // this guard, pressing mod+j inside a picker still
+        // triggers focus_next — stealing focus back to a window
+        // behind the picker.
+        //
+        // Check before the keybind match so exclusive layers get
+        // a clean key stream while they're open. Non-exclusive
+        // layers (on-screen notifications, top-layer overlays)
+        // don't grab input and keybinds stay active as normal.
+        let skip_keybinds = self.keyboard_focus_is_exclusive_layer();
+
         let action = keyboard.input(
             self,
             keycode,
@@ -118,7 +177,7 @@ impl Gate {
             serial,
             time,
             |_state, mods, handle| {
-                if pressed {
+                if pressed && !skip_keybinds {
                     let raw_syms = handle.raw_syms();
                     for bind in keybinds.iter() {
                         if raw_syms.iter().any(|sym| bind.sym == sym.raw()) && bind.mods.matches(mods) {
