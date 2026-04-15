@@ -14,6 +14,21 @@ pub fn write_current_theme(paths: &KaraPaths, theme: &str) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
+pub fn read_current_variant(paths: &KaraPaths) -> Result<Option<String>> {
+    read_trimmed(paths.current_variant_file())
+}
+
+pub fn write_current_variant(paths: &KaraPaths, variant: &str) -> Result<()> {
+    fs::write(paths.current_variant_file(), format!("{variant}\n"))?;
+    Ok(())
+}
+
+pub fn clear_current_variant(paths: &KaraPaths) -> Result<()> {
+    let _ = fs::remove_file(paths.current_variant_file());
+    Ok(())
+}
+
 pub fn read_current_wallpaper(paths: &KaraPaths) -> Result<Option<PathBuf>> {
     Ok(read_trimmed(paths.current_wallpaper_file())?.map(PathBuf::from))
 }

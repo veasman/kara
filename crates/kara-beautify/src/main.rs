@@ -45,6 +45,9 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     List,
+    ListVariants {
+        theme: String,
+    },
     Doctor,
     Status,
     Debug(DebugArgs),
@@ -54,10 +57,14 @@ enum Commands {
     Resolve {
         theme: String,
         #[arg(long)]
+        variant: Option<String>,
+        #[arg(long)]
         json: bool,
     },
     Apply {
         theme: String,
+        #[arg(long)]
+        variant: Option<String>,
         #[arg(long)]
         no_reload: bool,
         #[arg(long)]
@@ -65,6 +72,8 @@ enum Commands {
     },
     Preview {
         theme: String,
+        #[arg(long)]
+        variant: Option<String>,
         #[arg(long)]
         no_reload: bool,
     },
@@ -80,6 +89,8 @@ enum Commands {
     Render {
         theme: String,
         target: RenderTarget,
+        #[arg(long)]
+        variant: Option<String>,
     },
     DeriveImage {
         image: PathBuf,
@@ -95,6 +106,8 @@ enum Commands {
 #[derive(Debug, Args)]
 struct DebugArgs {
     theme: Option<String>,
+    #[arg(long)]
+    variant: Option<String>,
     #[arg(long)]
     json: bool,
 }
@@ -142,24 +155,43 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::List => list_themes(&repo_root),
+        Commands::ListVariants { theme } => list_variants_command(&repo_root, &theme),
         Commands::Doctor => doctor(&paths),
         Commands::Status => status_command(&paths),
         Commands::Debug(args) => debug_command(&repo_root, &paths, args),
         Commands::Validate { theme } => validate_command(&repo_root, theme),
-        Commands::Resolve { theme, json } => resolve_command(&repo_root, &theme, json),
+        Commands::Resolve {
+            theme,
+            variant,
+            json,
+        } => resolve_command(&repo_root, &theme, variant.as_deref(), json),
         Commands::Apply {
             theme,
+            variant,
             no_reload,
             dry_run,
-        } => apply_command(&repo_root, &paths, &theme, no_reload, dry_run),
-        Commands::Preview { theme, no_reload } => {
-            preview_command(&repo_root, &paths, &theme, no_reload)
-        }
+        } => apply_command(
+            &repo_root,
+            &paths,
+            &theme,
+            variant.as_deref(),
+            no_reload,
+            dry_run,
+        ),
+        Commands::Preview {
+            theme,
+            variant,
+            no_reload,
+        } => preview_command(&repo_root, &paths, &theme, variant.as_deref(), no_reload),
         Commands::Revert { no_reload } => revert_command(&repo_root, &paths, no_reload),
         Commands::Wallpaper { theme, command } => {
             wallpaper_command(&repo_root, &paths, &theme, command)
         }
-        Commands::Render { theme, target } => render_command(&repo_root, &theme, target),
+        Commands::Render {
+            theme,
+            target,
+            variant,
+        } => render_command(&repo_root, &theme, target, variant.as_deref()),
         Commands::DeriveImage {
             image,
             name,
@@ -249,8 +281,8 @@ fn debug_command(repo_root: &Path, paths: &KaraPaths, args: DebugArgs) -> Result
     let file = theme_file(repo_root, &theme_name);
     let root = theme_root(repo_root, &theme_name);
     let spec = ThemeSpec::load_from_file(&file)?;
-    let resolved = resolve_theme(&spec)?;
-    let debug = debug_theme_file(&file, &root, paths)?;
+    let resolved = resolve_theme(&spec, args.variant.as_deref())?;
+    let debug = debug_theme_file(&file, &root, paths, args.variant.as_deref())?;
 
     if args.json {
         let value = json!({
@@ -357,9 +389,14 @@ fn validate_command(repo_root: &Path, theme: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn resolve_command(repo_root: &Path, theme: &str, as_json: bool) -> Result<()> {
+fn resolve_command(
+    repo_root: &Path,
+    theme: &str,
+    variant: Option<&str>,
+    as_json: bool,
+) -> Result<()> {
     let spec = ThemeSpec::load_from_file(&theme_file(repo_root, theme))?;
-    let resolved = resolve_theme(&spec)?;
+    let resolved = resolve_theme(&spec, variant)?;
 
     if as_json {
         let value = json!({
@@ -442,6 +479,7 @@ fn apply_command(
     repo_root: &Path,
     paths: &KaraPaths,
     theme: &str,
+    variant: Option<&str>,
     no_reload: bool,
     dry_run: bool,
 ) -> Result<()> {
@@ -451,6 +489,7 @@ fn apply_command(
         &file,
         &root,
         paths,
+        variant,
         ApplyOptions {
             reload: !no_reload,
             dry_run,
@@ -462,6 +501,7 @@ fn preview_command(
     repo_root: &Path,
     paths: &KaraPaths,
     theme: &str,
+    variant: Option<&str>,
     no_reload: bool,
 ) -> Result<()> {
     let current_theme = read_current_theme(paths)?;
@@ -475,6 +515,7 @@ fn preview_command(
         &file,
         &root,
         paths,
+        variant,
         ApplyOptions {
             reload: !no_reload,
             dry_run: false,
@@ -494,12 +535,32 @@ fn revert_command(repo_root: &Path, paths: &KaraPaths, no_reload: bool) -> Resul
         &file,
         &root,
         paths,
+        None,
         ApplyOptions {
             reload: !no_reload,
             dry_run: false,
         },
     )?;
     clear_preview_state(paths)?;
+    Ok(())
+}
+
+fn list_variants_command(repo_root: &Path, theme: &str) -> Result<()> {
+    let spec = ThemeSpec::load_from_file(&theme_file(repo_root, theme))?;
+
+    if spec.variants.is_empty() {
+        println!("(single-palette theme — no variants)");
+        return Ok(());
+    }
+
+    let default = spec.meta.default_variant.clone();
+    for (name, variant) in &spec.variants {
+        let is_default = default.as_deref() == Some(name.as_str());
+        let mark = if is_default { "*" } else { " " };
+        let label = variant.display_name.as_deref().unwrap_or(name);
+        let preset = variant.preset.as_deref().unwrap_or("(inline)");
+        println!("{mark} {name:<16} {label:<20} preset={preset}");
+    }
     Ok(())
 }
 
@@ -667,9 +728,14 @@ fn cycle_wallpaper(files: &[PathBuf], current: Option<&PathBuf>, forward: bool) 
     Ok(files[next_idx].clone())
 }
 
-fn render_command(repo_root: &Path, theme: &str, target: RenderTarget) -> Result<()> {
+fn render_command(
+    repo_root: &Path,
+    theme: &str,
+    target: RenderTarget,
+    variant: Option<&str>,
+) -> Result<()> {
     let spec = ThemeSpec::load_from_file(&theme_file(repo_root, theme))?;
-    let resolved = resolve_theme(&spec)?;
+    let resolved = resolve_theme(&spec, variant)?;
 
     let out = match target {
         RenderTarget::Gtk => render_gtk_settings(&resolved),

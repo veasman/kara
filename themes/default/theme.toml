@@ -1,0 +1,74 @@
+# kara-beautify default theme
+# Multi-variant: pick a palette without committing to a whole aesthetic.
+# `kara-beautify apply default` uses the default_variant below.
+# `kara-beautify apply default --variant gruvbox` swaps to another.
+
+[meta]
+name = "default"
+display_name = "Default"
+author = "kara"
+mode = "dark"
+default_variant = "vague"
+
+[wallpaper]
+# Each variant can declare its own wallpaper below. This top-level
+# entry is the fallback when the selected variant doesn't set one.
+
+# The top-level [palette] is only used when you run the theme without
+# any variant — kept here so the theme loads cleanly via older tools.
+[palette]
+primary = "#8f729b"
+accent_strategy = "balanced"
+contrast = "medium"
+
+[style]
+radius = "small"
+density = "normal"
+surface_style = "soft"
+transparency = 1.0
+blur = false
+
+[fonts]
+ui_family = "FiraCode Nerd Font"
+ui_size = 11
+mono_family = "FiraCode Nerd Font"
+mono_size = 13
+
+[cursor]
+theme = "Bibata-Modern-Classic"
+size = 24
+
+[nvim]
+preset = "semantic"
+transparent = true
+
+[vwm_bar]
+style = "docked"
+background = true
+modules = "flat"
+icons = true
+colors = true
+minimal = false
+height = 24
+radius = 0
+margin_x = 0
+margin_y = 0
+padding_y = 2
+
+# ─── Variants ──────────────────────────────────────────────────────────
+# Each variant references a built-in preset by name. Presets are
+# hand-tuned color lookups defined in kara-theme. Users can also
+# author their own variants in their own theme directory with an
+# inline [variants.<name>.palette] block and no `preset` key.
+
+[variants.vague]
+display_name = "Vague"
+preset = "vague"
+
+[variants.gruvbox]
+display_name = "Gruvbox"
+preset = "gruvbox"
+
+[variants.nord]
+display_name = "Nord"
+preset = "nord"

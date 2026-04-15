@@ -115,7 +115,11 @@ pub fn derive_theme_from_image(name: &str, image_path: &Path) -> Result<(ThemeSp
         meta: ThemeMeta {
             name: name.to_string(),
             mode,
+            default_variant: None,
+            display_name: None,
+            author: None,
         },
+        variants: Default::default(),
         wallpaper: WallpaperSpec {
             default: wallpaper_name.clone(),
         },

@@ -9,21 +9,56 @@ use crate::{
 #[derive(Debug, Clone, Copy)]
 pub struct Palette16(pub [Color; 16]);
 
-pub fn resolve_theme(spec: &ThemeSpec) -> Result<ResolvedTheme> {
-    let primary = Color::from_hex(&spec.palette.primary)?;
+/// Resolve a theme to its materialized form.
+///
+/// `variant` selects which entry in `spec.variants` to use. If None, the
+/// resolver picks in this order:
+///   1. `spec.meta.default_variant` (if the theme declares one)
+///   2. The first key in `spec.variants` (if any)
+///   3. The top-level `spec.palette` block (single-palette theme)
+///
+/// When a variant is used, its `preset` field (if any) selects a
+/// built-in preset by name. Unknown preset names fall back to the
+/// derive-from-primary code path using the variant's inline palette.
+pub fn resolve_theme(spec: &ThemeSpec, variant: Option<&str>) -> Result<ResolvedTheme> {
+    // Figure out which variant (if any) to apply.
+    let variant_name = variant
+        .map(|s| s.to_string())
+        .or_else(|| spec.meta.default_variant.clone())
+        .or_else(|| spec.variants.keys().next().cloned());
+
+    let variant_spec = variant_name
+        .as_deref()
+        .and_then(|name| spec.variants.get(name));
+
+    // Pick the effective palette + preset key. Variant's palette wins
+    // over the top-level palette when present.
+    let palette_spec = variant_spec
+        .and_then(|v| v.palette.as_ref())
+        .unwrap_or(&spec.palette);
+    let primary = Color::from_hex(&palette_spec.primary)?;
+
+    // Which preset identifier to use? Priority:
+    //   1. variant.preset (explicit opt-in to a hand-tuned preset)
+    //   2. variant name itself (convention: the variant key is the preset name)
+    //   3. spec.meta.name (legacy behavior — preset keyed by theme name)
+    let preset_key = variant_spec
+        .and_then(|v| v.preset.clone())
+        .or_else(|| variant_name.clone())
+        .unwrap_or_else(|| spec.meta.name.clone());
+
     let style = resolve_style(&spec.style);
     let fonts = spec.fonts.clone();
     let vwm_bar = resolve_vwm_bar(spec);
 
-    let (semantic, ansi, base16) = match spec.meta.name.as_str() {
-        "gruvbox" => preset_gruvbox(),
-        "vague" => preset_vague(),
-        _ => {
+    let (semantic, ansi, base16) = match preset_by_name(&preset_key) {
+        Some(preset) => preset,
+        None => {
             let semantic = derive_semantic(
                 spec.meta.mode,
                 primary,
-                spec.palette.accent_strategy,
-                spec.palette.contrast,
+                palette_spec.accent_strategy,
+                palette_spec.contrast,
             );
             let ansi = derive_ansi(semantic, primary).0;
             let base16 = derive_base16(semantic, ansi);
@@ -31,10 +66,22 @@ pub fn resolve_theme(spec: &ThemeSpec) -> Result<ResolvedTheme> {
         }
     };
 
+    // Wallpaper priority: variant's wallpaper override, then top-level.
+    let wallpaper = variant_spec
+        .and_then(|v| v.wallpaper.clone())
+        .or_else(|| spec.wallpaper.default.clone());
+
+    // The resolved name encodes both theme and variant so generated
+    // output files can be traced back to their source.
+    let resolved_name = match &variant_name {
+        Some(v) => format!("{}:{}", spec.meta.name, v),
+        None => spec.meta.name.clone(),
+    };
+
     Ok(ResolvedTheme {
-        name: spec.meta.name.clone(),
+        name: resolved_name,
         mode: spec.meta.mode,
-        wallpaper: spec.wallpaper.default.clone(),
+        wallpaper,
         primary,
         semantic,
         ansi,
@@ -46,6 +93,17 @@ pub fn resolve_theme(spec: &ThemeSpec) -> Result<ResolvedTheme> {
         nvim_transparent: spec.nvim.transparent,
         vwm_bar,
     })
+}
+
+/// Look up a built-in preset by name. Returns None if not found, in
+/// which case the caller falls back to the derive-from-primary path.
+fn preset_by_name(name: &str) -> Option<(SemanticColors, [Color; 16], [Color; 16])> {
+    match name {
+        "gruvbox" => Some(preset_gruvbox()),
+        "vague" => Some(preset_vague()),
+        "nord" => Some(preset_nord()),
+        _ => None,
+    }
 }
 
 fn resolve_style(style: &crate::StyleSpec) -> ResolvedStyle {
@@ -206,6 +264,59 @@ fn preset_vague() -> (SemanticColors, [Color; 16], [Color; 16]) {
         Color::new(0x7e, 0x98, 0xe8),
         Color::new(0x8f, 0x72, 0x9b),
         Color::new(0xbb, 0x9d, 0xbd),
+    ];
+
+    (semantic, ansi, base16)
+}
+
+fn preset_nord() -> (SemanticColors, [Color; 16], [Color; 16]) {
+    // Nord palette by Arctic Ice Studio
+    // https://www.nordtheme.com/docs/colors-and-palettes
+    let nord0 = Color::new(0x2e, 0x34, 0x40); // polar night 0
+    let nord1 = Color::new(0x3b, 0x42, 0x52); // polar night 1
+    let nord2 = Color::new(0x43, 0x4c, 0x5e); // polar night 2
+    let nord3 = Color::new(0x4c, 0x56, 0x6a); // polar night 3
+    let nord4 = Color::new(0xd8, 0xde, 0xe9); // snow storm 0
+    let nord5 = Color::new(0xe5, 0xe9, 0xf0); // snow storm 1
+    let nord6 = Color::new(0xec, 0xef, 0xf4); // snow storm 2
+    let nord7 = Color::new(0x8f, 0xbc, 0xbb); // frost 0
+    let nord8 = Color::new(0x88, 0xc0, 0xd0); // frost 1
+    let nord9 = Color::new(0x81, 0xa1, 0xc1); // frost 2
+    let nord10 = Color::new(0x5e, 0x81, 0xac); // frost 3
+    let nord11 = Color::new(0xbf, 0x61, 0x6a); // aurora red
+    let nord12 = Color::new(0xd0, 0x87, 0x70); // aurora orange
+    let nord13 = Color::new(0xeb, 0xcb, 0x8b); // aurora yellow
+    let nord14 = Color::new(0xa3, 0xbe, 0x8c); // aurora green
+    let nord15 = Color::new(0xb4, 0x8e, 0xad); // aurora purple
+
+    let semantic = SemanticColors {
+        bg0: nord0,
+        bg1: nord1,
+        bg2: nord2,
+        fg0: nord6,
+        fg1: nord5,
+        fg_muted: nord3,
+        accent: nord8,
+        accent_soft: nord10,
+        accent_contrast: nord0,
+        border_subtle: nord2,
+        border_strong: nord3,
+        selection_bg: nord9,
+        selection_fg: nord6,
+        success: nord14,
+        warning: nord13,
+        danger: nord11,
+        info: nord7,
+    };
+
+    let ansi = [
+        nord1, nord11, nord14, nord13, nord9, nord15, nord7, nord5, nord3, nord11, nord14, nord13,
+        nord9, nord15, nord7, nord6,
+    ];
+
+    let base16 = [
+        nord0, nord1, nord2, nord3, nord4, nord5, nord6, nord6, nord11, nord12, nord13, nord14,
+        nord8, nord9, nord15, nord10,
     ];
 
     (semantic, ansi, base16)

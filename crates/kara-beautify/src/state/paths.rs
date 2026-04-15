@@ -59,6 +59,10 @@ impl KaraPaths {
         self.kara_state_dir().join("current_wallpaper")
     }
 
+    pub fn current_variant_file(&self) -> PathBuf {
+        self.kara_state_dir().join("current_variant")
+    }
+
     pub fn preview_active_file(&self) -> PathBuf {
         self.kara_state_dir().join("preview_active")
     }

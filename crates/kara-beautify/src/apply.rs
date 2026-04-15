@@ -46,8 +46,10 @@ pub fn debug_theme_file(
     theme_file: &Path,
     theme_root: &Path,
     paths: &KaraPaths,
+    variant: Option<&str>,
 ) -> Result<DebugInfo> {
     let spec = ThemeSpec::load_from_file(theme_file)?;
+    let _ = variant; // reserved for per-variant wallpaper preview
     let selected_wallpaper = selected_wallpaper(
         theme_root,
         paths,
@@ -77,12 +79,13 @@ pub fn apply_theme_file(
     theme_file: &Path,
     theme_root: &Path,
     paths: &KaraPaths,
+    variant: Option<&str>,
     options: ApplyOptions,
 ) -> Result<()> {
     paths.ensure_runtime_dirs()?;
 
     let spec = ThemeSpec::load_from_file(theme_file)?;
-    let resolved = resolve_theme(&spec)?;
+    let resolved = resolve_theme(&spec, variant)?;
 
     let mut reload_plan = ReloadPlan::default();
 
@@ -130,7 +133,16 @@ pub fn apply_theme_file(
     let _ = write_if_changed(&paths.gtk4_settings_path(), &gtk)?;
 
     sync_desktop_appearance(&resolved)?;
-    write_current_theme(paths, &resolved.name)?;
+    // write_current_theme takes the bare theme name (not "theme:variant"
+    // because the state file is also how kara-gate and kara-summon
+    // identify which theme is active, and they shouldn't have to parse
+    // the colon form).
+    write_current_theme(paths, &spec.meta.name)?;
+    if let Some(v) = variant {
+        crate::state::runtime::write_current_variant(paths, v)?;
+    } else {
+        crate::state::runtime::clear_current_variant(paths)?;
+    }
 
     if let Some(wallpaper_path) = selected_wallpaper(
         theme_root,

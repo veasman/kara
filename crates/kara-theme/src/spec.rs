@@ -91,6 +91,17 @@ pub struct ThemeMeta {
     pub name: String,
     #[serde(default)]
     pub mode: UiMode,
+    /// Name of the variant used when `kara-beautify apply <theme>` is
+    /// called without an explicit `--variant` flag. Must match a key in
+    /// the top-level `[variants]` table if that table is non-empty.
+    #[serde(default)]
+    pub default_variant: Option<String>,
+    /// Human-readable label for picker UIs.
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// Author string for picker UIs / `kara-beautify list`.
+    #[serde(default)]
+    pub author: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -301,6 +312,43 @@ impl Default for CursorSpec {
     }
 }
 
+/// One named palette swap within a theme. A variant either references a
+/// built-in preset by name (fast path, hand-tuned colors) OR specifies
+/// its palette inline via `primary` + the standard PaletteSpec knobs —
+/// the inline path is how user-authored themes express themselves
+/// without needing to add Rust code to kara-theme.
+///
+/// Themes can also grow extended-theming blocks per-variant (borders,
+/// bar graphics, cursor theme overrides, etc.). The parser accepts
+/// unknown top-level keys inside a variant via `#[serde(flatten)]` on
+/// an `extra` map so user themes can start authoring richer content
+/// now even though v1 renderers don't consume it yet.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct VariantSpec {
+    /// Optional label for UI pickers. Falls back to the variant key.
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// Reference a built-in preset by name (e.g. "gruvbox", "vague",
+    /// "nord"). When set, palette/style below are used as overrides
+    /// on top of the preset. When unset, the variant uses its inline
+    /// `palette` section (or falls back to defaults).
+    #[serde(default)]
+    pub preset: Option<String>,
+    /// Inline palette spec — used when `preset` is None, or to override
+    /// a preset's primary color.
+    #[serde(default)]
+    pub palette: Option<PaletteSpec>,
+    /// Per-variant wallpaper override.
+    #[serde(default)]
+    pub wallpaper: Option<String>,
+    /// Extended theming extension blocks — `borders`, `bar_graphics`,
+    /// `cursor`, `icons`, `glimpse`, `sounds`, etc. Captured as opaque
+    /// `toml::Value` so v1 accepts them without consuming them. When
+    /// v2 renderers land they'll deserialize from this map.
+    #[serde(flatten)]
+    pub extensions: std::collections::BTreeMap<String, toml::Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThemeSpec {
     pub meta: ThemeMeta,
@@ -318,6 +366,12 @@ pub struct ThemeSpec {
     pub nvim: NvimSpec,
     #[serde(default)]
     pub vwm_bar: VwmBarSpec,
+    /// Named variants. Empty map means "single-palette theme" and the
+    /// resolver uses the top-level palette block. Populated means the
+    /// theme is multi-variant and `default_variant` (or `--variant`)
+    /// picks which one to apply.
+    #[serde(default)]
+    pub variants: std::collections::BTreeMap<String, VariantSpec>,
 }
 
 impl ThemeSpec {
