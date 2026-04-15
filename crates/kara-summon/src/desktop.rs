@@ -9,6 +9,9 @@ pub struct DesktopEntry {
     pub name: String,
     pub exec: String,
     pub comment: Option<String>,
+    /// `Terminal=true` in the .desktop file. Parsed for forward-compat
+    /// with a future "prepend $TERMINAL -e" launch path; not yet used.
+    #[allow(dead_code)]
     pub terminal: bool,
 }
 

@@ -83,6 +83,9 @@ impl NotificationQueue {
         &self.notifications
     }
 
+    /// Used by the idle-hide branch once added; keeping the method live
+    /// so the notification daemon surface-close path has an obvious hook.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.notifications.is_empty()
     }

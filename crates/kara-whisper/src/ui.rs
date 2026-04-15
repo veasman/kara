@@ -25,6 +25,10 @@ impl NotificationUI {
         }
     }
 
+    /// Live-reload entry point for when kara-beautify pushes a new
+    /// theme over IPC. Not wired to the IPC handler yet but part of
+    /// the public UI surface.
+    #[allow(dead_code)]
     pub fn set_theme(&mut self, theme: ThemeColors) {
         self.theme = theme;
     }

@@ -3,7 +3,17 @@ use kara_ipc::WindowGeometry;
 pub enum HoverTarget {
     None,
     Fullscreen { w: i32, h: i32 },
-    Window { index: usize, x: i32, y: i32, w: i32, h: i32 },
+    Window {
+        /// Index into the window geometry vec from the compositor. Held
+        /// so a future "capture this specific window by ID" IPC can
+        /// resolve back to the same window even if z-order shifts.
+        #[allow(dead_code)]
+        index: usize,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    },
 }
 
 pub enum Mode {

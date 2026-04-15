@@ -556,23 +556,6 @@ impl Gate {
         self.recompute_output_bounds();
     }
 
-    /// Set the output size and recompute work area for a specific output.
-    pub fn set_output_size(&mut self, output_idx: usize, w: i32, h: i32) {
-        if let Some(out) = self.outputs.get_mut(output_idx) {
-            out.size = (w, h);
-            let bar_h = if self.config.bar.enabled { self.config.bar.height } else { 0 };
-            let (y, area_h) = match self.config.bar.position {
-                kara_config::BarPosition::Top => (bar_h, h - bar_h),
-                kara_config::BarPosition::Bottom => (0, h - bar_h),
-            };
-            out.workarea = Rectangle::new(
-                (out.location.x, out.location.y + y).into(),
-                (w, area_h.max(0)).into(),
-            );
-        }
-        self.recompute_output_bounds();
-    }
-
     /// Recompute workarea for a single output state.
     fn recompute_workarea_for(&self, out: &mut OutputState) {
         let (w, h) = out.size;
