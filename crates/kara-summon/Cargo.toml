@@ -18,3 +18,5 @@ wayland-client = "0.31"
 tiny-skia = { workspace = true }
 dirs = "6"
 xkbcommon = "0.8"
+serde = { workspace = true }
+serde_json = { workspace = true }

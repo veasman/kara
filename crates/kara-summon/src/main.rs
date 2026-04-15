@@ -1,5 +1,7 @@
+mod beautify_ipc;
 mod desktop;
 mod filter;
+mod picker;
 mod ui;
 
 use smithay_client_toolkit::{
@@ -35,7 +37,48 @@ const WIDTH: u32 = 600;
 const HEIGHT: u32 = 420;
 
 fn main() {
-    // Query theme from compositor
+    // Mode selection. Default is the application launcher; pass
+    // `--mode themes` to open the kara-beautify theme picker instead.
+    // We parse argv by hand since clap would be overkill for two
+    // modes and we don't want to pull clap into a client binary.
+    let args: Vec<String> = std::env::args().collect();
+    let mut mode = "launcher";
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--mode" => {
+                if let Some(next) = args.get(i + 1) {
+                    mode = match next.as_str() {
+                        "themes" | "picker" | "theme-picker" => "themes",
+                        "launcher" | "launch" => "launcher",
+                        other => {
+                            eprintln!(
+                                "kara-summon: unknown --mode {other:?}; \
+                                 valid: launcher, themes"
+                            );
+                            std::process::exit(2);
+                        }
+                    };
+                    i += 2;
+                    continue;
+                }
+            }
+            "-h" | "--help" => {
+                println!(
+                    "kara-summon — kara application launcher\n\n\
+                     Usage:\n  \
+                     kara-summon                   Run as an app launcher (default)\n  \
+                     kara-summon --mode themes     Open the kara-beautify theme picker\n"
+                );
+                return;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    // Query theme colors from the compositor so both modes render in
+    // the user's current palette.
     let theme = match kara_ipc::IpcClient::connect()
         .and_then(|mut c| c.request(&kara_ipc::Request::GetTheme))
     {
@@ -53,6 +96,13 @@ fn main() {
             }
         }
     };
+
+    // Branch on mode. Theme picker has its own event loop + Picker
+    // struct in picker.rs that mirrors the launcher's SCTK plumbing.
+    if mode == "themes" {
+        picker::run(theme);
+        return;
+    }
 
     // Discover .desktop files
     let entries = desktop::discover();

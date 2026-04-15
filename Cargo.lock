@@ -1470,6 +1470,8 @@ dependencies = [
  "dirs",
  "kara-ipc",
  "kara-ui",
+ "serde",
+ "serde_json",
  "smithay-client-toolkit",
  "tiny-skia",
  "wayland-client",
