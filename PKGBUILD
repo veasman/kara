@@ -22,6 +22,17 @@ depends=(
 	# for the kara desktop and live dark/light flip silently no-ops.
 	'xdg-desktop-portal'
 	'xdg-desktop-portal-gtk'
+	# Video wallpaper decode via gstreamer appsink. kara-gate and
+	# kara-summon (thumbnails) both link against gstreamer + the
+	# app/video libraries. gst-plugins-{base,good,bad} + gst-libav
+	# provide the runtime codec + demuxer plugins — without these
+	# the pipeline fails to link at playback time and video
+	# wallpapers silently fall back to a black frame.
+	'gstreamer'
+	'gst-plugins-base'
+	'gst-plugins-good'
+	'gst-plugins-bad'
+	'gst-libav'
 )
 makedepends=(
 	'base-devel'

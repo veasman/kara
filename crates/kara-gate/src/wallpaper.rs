@@ -33,20 +33,38 @@ pub struct Frame {
     cached_texture: Option<TextureBuffer<KaraTexture>>,
 }
 
-/// Loaded wallpaper ready for GPU upload. May be single-frame
-/// (static image) or multi-frame (GIF). Use `tick()` to advance
-/// the animation; `current_texture()` returns the active frame's
-/// GPU-uploaded handle.
+/// Loaded wallpaper ready for GPU upload. May be a still image,
+/// a multi-frame GIF, or a live video stream.
 pub struct Wallpaper {
-    frames: Vec<Frame>,
+    kind: WallpaperKind,
     width: u32,
     height: u32,
-    /// Index of the frame currently being shown.
-    current: usize,
-    /// Wall-clock time at which the current frame became visible.
-    /// When `now - frame_started >= frames[current].delay`, tick
-    /// advances to the next frame.
-    frame_started: Instant,
+}
+
+enum WallpaperKind {
+    /// Still image or GIF — frames are pre-decoded in memory.
+    Frames {
+        frames: Vec<Frame>,
+        /// Index of the frame currently being shown.
+        current: usize,
+        /// Wall-clock time at which the current frame became visible.
+        /// When `now - frame_started >= frames[current].delay`, tick
+        /// advances to the next frame.
+        frame_started: Instant,
+    },
+    /// Video stream — frames arrive asynchronously from a
+    /// GStreamer pipeline. The video module handles its own
+    /// frame pacing; wallpaper tick just swaps in the latest
+    /// decoded frame if one is available.
+    Video {
+        stream: crate::video::VideoStream,
+        /// Most recent uploaded texture + the serial of the frame
+        /// it was built from. `tick()` compares against the stream's
+        /// latest frame and rebuilds the texture if there's a newer
+        /// one available.
+        current_texture: Option<TextureBuffer<KaraTexture>>,
+        uploaded_serial: u64,
+    },
 }
 
 impl Wallpaper {
@@ -61,8 +79,28 @@ impl Wallpaper {
 
         match extension.as_deref() {
             Some("gif") => Self::load_gif(path),
+            Some("mp4") | Some("mkv") | Some("webm") | Some("mov") | Some("m4v") => {
+                Self::load_video(path)
+            }
             _ => Self::load_still(path),
         }
+    }
+
+    /// Video-wallpaper load path. Builds a GStreamer pipeline via
+    /// `video::VideoStream::load`, which blocks briefly until the
+    /// first decoded frame arrives so we have real dimensions.
+    fn load_video(path: &Path) -> Option<Self> {
+        let stream = crate::video::VideoStream::load(path)?;
+        let (width, height) = stream.dimensions();
+        Some(Self {
+            kind: WallpaperKind::Video {
+                stream,
+                current_texture: None,
+                uploaded_serial: 0,
+            },
+            width,
+            height,
+        })
     }
 
     /// Still-image load path — one frame, no animation.
@@ -77,18 +115,20 @@ impl Wallpaper {
         let data = premultiply(rgba_img.into_raw());
 
         Some(Self {
-            frames: vec![Frame {
-                rgba: data,
-                // ~1 year — effectively "never advance." Used
-                // instead of Duration::MAX so any future code
-                // that does delay arithmetic doesn't overflow.
-                delay: Duration::from_secs(60 * 60 * 24 * 365),
-                cached_texture: None,
-            }],
+            kind: WallpaperKind::Frames {
+                frames: vec![Frame {
+                    rgba: data,
+                    // ~1 year — effectively "never advance." Used
+                    // instead of Duration::MAX so any future code
+                    // that does delay arithmetic doesn't overflow.
+                    delay: Duration::from_secs(60 * 60 * 24 * 365),
+                    cached_texture: None,
+                }],
+                current: 0,
+                frame_started: Instant::now(),
+            },
             width,
             height,
-            current: 0,
-            frame_started: Instant::now(),
         })
     }
 
@@ -159,11 +199,13 @@ impl Wallpaper {
         let (width, height) = dims.unwrap_or((1, 1));
 
         Some(Self {
-            frames,
+            kind: WallpaperKind::Frames {
+                frames,
+                current: 0,
+                frame_started: Instant::now(),
+            },
             width,
             height,
-            current: 0,
-            frame_started: Instant::now(),
         })
     }
 
@@ -171,79 +213,142 @@ impl Wallpaper {
     /// to compute an aspect-preserving center-crop when the
     /// wallpaper and the output don't share the same aspect ratio.
     pub fn dimensions(&self) -> (u32, u32) {
-        (self.width, self.height)
+        match &self.kind {
+            WallpaperKind::Video { stream, .. } => stream.dimensions(),
+            _ => (self.width, self.height),
+        }
     }
 
-    /// Number of frames in the wallpaper. 1 for stills, N for GIFs.
-    pub fn frame_count(&self) -> usize {
-        self.frames.len()
-    }
-
-    /// Whether this wallpaper needs the render loop to tick the
-    /// animation forward. True for multi-frame GIFs, false for
-    /// stills — kara-gate skips the tick call for stills so it
-    /// doesn't wake up the main loop on a timer for nothing.
-    pub fn is_animated(&self) -> bool {
-        self.frames.len() > 1
-    }
-
-    /// Advance the animation if the active frame's delay has
-    /// elapsed. Returns true if the frame index changed (caller
-    /// should request a redraw), false if we're still on the
-    /// same frame.
+    /// Advance the animation (GIF frame delay) or pull a new video
+    /// frame. Returns true if the visible pixels changed so the
+    /// caller knows to request a redraw.
     pub fn tick(&mut self) -> bool {
-        if self.frames.len() <= 1 {
-            return false;
+        match &mut self.kind {
+            WallpaperKind::Frames {
+                frames,
+                current,
+                frame_started,
+            } => {
+                if frames.len() <= 1 {
+                    return false;
+                }
+                let delay = frames[*current].delay;
+                if frame_started.elapsed() >= delay {
+                    *current = (*current + 1) % frames.len();
+                    *frame_started = Instant::now();
+                    return true;
+                }
+                false
+            }
+            WallpaperKind::Video { stream, .. } => {
+                // The actual upload happens in `texture()`. Here we
+                // just peek at whether a new frame is waiting so
+                // the main loop knows to schedule a redraw — but
+                // we don't consume the frame yet (that's what
+                // texture() does). A cheap way to check: the video
+                // stream's latest slot is Some if there's a new
+                // frame since the last `take_latest()`. Rather
+                // than peek-vs-take, always return true for video
+                // and let `texture()` decide whether to actually
+                // re-upload. Wastes at most one no-op redraw
+                // check per tick interval, which is negligible.
+                let _ = stream;
+                true
+            }
         }
-        let delay = self.frames[self.current].delay;
-        if self.frame_started.elapsed() >= delay {
-            self.current = (self.current + 1) % self.frames.len();
-            self.frame_started = Instant::now();
-            return true;
-        }
-        false
     }
 
-    /// Duration until the active frame should be replaced. Used by
-    /// the main loop to schedule its next wakeup — for an animated
-    /// wallpaper we want to fire a redraw ~right when the delay
-    /// elapses, not sooner or later.
+    /// Duration until the next wallpaper tick should fire. For a
+    /// GIF this is delay minus elapsed; for a video it's a fixed
+    /// ~16ms so we sample the pipeline at roughly 60Hz; for
+    /// stills it's None (don't schedule a tick).
     pub fn next_frame_due(&self) -> Option<Duration> {
-        if self.frames.len() <= 1 {
-            return None;
+        match &self.kind {
+            WallpaperKind::Frames {
+                frames,
+                current,
+                frame_started,
+            } => {
+                if frames.len() <= 1 {
+                    return None;
+                }
+                let delay = frames[*current].delay;
+                let elapsed = frame_started.elapsed();
+                Some(delay.saturating_sub(elapsed))
+            }
+            WallpaperKind::Video { .. } => Some(Duration::from_millis(16)),
         }
-        let delay = self.frames[self.current].delay;
-        let elapsed = self.frame_started.elapsed();
-        Some(delay.saturating_sub(elapsed))
     }
 
-    /// Get or create the GPU texture for the active frame. Cached
-    /// per-frame; first render of a frame uploads, subsequent
-    /// renders reuse the handle.
+    /// Get the GPU texture for the currently-visible frame. For
+    /// stills/GIFs this lazily uploads and caches per frame. For
+    /// video this checks the pipeline's latest slot and re-uploads
+    /// if there's a newer frame than the one already on the GPU.
     pub fn texture(
         &mut self,
         renderer: &mut KaraRenderer<'_>,
     ) -> Option<&TextureBuffer<KaraTexture>> {
-        let idx = self.current;
-        let width = self.width;
-        let height = self.height;
-        let frame = self.frames.get_mut(idx)?;
+        match &mut self.kind {
+            WallpaperKind::Frames {
+                frames, current, ..
+            } => {
+                let idx = *current;
+                let width = self.width;
+                let height = self.height;
+                let frame = frames.get_mut(idx)?;
 
-        if frame.cached_texture.is_none() {
-            frame.cached_texture = TextureBuffer::from_memory(
-                renderer,
-                &frame.rgba,
-                Fourcc::Abgr8888,
-                Size::from((width as i32, height as i32)),
-                false,
-                1,
-                Transform::Normal,
-                None,
-            )
-            .map_err(|e| tracing::error!("failed to upload wallpaper texture: {e:?}"))
-            .ok();
+                if frame.cached_texture.is_none() {
+                    frame.cached_texture = TextureBuffer::from_memory(
+                        renderer,
+                        &frame.rgba,
+                        Fourcc::Abgr8888,
+                        Size::from((width as i32, height as i32)),
+                        false,
+                        1,
+                        Transform::Normal,
+                        None,
+                    )
+                    .map_err(|e| tracing::error!("failed to upload wallpaper texture: {e:?}"))
+                    .ok();
+                }
+                frame.cached_texture.as_ref()
+            }
+            WallpaperKind::Video {
+                stream,
+                current_texture,
+                uploaded_serial,
+            } => {
+                // Pull the latest frame from the decode thread. If
+                // there's nothing new since we last checked, reuse
+                // the previously uploaded texture.
+                if let Some(frame) = stream.take_latest() {
+                    if frame.serial != *uploaded_serial {
+                        self.width = frame.width;
+                        self.height = frame.height;
+                        let new_tex = TextureBuffer::from_memory(
+                            renderer,
+                            &frame.bgra,
+                            // BGRA on LE = Argb8888 fourcc.
+                            Fourcc::Argb8888,
+                            Size::from((frame.width as i32, frame.height as i32)),
+                            false,
+                            1,
+                            Transform::Normal,
+                            None,
+                        )
+                        .map_err(|e| {
+                            tracing::error!("failed to upload video frame: {e:?}")
+                        })
+                        .ok();
+                        if new_tex.is_some() {
+                            *current_texture = new_tex;
+                            *uploaded_serial = frame.serial;
+                        }
+                    }
+                }
+                current_texture.as_ref()
+            }
         }
-        frame.cached_texture.as_ref()
     }
 }
 

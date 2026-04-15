@@ -265,6 +265,7 @@ fn handle_list_wallpapers(
             let supported = matches!(
                 ext.as_str(),
                 "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" | "tif" | "tiff" | "avif"
+                    | "mp4" | "mkv" | "webm" | "mov" | "m4v"
             );
             if supported {
                 files.push(path);
@@ -279,8 +280,11 @@ fn handle_list_wallpapers(
                 .unwrap_or_default()
                 .to_string();
             let is_animated = matches!(
-                path.extension().and_then(|s| s.to_str()),
-                Some("gif")
+                path.extension()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_ascii_lowercase())
+                    .as_deref(),
+                Some("gif") | Some("mp4") | Some("mkv") | Some("webm") | Some("mov") | Some("m4v")
             );
             entries.push(WallpaperEntry {
                 path,

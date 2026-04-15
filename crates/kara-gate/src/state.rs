@@ -221,6 +221,12 @@ pub struct Gate {
 
     // Wallpaper
     pub wallpaper: Option<crate::wallpaper::Wallpaper>,
+    /// In-flight async wallpaper decode. Populated by
+    /// `WallpaperChanged` IPC, drained each main-loop tick in
+    /// `poll_ipc()`. Keeps the current wallpaper visible until the
+    /// new one is fully decoded so large GIFs don't stall the
+    /// compositor on theme switch.
+    pub wallpaper_pending: Option<std::sync::mpsc::Receiver<Option<crate::wallpaper::Wallpaper>>>,
 
     // IPC
     pub ipc_listener: Option<std::os::unix::net::UnixListener>,
@@ -371,6 +377,7 @@ impl Gate {
             pending_autostart_routes: Vec::new(),
             hidden_helpers: Vec::new(),
             wallpaper: load_startup_wallpaper(),
+            wallpaper_pending: None,
             outputs: Vec::new(),
             output_bounds: (800, 600),
             focused_output: 0,

@@ -1013,9 +1013,15 @@ pub fn run(
         .expect("failed to insert status timer");
 
     // Wallpaper animation tick — reschedules itself based on
-    // each frame's per-frame delay so still images and slow
-    // GIFs cost nothing while a fast GIF gets accurate frame
-    // pacing. See Wallpaper::tick / Wallpaper::next_frame_due.
+    // each frame's per-frame delay so fast GIFs get accurate
+    // frame pacing without keeping the loop hot.
+    //
+    // Idle interval is 250ms (not 60s) so a fresh wallpaper
+    // applied via WallpaperChanged IPC starts animating within
+    // a quarter second of being loaded — the timer wakes,
+    // notices the new wallpaper is animated, and starts pacing
+    // it. The wakeup cost when nothing is animating is
+    // negligible (one no-op tick + a reschedule).
     loop_handle
         .insert_source(
             Timer::from_duration(Duration::from_millis(100)),
@@ -1027,20 +1033,23 @@ pub fn run(
                         // the simplest signal the existing
                         // render scheduler watches; using it
                         // costs an extra bar redraw per frame
-                        // but bar rendering is cheap (~1 ms)
-                        // and avoids a brand-new "wallpaper
-                        // dirty" plumb through every render
-                        // path right now.
+                        // but bar rendering is cheap (~1 ms).
                         state.bar_dirty = true;
                     }
+                    // Reschedule per frame for animations, or
+                    // 250ms for stills/no-wallpaper so a new
+                    // GIF applied while the timer is sleeping
+                    // wakes within a quarter second.
                     let next = wp
                         .next_frame_due()
-                        .unwrap_or(Duration::from_secs(60))
+                        .unwrap_or(Duration::from_millis(250))
                         .max(Duration::from_millis(20));
                     return TimeoutAction::ToDuration(next);
                 }
-                // No wallpaper → check back in a second.
-                TimeoutAction::ToDuration(Duration::from_secs(1))
+                // No wallpaper → check back in 250ms so a
+                // freshly-loaded animated wallpaper picks up
+                // its animation quickly.
+                TimeoutAction::ToDuration(Duration::from_millis(250))
             },
         )
         .expect("failed to insert wallpaper animation timer");

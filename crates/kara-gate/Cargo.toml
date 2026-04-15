@@ -26,3 +26,9 @@ dirs = "6"
 tiny-skia = { workspace = true }
 cosmic-text = { workspace = true }
 xkbcommon = "0.8"
+# D3: video wallpapers. gstreamer-app gives us appsink for pulling
+# decoded RGBA frames. System plugins (gst-plugins-{base,good,bad},
+# gst-libav) provide codec/demuxer coverage at runtime.
+gstreamer = { workspace = true }
+gstreamer-app = { workspace = true }
+gstreamer-video = { workspace = true }

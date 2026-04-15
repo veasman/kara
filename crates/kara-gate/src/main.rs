@@ -8,6 +8,7 @@ mod ipc;
 mod layout;
 mod render;
 mod state;
+mod video;
 mod wallpaper;
 #[allow(dead_code)]
 mod workspace;

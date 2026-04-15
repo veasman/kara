@@ -53,6 +53,24 @@ impl Gate {
         for stream in streams {
             self.handle_ipc_connection(stream);
         }
+
+        // Drain any completed async wallpaper decode.
+        if let Some(rx) = self.wallpaper_pending.as_ref() {
+            match rx.try_recv() {
+                Ok(new_wp) => {
+                    self.wallpaper_pending = None;
+                    if new_wp.is_some() {
+                        self.wallpaper = new_wp;
+                    } else {
+                        tracing::warn!("async wallpaper decode returned None");
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.wallpaper_pending = None;
+                }
+            }
+        }
     }
 
     fn handle_ipc_connection(&mut self, stream: UnixStream) {
@@ -191,8 +209,18 @@ impl Gate {
             }
 
             Request::WallpaperChanged { path } => {
-                tracing::info!("IPC: wallpaper changed to '{path}'");
-                self.wallpaper = crate::wallpaper::Wallpaper::load(std::path::Path::new(&path));
+                tracing::info!("IPC: wallpaper changed to '{path}' (decoding async)");
+                // Decode on a worker thread so a large GIF doesn't
+                // stall the compositor. The main loop keeps showing
+                // the current wallpaper; `poll_ipc()` drains the
+                // receiver each tick and swaps when the new one is
+                // ready.
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let wp = crate::wallpaper::Wallpaper::load(std::path::Path::new(&path));
+                    let _ = tx.send(wp);
+                });
+                self.wallpaper_pending = Some(rx);
                 Response::Ok
             }
 
