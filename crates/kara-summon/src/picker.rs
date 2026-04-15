@@ -64,8 +64,8 @@ use wayland_client::{
 use crate::beautify_ipc::{self, Request, Response, ThemeEntry, VariantEntry, WallpaperEntry};
 use crate::thumb::ThumbCache;
 
-const WIDTH: u32 = 720;
-const HEIGHT: u32 = 420;
+const WIDTH: u32 = 820;
+const HEIGHT: u32 = 500;
 const PADDING: i32 = 18;
 const SECTION_LABEL_WIDTH: i32 = 90;
 const CHIP_HEIGHT: i32 = 32;
@@ -73,11 +73,17 @@ const CHIP_GAP: i32 = 8;
 const BORDER_RADIUS: f32 = 12.0;
 
 // Wallpaper thumbnail dimensions in the picker. 16:9-ish so most
-// landscape wallpapers preview without distortion. Chips are
-// rendered at this size and laid out horizontally with the same
-// CHIP_GAP between them as the text rows.
+// landscape wallpapers preview without distortion. Tiles are
+// rendered at this size and laid out as a grid beneath the
+// WALLPAPER label with CHIP_GAP between rows and columns.
 const THUMB_WIDTH: u32 = 120;
 const THUMB_HEIGHT: u32 = 68;
+
+// How many grid rows the wallpaper section reserves vertical
+// space for. If the wallpaper pool exceeds this, the grid scrolls
+// so the selected row stays visible. Columns are computed from
+// the picker width so different WIDTH values Just Work.
+const WALLPAPER_ROWS: i32 = 3;
 
 /// Which section of the picker has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -359,6 +365,39 @@ impl Picker {
             .unwrap_or(&[])
     }
 
+    /// How many grid columns fit in the current picker width. The
+    /// wallpaper grid and `move_wallpaper_row` both need this, so
+    /// it lives in one place keyed off `self.width`. Clamp to at
+    /// least 1 so degenerate-narrow pickers still render a column.
+    fn wallpaper_cols(&self) -> usize {
+        let avail = self.width as i32 - PADDING - SECTION_LABEL_WIDTH - PADDING;
+        let slot = THUMB_WIDTH as i32 + CHIP_GAP;
+        (((avail + CHIP_GAP) / slot).max(1)) as usize
+    }
+
+    /// Move the wallpaper selection by `row_delta` rows (positive
+    /// down). Returns true if the move landed on a new index,
+    /// false if it would have stepped off the grid — the caller
+    /// uses the false return to decide whether to fall through to
+    /// section switching instead.
+    fn move_wallpaper_row(&mut self, row_delta: isize) -> bool {
+        let n = self.active_wallpapers().len();
+        if n == 0 {
+            return false;
+        }
+        let cols = self.wallpaper_cols() as isize;
+        let target = self.wallpaper_idx as isize + row_delta * cols;
+        if target < 0 || target >= n as isize {
+            return false;
+        }
+        if target as usize == self.wallpaper_idx {
+            return false;
+        }
+        self.wallpaper_idx = target as usize;
+        self.fire_preview();
+        true
+    }
+
     fn move_selection(&mut self, delta: isize) {
         let changed = match self.focus {
             Focus::Theme => {
@@ -577,7 +616,7 @@ impl Picker {
         } else {
             let wallpaper_focused = self.focus == Focus::Wallpaper;
             let wallpaper_selected = self.wallpaper_idx;
-            self.draw_thumbnail_row(
+            self.draw_thumbnail_grid(
                 &mut pixmap,
                 &wallpaper_paths,
                 wallpaper_selected,
@@ -587,7 +626,7 @@ impl Picker {
         }
 
         // Footer: keybind hints
-        let hint = "[j/k] section   [h/l] item   [Enter] apply   [Esc] cancel";
+        let hint = "[hjkl] move   [Tab] section   [Enter] apply   [Esc] cancel";
         let hint_y = (h as i32 - PADDING - 4) as f32;
         self.text
             .draw(&mut pixmap, hint, PADDING as f32, hint_y, t.text_muted);
@@ -628,22 +667,17 @@ impl Picker {
         );
     }
 
-    /// Paint a horizontal row of wallpaper thumbnails. Each tile
-    /// is a fixed THUMB_WIDTH × THUMB_HEIGHT pixmap blitted from
-    /// the cache. The focused-section selection gets an accent
-    /// border ring; non-focused selections get a muted ring so
-    /// the user always knows which tile WILL be applied if they
-    /// hit Enter regardless of which row they're navigating.
+    /// Paint a grid of wallpaper thumbnails beneath the WALLPAPER
+    /// section label. Columns are computed from the picker width
+    /// (via `wallpaper_cols`) and rows are clamped to
+    /// `WALLPAPER_ROWS`; when the wallpaper pool exceeds the
+    /// visible rows, the grid scrolls vertically so the selected
+    /// row stays in view.
     ///
-    /// Horizontal scroll: when the wallpaper count exceeds the
-    /// number of tiles that fit in the row, the row scrolls so
-    /// the SELECTED tile is always visible. Computes the visible
-    /// window from the picker width, anchors the scroll so the
-    /// selected index sits inside it, and draws only the visible
-    /// slice. A future improvement could add subtle "more →" /
-    /// "← more" affordances at the row edges when there's
-    /// off-screen content.
-    fn draw_thumbnail_row(
+    /// Coordinates: origin at (start_x, row_y) — start_x sits just
+    /// right of the "WALLPAPER" label column so the grid aligns
+    /// with the theme and variant chip rows above.
+    fn draw_thumbnail_grid(
         &mut self,
         pixmap: &mut Pixmap,
         paths: &[std::path::PathBuf],
@@ -657,78 +691,87 @@ impl Picker {
         let start_x = PADDING + SECTION_LABEL_WIDTH;
         let tile_w = THUMB_WIDTH as i32;
         let tile_h = THUMB_HEIGHT as i32;
-        let avail_w = self.width as i32 - start_x - PADDING;
+        let cols = self.wallpaper_cols();
+        let visible_rows = WALLPAPER_ROWS as usize;
 
-        // How many tiles fit fully? At least 1 even when the math
-        // says 0 (degenerate narrow picker — clamp to draw the
-        // selected tile so the user can still see something).
-        let visible = ((avail_w + CHIP_GAP) / (tile_w + CHIP_GAP)).max(1) as usize;
+        let total_rows = paths.len().div_ceil(cols.max(1));
+        let selected_row = if cols == 0 { 0 } else { selected / cols };
 
-        // Anchor the scroll window so `selected` sits inside it.
-        // If the selection is at position 0, scroll = 0. If the
-        // selection is past the right edge of the current window,
-        // shift the window right just enough to include it.
-        let scroll_offset = if paths.len() <= visible {
+        // Scroll so the selected row sits inside the visible
+        // window. If the whole grid fits, no scroll. Otherwise
+        // anchor the top row so `selected_row` is on-screen and
+        // as close to the center as possible without leaving
+        // empty rows at the bottom.
+        let row_scroll = if total_rows <= visible_rows {
             0
-        } else if selected < visible {
+        } else if selected_row < visible_rows {
             0
+        } else if selected_row + 1 >= total_rows {
+            total_rows - visible_rows
         } else {
-            selected + 1 - visible
+            selected_row + 1 - visible_rows
         };
 
-        let mut cursor_x = start_x;
-        for (offset, path) in paths.iter().enumerate().skip(scroll_offset).take(visible) {
-            let i = offset; // absolute index for selection comparison
-
-            // Background fill (shows through if the thumbnail
-            // hasn't decoded yet or failed to decode).
-            fill_rounded_rect(
-                pixmap,
-                cursor_x as f32,
-                row_y as f32,
-                tile_w as f32,
-                tile_h as f32,
-                6.0,
-                color_from_u32(t.bg),
-            );
-
-            // Decode-and-cache the thumbnail. None means the file
-            // failed to read or decode; we leave the bg fill as
-            // the placeholder.
-            if let Some(thumb) = self.thumbs.get_or_decode(path, THUMB_WIDTH, THUMB_HEIGHT) {
-                pixmap.draw_pixmap(
-                    cursor_x,
-                    row_y,
-                    thumb.as_ref(),
-                    &PixmapPaint::default(),
-                    TskiaTransform::identity(),
-                    None,
-                );
+        for visible_row in 0..visible_rows {
+            let abs_row = row_scroll + visible_row;
+            if abs_row >= total_rows {
+                break;
             }
+            let tile_y = row_y + visible_row as i32 * (tile_h + CHIP_GAP);
+            for col in 0..cols {
+                let i = abs_row * cols + col;
+                if i >= paths.len() {
+                    break;
+                }
+                let cursor_x = start_x + col as i32 * (tile_w + CHIP_GAP);
 
-            // Selection ring — accent if the wallpaper section
-            // currently has focus, muted otherwise.
-            let is_sel = i == selected;
-            if is_sel {
-                let ring_color = if section_focused {
-                    t.accent
-                } else {
-                    t.text_muted
-                };
-                let ring_width: f32 = if section_focused { 2.5 } else { 1.5 };
-                stroke_rounded_rect(
+                // Background fill under the thumbnail — visible
+                // while decoding or if decode fails.
+                fill_rounded_rect(
                     pixmap,
-                    cursor_x as f32 + 0.5,
-                    row_y as f32 + 0.5,
-                    tile_w as f32 - 1.0,
-                    tile_h as f32 - 1.0,
+                    cursor_x as f32,
+                    tile_y as f32,
+                    tile_w as f32,
+                    tile_h as f32,
                     6.0,
-                    color_from_u32(ring_color),
-                    ring_width,
+                    color_from_u32(t.bg),
                 );
-            }
 
-            cursor_x += tile_w + CHIP_GAP;
+                if let Some(thumb) =
+                    self.thumbs.get_or_decode(&paths[i], THUMB_WIDTH, THUMB_HEIGHT)
+                {
+                    pixmap.draw_pixmap(
+                        cursor_x,
+                        tile_y,
+                        thumb.as_ref(),
+                        &PixmapPaint::default(),
+                        TskiaTransform::identity(),
+                        None,
+                    );
+                }
+
+                // Selection ring — accent when the wallpaper
+                // section has focus, muted otherwise so the user
+                // always sees which tile Enter will commit.
+                if i == selected {
+                    let ring_color = if section_focused {
+                        t.accent
+                    } else {
+                        t.text_muted
+                    };
+                    let ring_width: f32 = if section_focused { 2.5 } else { 1.5 };
+                    stroke_rounded_rect(
+                        pixmap,
+                        cursor_x as f32 + 0.5,
+                        tile_y as f32 + 0.5,
+                        tile_w as f32 - 1.0,
+                        tile_h as f32 - 1.0,
+                        6.0,
+                        color_from_u32(ring_color),
+                        ring_width,
+                    );
+                }
+            }
         }
     }
 
@@ -936,23 +979,42 @@ impl KeyboardHandler for Picker {
             return;
         }
 
-        // ─── Section navigation (vertical: j/k/↓/↑/Tab) ──────
-        // The layout stacks Theme over Variant, so "move down"
-        // advances to the next section and "move up" moves back.
-        let section_next = matches!(
-            event.keysym,
-            Keysym::j | Keysym::Down | Keysym::Tab
-        );
-        let section_prev = matches!(
-            event.keysym,
-            Keysym::k | Keysym::Up | Keysym::ISO_Left_Tab
-        );
-        if section_next {
+        // ─── Vertical navigation (j/k/↓/↑/Tab) ────────────────
+        // Theme and Variant are single rows, so vertical = switch
+        // section. The Wallpaper grid is 2D: j/k moves between
+        // rows within the grid first, and only falls through to
+        // section switching when the cursor would step off the
+        // grid edge. Tab always switches sections regardless of
+        // focus — an escape hatch out of a tall grid.
+        let vertical_next = matches!(event.keysym, Keysym::j | Keysym::Down);
+        let vertical_prev = matches!(event.keysym, Keysym::k | Keysym::Up);
+        let section_tab = matches!(event.keysym, Keysym::Tab);
+        let section_shift_tab = matches!(event.keysym, Keysym::ISO_Left_Tab);
+
+        if section_tab {
             self.focus = self.focus.next();
             self.draw();
             return;
         }
-        if section_prev {
+        if section_shift_tab {
+            self.focus = self.focus.prev();
+            self.draw();
+            return;
+        }
+        if vertical_next {
+            if self.focus == Focus::Wallpaper && self.move_wallpaper_row(1) {
+                self.draw();
+                return;
+            }
+            self.focus = self.focus.next();
+            self.draw();
+            return;
+        }
+        if vertical_prev {
+            if self.focus == Focus::Wallpaper && self.move_wallpaper_row(-1) {
+                self.draw();
+                return;
+            }
             self.focus = self.focus.prev();
             self.draw();
             return;
