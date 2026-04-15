@@ -43,6 +43,50 @@ impl KaraPaths {
         self.state_home.join("kara")
     }
 
+    /// Directories searched for theme packages, in priority order.
+    /// First match wins — a theme in `~/.config/kara/themes/` overrides
+    /// one of the same name bundled with the repo or installed system-wide.
+    ///
+    /// Users who want to author their own theme drop a directory into
+    /// `~/.config/kara/themes/<name>/` with a `theme.toml` inside. No
+    /// kara rebuild needed.
+    pub fn theme_search_paths(&self, repo_root: Option<&std::path::Path>) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+
+        // 1. User config: ~/.config/kara/themes/
+        out.push(self.config_home.join("kara").join("themes"));
+
+        // 2. User data: ~/.local/share/kara/themes/
+        out.push(self.data_home.join("kara").join("themes"));
+
+        // 3. Repo-bundled (dev mode): <repo_root>/themes/
+        if let Some(root) = repo_root {
+            out.push(root.join("themes"));
+        }
+
+        // 4. System install: /usr/share/kara/themes/
+        out.push(PathBuf::from("/usr/share/kara/themes"));
+
+        out
+    }
+
+    /// Find a theme package by name. Returns the theme directory
+    /// (containing theme.toml + wallpapers/) of the first hit in the
+    /// search path.
+    pub fn find_theme(
+        &self,
+        name: &str,
+        repo_root: Option<&std::path::Path>,
+    ) -> Option<PathBuf> {
+        for base in self.theme_search_paths(repo_root) {
+            let candidate = base.join(name);
+            if candidate.join("theme.toml").is_file() {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
     pub fn generated_dir(&self) -> PathBuf {
         self.kara_state_dir().join("generated")
     }

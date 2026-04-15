@@ -154,17 +154,17 @@ fn main() -> Result<()> {
     let paths = KaraPaths::from_env()?;
 
     match cli.command {
-        Commands::List => list_themes(&repo_root),
-        Commands::ListVariants { theme } => list_variants_command(&repo_root, &theme),
+        Commands::List => list_themes(&repo_root, &paths),
+        Commands::ListVariants { theme } => list_variants_command(&repo_root, &paths, &theme),
         Commands::Doctor => doctor(&paths),
         Commands::Status => status_command(&paths),
         Commands::Debug(args) => debug_command(&repo_root, &paths, args),
-        Commands::Validate { theme } => validate_command(&repo_root, theme),
+        Commands::Validate { theme } => validate_command(&repo_root, &paths, theme),
         Commands::Resolve {
             theme,
             variant,
             json,
-        } => resolve_command(&repo_root, &theme, variant.as_deref(), json),
+        } => resolve_command(&repo_root, &paths, &theme, variant.as_deref(), json),
         Commands::Apply {
             theme,
             variant,
@@ -191,50 +191,80 @@ fn main() -> Result<()> {
             theme,
             target,
             variant,
-        } => render_command(&repo_root, &theme, target, variant.as_deref()),
+        } => render_command(&repo_root, &paths, &theme, target, variant.as_deref()),
         Commands::DeriveImage {
             image,
             name,
             mode,
             json,
-        } => derive_image_command(&repo_root, &image, &name, mode, json),
+        } => derive_image_command(&repo_root, &paths, &image, &name, mode, json),
     }
 }
 
-fn themes_dir(repo_root: &Path) -> PathBuf {
-    repo_root.join("themes")
-}
-
-fn theme_root(repo_root: &Path, theme_name: &str) -> PathBuf {
-    themes_dir(repo_root).join(theme_name)
-}
-
-fn theme_file(repo_root: &Path, theme_name: &str) -> PathBuf {
-    theme_root(repo_root, theme_name).join("theme.toml")
-}
-
-fn theme_wallpapers_dir(repo_root: &Path, theme_name: &str) -> PathBuf {
-    theme_root(repo_root, theme_name).join("wallpapers")
-}
-
-fn list_themes(repo_root: &Path) -> Result<()> {
-    let dir = themes_dir(repo_root);
-    if !dir.is_dir() {
-        return Ok(());
+/// Resolve a theme name to its on-disk directory via the XDG search
+/// path. Returns the theme dir (containing `theme.toml`). Errors with
+/// the full search chain when nothing is found.
+fn resolve_theme_dir(repo_root: &Path, paths: &KaraPaths, theme_name: &str) -> Result<PathBuf> {
+    if let Some(dir) = paths.find_theme(theme_name, Some(repo_root)) {
+        return Ok(dir);
     }
+    let searched: Vec<String> = paths
+        .theme_search_paths(Some(repo_root))
+        .iter()
+        .map(|p| format!("  - {}", p.display()))
+        .collect();
+    anyhow::bail!(
+        "theme '{theme_name}' not found. searched:\n{}",
+        searched.join("\n")
+    );
+}
 
-    let mut entries = vec![];
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() && path.join("theme.toml").is_file() {
-            entries.push(entry.file_name().to_string_lossy().to_string());
+fn theme_file(repo_root: &Path, paths: &KaraPaths, theme_name: &str) -> Result<PathBuf> {
+    Ok(resolve_theme_dir(repo_root, paths, theme_name)?.join("theme.toml"))
+}
+
+fn theme_root(repo_root: &Path, paths: &KaraPaths, theme_name: &str) -> Result<PathBuf> {
+    resolve_theme_dir(repo_root, paths, theme_name)
+}
+
+fn theme_wallpapers_dir(repo_root: &Path, paths: &KaraPaths, theme_name: &str) -> Result<PathBuf> {
+    Ok(resolve_theme_dir(repo_root, paths, theme_name)?.join("wallpapers"))
+}
+
+fn list_themes(repo_root: &Path, paths: &KaraPaths) -> Result<()> {
+    use std::collections::BTreeMap;
+    // theme name → (search-path index, absolute dir). Lower index wins.
+    let mut seen: BTreeMap<String, (usize, PathBuf)> = BTreeMap::new();
+
+    for (idx, base) in paths.theme_search_paths(Some(repo_root)).iter().enumerate() {
+        if !base.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(base)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() && path.join("theme.toml").is_file() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                seen.entry(name)
+                    .and_modify(|(existing_idx, existing_path)| {
+                        if idx < *existing_idx {
+                            *existing_idx = idx;
+                            *existing_path = path.clone();
+                        }
+                    })
+                    .or_insert((idx, path));
+            }
         }
     }
 
-    entries.sort();
-    for name in entries {
-        println!("{name}");
+    for (name, (idx, path)) in seen {
+        let source = match idx {
+            0 => "user",
+            1 => "data",
+            2 => "repo",
+            _ => "system",
+        };
+        println!("{name:<16} [{source}] {}", path.display());
     }
 
     Ok(())
@@ -278,8 +308,8 @@ fn debug_command(repo_root: &Path, paths: &KaraPaths, args: DebugArgs) -> Result
         anyhow::bail!("no theme provided and no current theme set");
     };
 
-    let file = theme_file(repo_root, &theme_name);
-    let root = theme_root(repo_root, &theme_name);
+    let file = theme_file(repo_root, paths, &theme_name)?;
+    let root = theme_root(repo_root, paths, &theme_name)?;
     let spec = ThemeSpec::load_from_file(&file)?;
     let resolved = resolve_theme(&spec, args.variant.as_deref())?;
     let debug = debug_theme_file(&file, &root, paths, args.variant.as_deref())?;
@@ -354,30 +384,40 @@ fn debug_command(repo_root: &Path, paths: &KaraPaths, args: DebugArgs) -> Result
     Ok(())
 }
 
-fn validate_command(repo_root: &Path, theme: Option<String>) -> Result<()> {
+fn validate_command(repo_root: &Path, paths: &KaraPaths, theme: Option<String>) -> Result<()> {
     if let Some(theme) = theme {
-        let spec = ThemeSpec::load_from_file(&theme_file(repo_root, &theme))?;
+        let spec = ThemeSpec::load_from_file(&theme_file(repo_root, paths, &theme)?)?;
         validate_spec(&spec)?;
         println!("valid: {}", spec.meta.name);
         return Ok(());
     }
 
-    let dir = themes_dir(repo_root);
     let mut failed = false;
+    let mut seen: std::collections::BTreeSet<String> = Default::default();
 
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let file = path.join("theme.toml");
-        if !file.is_file() {
+    for base in paths.theme_search_paths(Some(repo_root)) {
+        if !base.is_dir() {
             continue;
         }
+        for entry in fs::read_dir(&base)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file = path.join("theme.toml");
+            if !file.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Skip shadowed names — only validate the highest-priority copy.
+            if !seen.insert(name.clone()) {
+                continue;
+            }
 
-        match ThemeSpec::load_from_file(&file) {
-            Ok(spec) => println!("valid: {}", spec.meta.name),
-            Err(err) => {
-                failed = true;
-                eprintln!("invalid: {} -> {}", file.display(), err);
+            match ThemeSpec::load_from_file(&file) {
+                Ok(spec) => println!("valid: {}", spec.meta.name),
+                Err(err) => {
+                    failed = true;
+                    eprintln!("invalid: {} -> {}", file.display(), err);
+                }
             }
         }
     }
@@ -391,11 +431,12 @@ fn validate_command(repo_root: &Path, theme: Option<String>) -> Result<()> {
 
 fn resolve_command(
     repo_root: &Path,
+    paths: &KaraPaths,
     theme: &str,
     variant: Option<&str>,
     as_json: bool,
 ) -> Result<()> {
-    let spec = ThemeSpec::load_from_file(&theme_file(repo_root, theme))?;
+    let spec = ThemeSpec::load_from_file(&theme_file(repo_root, paths, theme)?)?;
     let resolved = resolve_theme(&spec, variant)?;
 
     if as_json {
@@ -483,8 +524,8 @@ fn apply_command(
     no_reload: bool,
     dry_run: bool,
 ) -> Result<()> {
-    let file = theme_file(repo_root, theme);
-    let root = theme_root(repo_root, theme);
+    let file = theme_file(repo_root, paths, theme)?;
+    let root = theme_root(repo_root, paths, theme)?;
     apply_theme_file(
         &file,
         &root,
@@ -509,8 +550,8 @@ fn preview_command(
 
     begin_preview_state(paths, current_theme.as_deref(), current_wallpaper.as_ref())?;
 
-    let file = theme_file(repo_root, theme);
-    let root = theme_root(repo_root, theme);
+    let file = theme_file(repo_root, paths, theme)?;
+    let root = theme_root(repo_root, paths, theme)?;
     apply_theme_file(
         &file,
         &root,
@@ -528,8 +569,8 @@ fn revert_command(repo_root: &Path, paths: &KaraPaths, no_reload: bool) -> Resul
         anyhow::bail!("no preview state saved");
     };
 
-    let file = theme_file(repo_root, &theme);
-    let root = theme_root(repo_root, &theme);
+    let file = theme_file(repo_root, paths, &theme)?;
+    let root = theme_root(repo_root, paths, &theme)?;
 
     apply_theme_file(
         &file,
@@ -545,8 +586,8 @@ fn revert_command(repo_root: &Path, paths: &KaraPaths, no_reload: bool) -> Resul
     Ok(())
 }
 
-fn list_variants_command(repo_root: &Path, theme: &str) -> Result<()> {
-    let spec = ThemeSpec::load_from_file(&theme_file(repo_root, theme))?;
+fn list_variants_command(repo_root: &Path, paths: &KaraPaths, theme: &str) -> Result<()> {
+    let spec = ThemeSpec::load_from_file(&theme_file(repo_root, paths, theme)?)?;
 
     if spec.variants.is_empty() {
         println!("(single-palette theme — no variants)");
@@ -570,7 +611,7 @@ fn wallpaper_command(
     theme: &str,
     command: WallpaperCommands,
 ) -> Result<()> {
-    let dir = theme_wallpapers_dir(repo_root, theme);
+    let dir = theme_wallpapers_dir(repo_root, paths, theme)?;
     let files = list_wallpaper_files(&dir)?;
 
     match command {
@@ -730,11 +771,12 @@ fn cycle_wallpaper(files: &[PathBuf], current: Option<&PathBuf>, forward: bool) 
 
 fn render_command(
     repo_root: &Path,
+    paths: &KaraPaths,
     theme: &str,
     target: RenderTarget,
     variant: Option<&str>,
 ) -> Result<()> {
-    let spec = ThemeSpec::load_from_file(&theme_file(repo_root, theme))?;
+    let spec = ThemeSpec::load_from_file(&theme_file(repo_root, paths, theme)?)?;
     let resolved = resolve_theme(&spec, variant)?;
 
     let out = match target {
@@ -752,7 +794,8 @@ fn render_command(
 }
 
 fn derive_image_command(
-    repo_root: &Path,
+    _repo_root: &Path,
+    paths: &KaraPaths,
     image: &Path,
     name: &str,
     mode: Option<ModeArg>,
@@ -769,7 +812,10 @@ fn derive_image_command(
         };
     }
 
-    let root = theme_root(repo_root, name);
+    // Write derived themes to the user's config path so they live
+    // alongside hand-authored themes. Previously this wrote into the
+    // repo's themes/ dir which is awkward for users not running from source.
+    let root = paths.config_home.join("kara").join("themes").join(name);
     let wallpapers = root.join("wallpapers");
     fs::create_dir_all(&wallpapers)?;
 
