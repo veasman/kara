@@ -180,7 +180,11 @@ impl KaraPaths {
     }
 
     pub fn current_wallpaper_link(&self) -> PathBuf {
-        self.data_home.join("bg")
+        // ~/.local/share/kara/bg (not ~/.local/share/bg — the
+        // bare-path was a leftover from the pre-kara-subdir layout).
+        // kara-gate's load_startup_wallpaper() looks here for its
+        // initial texture, so this path has to match that lookup.
+        self.data_home.join("kara").join("bg")
     }
 
     pub fn gtk3_settings_path(&self) -> PathBuf {

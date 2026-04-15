@@ -233,7 +233,16 @@ fn render_border_set(
     elements
 }
 
-/// Build all custom render elements for a specific output (wallpaper + borders + bar).
+/// Build all custom render elements for a specific output (bar + borders + wallpaper).
+///
+/// Smithay's element vec is front-to-back: index 0 is topmost, index
+/// N-1 is bottommost. Painting happens last-to-first, so the last
+/// vec entry is drawn before the first. Inside the `custom_elements`
+/// block (which sits at the END of the overall frame vec), we must
+/// push **in z-order from top to bottom**: bar first, borders
+/// next, wallpaper LAST — so the wallpaper is painted first, then
+/// borders over it, then the bar over them. Reversing this order
+/// leaves the wallpaper painting OVER the bar, hiding it.
 pub fn build_custom_elements(
     state: &mut Gate,
     renderer: &mut KaraRenderer<'_>,
@@ -245,27 +254,12 @@ pub fn build_custom_elements(
         .map(|o| o.fullscreen_window.is_some())
         .unwrap_or(false);
 
-    // Wallpaper (rendered behind everything, at output-local origin).
-    // Stretches the image to the output's logical size — aspect-aware
-    // zoom-to-fill (preserving the image's aspect ratio with center-crop)
-    // is a D1.1 enhancement once D1 stabilizes.
-    if let Some(ref mut wp) = state.wallpaper {
-        if let Some(output_state) = state.outputs.get(output_idx) {
-            let (out_w, out_h) = output_state.size;
-            if let Some(tex_buf) = wp.texture(renderer) {
-                elements.push(TextureRenderElement::from_texture_buffer(
-                    Point::from((0.0, 0.0)),
-                    tex_buf,
-                    None,
-                    None,
-                    Some(smithay::utils::Size::from((out_w, out_h))),
-                    Kind::Unspecified,
-                ));
-            }
-        }
+    // Bar (on top of the custom block, hidden during fullscreen).
+    if !has_fullscreen {
+        elements.extend(render_bar(state, renderer, output_idx));
     }
 
-    // Workspace borders (behind dim overlay)
+    // Workspace borders (behind the bar, in front of the wallpaper).
     if !has_fullscreen {
         rasterize_border_set(
             &state.border_rects, &mut state.border_cache, state.layout_dirty,
@@ -280,9 +274,25 @@ pub fn build_custom_elements(
         ));
     }
 
-    // Bar (on top, hidden during fullscreen)
-    if !has_fullscreen {
-        elements.extend(render_bar(state, renderer, output_idx));
+    // Wallpaper (absolute bottom — pushed last so it lands at the end
+    // of the custom block, and therefore at the end of the overall
+    // frame vec, making it the first thing painted and thus the
+    // bottommost layer on screen). Stretches to output size; aspect
+    // preservation is a D1.1 enhancement.
+    if let Some(ref mut wp) = state.wallpaper {
+        if let Some(output_state) = state.outputs.get(output_idx) {
+            let (out_w, out_h) = output_state.size;
+            if let Some(tex_buf) = wp.texture(renderer) {
+                elements.push(TextureRenderElement::from_texture_buffer(
+                    Point::from((0.0, 0.0)),
+                    tex_buf,
+                    None,
+                    None,
+                    Some(smithay::utils::Size::from((out_w, out_h))),
+                    Kind::Unspecified,
+                ));
+            }
+        }
     }
 
     elements

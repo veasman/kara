@@ -72,7 +72,11 @@ wallpaper = "vague-default.png"
 [variants.gruvbox]
 display_name = "Gruvbox"
 preset = "gruvbox"
+# TODO: swap in a palette-matched wallpaper once the asset is picked.
+wallpaper = "vague-default.png"
 
 [variants.nord]
 display_name = "Nord"
 preset = "nord"
+# TODO: swap in a palette-matched wallpaper once the asset is picked.
+wallpaper = "vague-default.png"
