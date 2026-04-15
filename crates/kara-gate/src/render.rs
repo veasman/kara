@@ -243,6 +243,64 @@ fn render_border_set(
 /// next, wallpaper LAST — so the wallpaper is painted first, then
 /// borders over it, then the bar over them. Reversing this order
 /// leaves the wallpaper painting OVER the bar, hiding it.
+/// Compute an aspect-preserving center-crop source rect for
+/// drawing a wallpaper onto an output.
+///
+/// Given a source image of size `(src_w, src_h)` and a destination
+/// output of size `(dst_w, dst_h)`, picks a sub-rectangle of the
+/// source that:
+///   1. Has the same aspect ratio as the destination
+///   2. Is as large as possible while still fitting inside the source
+///   3. Is centered on the source
+///
+/// When `from_texture_buffer` gets that `src` plus a `size` of the
+/// destination, the image covers the output fully (no letterbox or
+/// pillarbox) without stretching — the edges of a too-tall source
+/// are cropped equally top/bottom, too-wide source is cropped
+/// equally left/right.
+///
+/// Returns a Rectangle in buffer-pixel coordinates.
+fn center_crop_src_rect(
+    src_w: u32,
+    src_h: u32,
+    dst_w: i32,
+    dst_h: i32,
+) -> smithay::utils::Rectangle<f64, smithay::utils::Logical> {
+    use smithay::utils::{Point, Rectangle, Size};
+
+    if src_w == 0 || src_h == 0 || dst_w <= 0 || dst_h <= 0 {
+        // Degenerate input — fall back to "use the whole source".
+        // Avoids divide-by-zero and keeps the render path robust.
+        return Rectangle::new(
+            Point::from((0.0f64, 0.0f64)),
+            Size::from((src_w as f64, src_h as f64)),
+        );
+    }
+
+    let src_ratio = src_w as f64 / src_h as f64;
+    let dst_ratio = dst_w as f64 / dst_h as f64;
+
+    let (crop_w, crop_h) = if src_ratio > dst_ratio {
+        // Source is wider than destination — crop left/right.
+        let h = src_h as f64;
+        let w = h * dst_ratio;
+        (w, h)
+    } else {
+        // Source is taller than destination — crop top/bottom.
+        let w = src_w as f64;
+        let h = w / dst_ratio;
+        (w, h)
+    };
+
+    let offset_x = (src_w as f64 - crop_w) / 2.0;
+    let offset_y = (src_h as f64 - crop_h) / 2.0;
+
+    Rectangle::new(
+        Point::from((offset_x, offset_y)),
+        Size::from((crop_w, crop_h)),
+    )
+}
+
 pub fn build_custom_elements(
     state: &mut Gate,
     renderer: &mut KaraRenderer<'_>,
@@ -277,17 +335,27 @@ pub fn build_custom_elements(
     // Wallpaper (absolute bottom — pushed last so it lands at the end
     // of the custom block, and therefore at the end of the overall
     // frame vec, making it the first thing painted and thus the
-    // bottommost layer on screen). Stretches to output size; aspect
-    // preservation is a D1.1 enhancement.
+    // bottommost layer on screen).
+    //
+    // D1.1: aspect-preserving center-crop. Computes a source
+    // sub-rect that matches the output's aspect ratio, centered
+    // on the image, and lets smithay scale it to the output's
+    // logical size. The source-rect-plus-dest-size combo in
+    // TextureRenderElement::from_texture_buffer handles the crop
+    // + scale in one pass without an intermediate bitmap.
     if let Some(ref mut wp) = state.wallpaper {
         if let Some(output_state) = state.outputs.get(output_idx) {
             let (out_w, out_h) = output_state.size;
+            let (src_w, src_h) = wp.dimensions();
+
             if let Some(tex_buf) = wp.texture(renderer) {
+                let src_rect = center_crop_src_rect(src_w, src_h, out_w, out_h);
+
                 elements.push(TextureRenderElement::from_texture_buffer(
                     Point::from((0.0, 0.0)),
                     tex_buf,
                     None,
-                    None,
+                    Some(src_rect),
                     Some(smithay::utils::Size::from((out_w, out_h))),
                     Kind::Unspecified,
                 ));

@@ -20,3 +20,7 @@ dirs = "6"
 xkbcommon = "0.8"
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Wallpaper thumbnail decode for the picker's wallpaper row (B9b.1).
+# Same feature set as kara-beautify's image dep so any wallpaper
+# kara-beautify accepts can be previewed.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "tiff"] }

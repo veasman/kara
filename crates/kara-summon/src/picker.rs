@@ -62,14 +62,22 @@ use wayland_client::{
 };
 
 use crate::beautify_ipc::{self, Request, Response, ThemeEntry, VariantEntry, WallpaperEntry};
+use crate::thumb::ThumbCache;
 
-const WIDTH: u32 = 640;
-const HEIGHT: u32 = 360;
+const WIDTH: u32 = 720;
+const HEIGHT: u32 = 420;
 const PADDING: i32 = 18;
 const SECTION_LABEL_WIDTH: i32 = 90;
 const CHIP_HEIGHT: i32 = 32;
 const CHIP_GAP: i32 = 8;
 const BORDER_RADIUS: f32 = 12.0;
+
+// Wallpaper thumbnail dimensions in the picker. 16:9-ish so most
+// landscape wallpapers preview without distortion. Chips are
+// rendered at this size and laid out horizontally with the same
+// CHIP_GAP between them as the text rows.
+const THUMB_WIDTH: u32 = 120;
+const THUMB_HEIGHT: u32 = 68;
 
 /// Which section of the picker has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,6 +238,7 @@ pub fn run(theme: ThemeColors) {
         wallpaper_idx: initial_wallpaper_idx,
         focus: Focus::Theme,
         ctrl_held: false,
+        thumbs: ThumbCache::new(),
 
         commit_on_exit: false,
     };
@@ -326,6 +335,11 @@ struct Picker {
     wallpaper_idx: usize,
     focus: Focus,
     ctrl_held: bool,
+
+    /// Decoded wallpaper thumbnails keyed by absolute path. Lazy
+    /// — first display request decodes + caches, subsequent draws
+    /// reuse. Lives for the picker's lifetime.
+    thumbs: ThumbCache,
 
     commit_on_exit: bool,
 }
@@ -534,23 +548,25 @@ impl Picker {
             color_from_u32(t.border),
         );
 
-        // WALLPAPER row — text chips of filenames for now. Thumbnail
-        // previews (actual image bitmaps decoded from the file into
-        // an SHM buffer) are a B9b.1 follow-up once this layout is
-        // proven to feel right.
+        // WALLPAPER row — image thumbnails (B9b.1). Decoded once
+        // per session and cached in self.thumbs. Each tile is a
+        // fixed THUMB_WIDTH × THUMB_HEIGHT pixmap blitted into
+        // the picker surface; the focused selection gets an accent
+        // border drawn around its tile.
         let wallpaper_row_y = sep2_y + PADDING;
         self.draw_section_label(&mut pixmap, "WALLPAPER", wallpaper_row_y);
 
-        let wallpaper_names: Vec<String> = self
+        let wallpaper_paths: Vec<std::path::PathBuf> = self
             .active_wallpapers()
             .iter()
-            .map(|w| w.file_name.clone())
+            .map(|w| w.path.clone())
             .collect();
-        if wallpaper_names.is_empty() {
+
+        if wallpaper_paths.is_empty() {
             let label_x = PADDING + SECTION_LABEL_WIDTH;
             let label_y = self
                 .text
-                .center_y_offset(wallpaper_row_y as f32 + CHIP_HEIGHT as f32 / 2.0);
+                .center_y_offset(wallpaper_row_y as f32 + THUMB_HEIGHT as f32 / 2.0);
             self.text.draw(
                 &mut pixmap,
                 "(no wallpapers — drop files in themes/<name>/wallpapers/)",
@@ -559,13 +575,11 @@ impl Picker {
                 t.text_muted,
             );
         } else {
-            let wallpaper_refs: Vec<&str> =
-                wallpaper_names.iter().map(|s| s.as_str()).collect();
             let wallpaper_focused = self.focus == Focus::Wallpaper;
             let wallpaper_selected = self.wallpaper_idx;
-            self.draw_chip_row(
+            self.draw_thumbnail_row(
                 &mut pixmap,
-                &wallpaper_refs,
+                &wallpaper_paths,
                 wallpaper_selected,
                 wallpaper_focused,
                 wallpaper_row_y,
@@ -612,6 +626,88 @@ impl Picker {
             label_y,
             t.text_muted,
         );
+    }
+
+    /// Paint a horizontal row of wallpaper thumbnails. Each tile
+    /// is a fixed THUMB_WIDTH × THUMB_HEIGHT pixmap blitted from
+    /// the cache. The focused-section selection gets an accent
+    /// border ring; non-focused selections get a muted ring so
+    /// the user always knows which tile WILL be applied if they
+    /// hit Enter regardless of which row they're navigating.
+    fn draw_thumbnail_row(
+        &mut self,
+        pixmap: &mut Pixmap,
+        paths: &[std::path::PathBuf],
+        selected: usize,
+        section_focused: bool,
+        row_y: i32,
+    ) {
+        use tiny_skia::{PixmapPaint, Transform as TskiaTransform};
+
+        let t = self.theme_colors.clone();
+        let start_x = PADDING + SECTION_LABEL_WIDTH;
+        let mut cursor_x = start_x;
+
+        for (i, path) in paths.iter().enumerate() {
+            let tile_w = THUMB_WIDTH as i32;
+            let tile_h = THUMB_HEIGHT as i32;
+
+            // Bail if the next tile would overflow the picker
+            // surface — horizontal scroll is a B9b.2 nicety.
+            if cursor_x + tile_w > self.width as i32 - PADDING {
+                break;
+            }
+
+            // Background fill (shows through if the thumbnail
+            // hasn't decoded yet or failed to decode).
+            fill_rounded_rect(
+                pixmap,
+                cursor_x as f32,
+                row_y as f32,
+                tile_w as f32,
+                tile_h as f32,
+                6.0,
+                color_from_u32(t.bg),
+            );
+
+            // Decode-and-cache the thumbnail. None means the file
+            // failed to read or decode; we leave the bg fill as
+            // the placeholder.
+            if let Some(thumb) = self.thumbs.get_or_decode(path, THUMB_WIDTH, THUMB_HEIGHT) {
+                pixmap.draw_pixmap(
+                    cursor_x,
+                    row_y,
+                    thumb.as_ref(),
+                    &PixmapPaint::default(),
+                    TskiaTransform::identity(),
+                    None,
+                );
+            }
+
+            // Selection ring — accent if the wallpaper section
+            // currently has focus, muted otherwise.
+            let is_sel = i == selected;
+            if is_sel {
+                let ring_color = if section_focused {
+                    t.accent
+                } else {
+                    t.text_muted
+                };
+                let ring_width: f32 = if section_focused { 2.5 } else { 1.5 };
+                stroke_rounded_rect(
+                    pixmap,
+                    cursor_x as f32 + 0.5,
+                    row_y as f32 + 0.5,
+                    tile_w as f32 - 1.0,
+                    tile_h as f32 - 1.0,
+                    6.0,
+                    color_from_u32(ring_color),
+                    ring_width,
+                );
+            }
+
+            cursor_x += tile_w + CHIP_GAP;
+        }
     }
 
     fn draw_chip_row(

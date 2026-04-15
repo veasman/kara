@@ -1012,6 +1012,39 @@ pub fn run(
         )
         .expect("failed to insert status timer");
 
+    // Wallpaper animation tick — reschedules itself based on
+    // each frame's per-frame delay so still images and slow
+    // GIFs cost nothing while a fast GIF gets accurate frame
+    // pacing. See Wallpaper::tick / Wallpaper::next_frame_due.
+    loop_handle
+        .insert_source(
+            Timer::from_duration(Duration::from_millis(100)),
+            |_deadline, _, state: &mut Gate| {
+                if let Some(ref mut wp) = state.wallpaper {
+                    if wp.tick() {
+                        // Frame advanced — request a redraw on
+                        // every output. The bar_dirty flag is
+                        // the simplest signal the existing
+                        // render scheduler watches; using it
+                        // costs an extra bar redraw per frame
+                        // but bar rendering is cheap (~1 ms)
+                        // and avoids a brand-new "wallpaper
+                        // dirty" plumb through every render
+                        // path right now.
+                        state.bar_dirty = true;
+                    }
+                    let next = wp
+                        .next_frame_due()
+                        .unwrap_or(Duration::from_secs(60))
+                        .max(Duration::from_millis(20));
+                    return TimeoutAction::ToDuration(next);
+                }
+                // No wallpaper → check back in a second.
+                TimeoutAction::ToDuration(Duration::from_secs(1))
+            },
+        )
+        .expect("failed to insert wallpaper animation timer");
+
     // --- 7. Initial render + main loop ---
     for (idx, instance) in output_instances.iter_mut().enumerate() {
         render_frame(instance, &mut gpu_manager, primary_node, &mut state, idx);

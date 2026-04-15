@@ -2,6 +2,7 @@ mod beautify_ipc;
 mod desktop;
 mod filter;
 mod picker;
+mod thumb;
 mod ui;
 
 use smithay_client_toolkit::{
