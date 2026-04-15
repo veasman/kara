@@ -18,14 +18,31 @@
 #   kitty     — writes ~/.local/state/kara/generated/kitty-theme.conf
 #               user's kitty.conf pulls it in with `include`.
 #
-#   foot      — PATCHES ~/.config/foot/foot.ini in place. kara owns
-#               only the [colors-dark] / [colors-light] section's
-#               color keys (alpha/foreground/background/selection-*/
-#               urls/regular0-7/bright0-7). Every other key in the
-#               file is preserved. Foot's `include=` directive isn't
-#               re-read on SIGUSR1 reload, so the include pattern
-#               didn't live-reload — patching the main file directly
-#               is what works with foot's native reload path.
+#   foot      — PATCHES the [colors-dark] / [colors-light] section
+#               of ~/.config/foot/foot.ini in place. kara owns only
+#               the color keys (alpha/foreground/background/
+#               selection-*/urls/regular0-7/bright0-7). Every other
+#               key in the file is preserved.
+#
+#               IMPORTANT: foot has NO config reload mechanism.
+#               foot 1.26's SIGUSR1/SIGUSR2 only toggle between
+#               cached [colors] and [colors2] sections loaded at
+#               server startup — they do not re-read foot.ini from
+#               disk. This means a running `foot --server` will
+#               KEEP SHOWING whatever colors it had at startup
+#               until it is restarted. New footclients connect to
+#               the running server and inherit those cached colors.
+#
+#               So: kara-beautify patches foot.ini on every theme
+#               apply (good for the next `foot --server` launch),
+#               but existing foot sessions stay on the old theme.
+#               Restart foot manually (pkill foot && foot --server &)
+#               when you want to see a theme change take effect.
+#
+#               A `[consumers.foot.reload_strategy] = "restart"`
+#               opt-in is planned once session persistence (item J)
+#               can auto-reattach tmux sessions after the restart.
+#
 #               A human-readable preview is also written to
 #               ~/.local/state/kara/generated/foot-theme.ini for
 #               `kara-beautify render <theme> foot` inspection.

@@ -47,32 +47,28 @@ pub fn reload_kitty() {
     run_shell(r#"pidof kitty >/dev/null 2>&1 && pkill -USR1 -x kitty || true"#);
 }
 
-pub fn reload_foot(dark_mode: bool) {
-    // foot's SIGUSR1/SIGUSR2 are "switch to dark theme" and "switch
-    // to light theme" signals respectively — NOT a config reload.
-    // But a round-trip (switch to the opposite mode then back)
-    // forces foot to re-read the active `[colors-<mode>]` section
-    // from disk, which is effectively our live-reload mechanism.
+pub fn reload_foot(_dark_mode: bool) {
+    // No-op by design. foot 1.26 does NOT have a config reload
+    // mechanism — SIGUSR1/SIGUSR2 are theme-toggle signals that
+    // switch between [colors] and [colors2] sections that foot
+    // CACHED at server startup. They do not re-read foot.ini
+    // from disk. Confirmed by reading foot's CHANGELOG.md and
+    // empirically testing a SIGUSR2 → SIGUSR1 round-trip (the
+    // intermediate mode briefly shows internal defaults but the
+    // final state is foot's cached startup colors, not the
+    // updated file).
     //
-    // Sequence:
-    //   dark theme  → USR2 (light), then USR1 (back to dark)
-    //   light theme → USR1 (dark),  then USR2 (back to light)
+    // kara-beautify still patches foot.ini on every apply so
+    // the NEXT foot --server session picks up the new theme,
+    // but the running server stays on whatever colors it loaded
+    // at its startup until the user restarts `foot --server`.
     //
-    // The intermediate signal briefly switches foot to the "wrong"
-    // mode — if the corresponding [colors-<other>] section isn't
-    // in the config, foot falls back to internal defaults for
-    // ~50ms before we swing back. Small flicker, hard to notice
-    // in practice, and it's the only way to live-reload colors
-    // on foot 1.26 without killing and respawning the server.
-    let (first, second) = if dark_mode {
-        ("USR2", "USR1")
-    } else {
-        ("USR1", "USR2")
-    };
-    let command = format!(
-        r#"pidof foot >/dev/null 2>&1 && pkill -{first} -x foot && sleep 0.05 && pkill -{second} -x foot || true"#
-    );
-    run_shell(&command);
+    // A future [consumers.foot.reload_strategy] = "restart"
+    // opt-in could kill and respawn the foot server on every
+    // apply for real live reload, at the cost of disconnecting
+    // every attached footclient. Deferred until session
+    // persistence (item J in the plan) makes the "reattach my
+    // tmux sessions" part of the cost automatic.
 }
 
 pub fn reload_tmux(theme_path: &Path) {
