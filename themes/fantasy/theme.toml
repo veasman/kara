@@ -21,6 +21,13 @@
 # Name "fantasy" is still a working label; swap freely once final
 # imagery and asset sets are picked.
 
+# GTK / icon theme picks — dark, high-contrast. Placeholder values;
+# swap in a more fantasy-flavored GTK theme (e.g. a custom stone /
+# parchment theme) when one is chosen.
+# (Root-level keys must appear before any [section] header.)
+gtk_theme = "Adwaita-dark"
+icon_theme = "Papirus-Dark"
+
 [meta]
 name = "fantasy"
 author = "kara"
@@ -49,8 +56,51 @@ mono_family = "FiraCode Nerd Font"
 mono_size = 13
 
 [cursor]
-theme = "Bibata-Modern-Classic"
+# Night Diamond pairs with the fantasy palette. AUR:
+# night-diamond-cursor-theme. The installed directory name may vary
+# (`Night-Diamond`, `NightDiamond-Blue`, etc.) — verify with
+# `ls /usr/share/icons` after install and adjust if needed.
+theme = "Night-Diamond"
 size = 24
+
+# ─── Reserved structured slots (no renderer consumes these yet) ────
+# Forward-compatible decoration slots. Per-variant legacy blocks
+# below (`[variants.blood.borders]`, `[variants.blood.sounds]`, etc.)
+# are still parsed via the VariantSpec.extensions opaque map and can
+# coexist with these structured blocks.
+
+[window_border]
+width = 4
+radius = 0
+color_focused = "$accent"
+color_unfocused = "$bg2"
+color_urgent = "$danger"
+[window_border.svg_overlay]
+path = "borders/fantasy-rune-corner.svg"
+anchor = "corner"
+opacity = 1.0
+tint_from_palette = "$accent"
+
+[bar]
+font_family = "FiraCode Nerd Font"
+font_size = 11
+[bar.svg_overlay]
+path = "bar/fantasy-banner.svg"
+mode = "background"
+opacity = 0.9
+
+[sounds]
+theme_name = "freedesktop"
+[sounds.events]
+notify_normal = "message-new-instant.oga"
+notify_critical = "dialog-warning.oga"
+focus = "window-attention.oga"
+
+[animations]
+duration_ms_fast = 140
+duration_ms_normal = 240
+duration_ms_slow = 420
+easing = "ease-out-cubic"
 
 [nvim]
 preset = "semantic"

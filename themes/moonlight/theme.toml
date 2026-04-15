@@ -17,6 +17,12 @@
 # (gitignored). Each variant's `wallpaper = "..."` value is a bare
 # filename resolved against that directory at apply time.
 
+# GTK / icon theme picks — dark, cool-leaning. Override freely.
+# (Root-level keys must appear before any [section] header.)
+gtk_theme = "Adwaita-dark"
+icon_theme = "Papirus-Dark"
+# file_icon_theme defaults to icon_theme when unset
+
 [meta]
 name = "moonlight"
 author = "kara"
@@ -45,8 +51,33 @@ mono_family = "FiraCode Nerd Font"
 mono_size = 13
 
 [cursor]
-theme = "Bibata-Modern-Classic"
+# Nordzy fits the cool moonlight palette. AUR: nordzy-cursors
+# (also nordzy-hyprcursors for Wayland-native clients).
+theme = "Nordzy-cursors"
 size = 24
+
+# ─── Reserved structured slots (no renderer consumes these yet) ────
+# These blocks are schema-only today. They let the theme TOML carry
+# forward-compatible decoration data that future renderers will pick
+# up without requiring a schema migration. Edit freely — unknown
+# renderer behavior is "ignore".
+
+[window_border]
+width = 2
+radius = 6
+color_focused = "$accent"
+color_unfocused = "$bg2"
+color_urgent = "$warning"
+
+[bar]
+font_family = "FiraCode Nerd Font"
+font_size = 11
+
+[animations]
+duration_ms_fast = 120
+duration_ms_normal = 200
+duration_ms_slow = 350
+easing = "ease-out-cubic"
 
 [nvim]
 preset = "semantic"
