@@ -65,12 +65,16 @@ install:
 	install -m 0644 session/kara.desktop "$(DESTDIR)$(DATADIR)/wayland-sessions/kara.desktop"
 	install -d "$(DESTDIR)$(DATADIR)/xdg-desktop-portal"
 	install -m 0644 session/kara-portals.conf "$(DESTDIR)$(DATADIR)/xdg-desktop-portal/kara-portals.conf"
-	# Ship every theme directory under themes/ to /usr/share/kara/themes/
-	# so a fresh install can run `kara-beautify apply default` with no
-	# further setup. kara-beautify's theme search path picks up this
-	# location as its system-level fallback (see KaraPaths::theme_search_paths).
+	# Ship every theme directory under themes/ to $APPDIR/themes/.
+	# We purge the existing themes subdir first so removed-from-repo
+	# themes disappear on upgrade instead of lingering as stale
+	# entries in the theme picker. Any wallpaper (.png/.jpg/.gif/
+	# .mp4/.mkv/.webm/...) is copied verbatim — `find -type f`
+	# doesn't filter by extension so new formats Just Work.
+	rm -rf "$(DESTDIR)$(APPDIR)/themes"
 	@for theme in themes/*/; do \
 		name="$$(basename $$theme)"; \
+		[ -f "$$theme/theme.toml" ] || continue; \
 		install -d "$(DESTDIR)$(APPDIR)/themes/$$name"; \
 		install -m 0644 "$$theme/theme.toml" "$(DESTDIR)$(APPDIR)/themes/$$name/theme.toml"; \
 		if [ -d "$$theme/wallpapers" ]; then \

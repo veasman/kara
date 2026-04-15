@@ -8,7 +8,6 @@ use anyhow::{Result, anyhow};
 /// and used in error messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeSource {
-    User,
     Data,
     Repo,
     System,
@@ -17,7 +16,6 @@ pub enum ThemeSource {
 impl ThemeSource {
     pub fn label(self) -> &'static str {
         match self {
-            ThemeSource::User => "user",
             ThemeSource::Data => "data",
             ThemeSource::Repo => "repo",
             ThemeSource::System => "system",
@@ -65,24 +63,21 @@ impl KaraPaths {
     }
 
     /// Directories searched for theme packages, in priority order.
-    /// First match wins — a theme in `~/.config/kara/themes/` overrides
-    /// one of the same name bundled with the repo or installed system-wide.
+    /// First match wins.
     ///
-    /// Users who want to author their own theme drop a directory into
-    /// `~/.config/kara/themes/<name>/` with a `theme.toml` inside. No
-    /// kara rebuild needed.
+    /// Kara uses two locations:
     ///
-    /// Search order:
-    ///   1. `$XDG_CONFIG_HOME/kara/themes/` — user-authored (highest)
-    ///   2. `$XDG_DATA_HOME/kara/themes/` — installed via theme fetch
-    ///   3. `<repo_root>/themes/` — dev mode when running from source
-    ///   4. `$XDG_DATA_DIRS/kara/themes/` for each entry in $XDG_DATA_DIRS
-    ///      (typically `/usr/local/share:/usr/share`) — system install
+    ///   1. `$XDG_DATA_HOME/kara/themes/` — user-writable (highest).
+    ///      Users drop custom themes here, kara-beautify writes
+    ///      per-user overrides here, and a user copy shadows any
+    ///      same-named system theme.
+    ///   2. `$KARA_SYSTEM_THEMES_DIR` or `/usr/share/kara/themes` or
+    ///      `/usr/local/share/kara/themes` — bundled with the kara
+    ///      install. `make install` ships the repo's themes/ here.
     ///
-    /// Iterating XDG_DATA_DIRS means `make install PREFIX=/usr/local`
-    /// lands themes at `/usr/local/share/kara/themes/` and a
-    /// distribution package that installs to `/usr/share/kara/themes/`
-    /// both work without anyone having to hand-edit search paths.
+    /// Dev mode: if the caller passes a `repo_root`, kara also
+    /// searches `<repo>/themes/` so `cargo run -p kara-gate` picks
+    /// up repo-bundled themes without needing a system install.
     pub fn theme_search_paths(&self, repo_root: Option<&std::path::Path>) -> Vec<PathBuf> {
         self.theme_search_paths_labeled(repo_root)
             .into_iter()
@@ -99,15 +94,16 @@ impl KaraPaths {
     ) -> Vec<(ThemeSource, PathBuf)> {
         let mut out = Vec::new();
 
-        out.push((
-            ThemeSource::User,
-            self.config_home.join("kara").join("themes"),
-        ));
+        // Primary location — the only place kara actually expects
+        // user-visible themes to live.
         out.push((
             ThemeSource::Data,
             self.data_home.join("kara").join("themes"),
         ));
 
+        // Dev fallback — if the caller tells us we're running from a
+        // repo checkout, fall back to the bundled themes so dev
+        // workflows don't need an install step.
         if let Some(root) = repo_root {
             let bundled = root.join("themes");
             if bundled.is_dir() {
@@ -115,16 +111,27 @@ impl KaraPaths {
             }
         }
 
-        let data_dirs = env::var("XDG_DATA_DIRS")
-            .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
-        for dir in data_dirs.split(':') {
-            if dir.is_empty() {
-                continue;
+        // System install — picked up from $KARA_SYSTEM_THEMES_DIR
+        // (so tests and unusual prefixes can override), otherwise
+        // the two common Linux install prefixes. Only the first
+        // one that actually exists is added; we don't want the
+        // picker to show duplicate entries if both /usr/share and
+        // /usr/local/share somehow have content.
+        let system_candidates: Vec<PathBuf> = if let Ok(custom) =
+            std::env::var("KARA_SYSTEM_THEMES_DIR")
+        {
+            vec![PathBuf::from(custom)]
+        } else {
+            vec![
+                PathBuf::from("/usr/share/kara/themes"),
+                PathBuf::from("/usr/local/share/kara/themes"),
+            ]
+        };
+        for p in system_candidates {
+            if p.is_dir() {
+                out.push((ThemeSource::System, p));
+                break;
             }
-            out.push((
-                ThemeSource::System,
-                PathBuf::from(dir).join("kara").join("themes"),
-            ));
         }
 
         out
