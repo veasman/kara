@@ -4,9 +4,10 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use kara_theme::resolve_theme;
 use kara_theme::render::{
-    floorp::render_floorp_user_js, foot::render_foot_theme, fzf::render_fzf_theme,
-    gtk::gtk_settings_pairs, kitty::render_kitty_theme, nvim::render_nvim_theme,
-    session::render_session_theme, tmux::render_tmux_theme,
+    floorp::render_floorp_user_js,
+    foot::{foot_color_pairs, foot_color_section, render_foot_theme},
+    fzf::render_fzf_theme, gtk::gtk_settings_pairs, kitty::render_kitty_theme,
+    nvim::render_nvim_theme, session::render_session_theme, tmux::render_tmux_theme,
     kara_gate::render_kara_gate_theme,
 };
 use kara_theme::ThemeSpec;
@@ -98,7 +99,11 @@ pub fn apply_theme_file(
 
     let kara_gate = render_kara_gate_theme(&resolved);
     let kitty = render_kitty_theme(&resolved);
-    let foot = render_foot_theme(&resolved);
+    let foot_preview = render_foot_theme(&resolved);
+    let foot_section = foot_color_section(&resolved);
+    let foot_pairs = foot_color_pairs(&resolved);
+    let foot_pairs_ref: Vec<(&str, String)> =
+        foot_pairs.iter().map(|(k, v)| (*k, v.clone())).collect();
     let nvim = render_nvim_theme(&resolved);
     let tmux = render_tmux_theme(&resolved);
     let fzf = render_fzf_theme(&resolved);
@@ -129,7 +134,16 @@ pub fn apply_theme_file(
             println!("  would write: {}", paths.kitty_theme_path().display());
         }
         if c.foot {
-            println!("  would write: {}", paths.foot_theme_path().display());
+            println!(
+                "  would patch: {} ([{}], {} keys)",
+                paths.foot_config_path().display(),
+                foot_section,
+                foot_pairs.len()
+            );
+            println!(
+                "  would write: {} (preview / render output)",
+                paths.foot_theme_path().display()
+            );
         }
         if c.nvim {
             println!("  would write: {}", paths.nvim_theme_path().display());
@@ -187,7 +201,20 @@ pub fn apply_theme_file(
         reload_plan.kitty = write_if_changed(&paths.kitty_theme_path(), &kitty)?;
     }
     if c.foot {
-        reload_plan.foot = write_if_changed(&paths.foot_theme_path(), &foot)?;
+        // Patch [colors-dark] / [colors-light] directly into the
+        // user's foot.ini so SIGUSR1 picks up the change live.
+        // See crate::ini_patch::patch_ini_section; same pattern as
+        // GTK settings.ini. Non-color keys in that section (if any)
+        // are preserved. Trigger the foot reload only if the patch
+        // actually changed something — idempotent re-applies don't
+        // spam signals.
+        let foot_changed =
+            patch_ini_section(&paths.foot_config_path(), foot_section, &foot_pairs_ref)?;
+        // Keep writing the preview file to the state dir so
+        // `kara-beautify render foot` and manual inspection still
+        // work. Not on the reload path anymore.
+        let _ = write_if_changed(&paths.foot_theme_path(), &foot_preview)?;
+        reload_plan.foot = foot_changed;
     }
     if c.nvim {
         reload_plan.nvim = write_if_changed(&paths.nvim_theme_path(), &nvim)?;

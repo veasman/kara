@@ -203,6 +203,14 @@ impl KaraPaths {
         self.generated_dir().join("foot-theme.ini")
     }
 
+    /// User's main foot config. kara-beautify patches the
+    /// [colors-dark] / [colors-light] section here in place via
+    /// ini_patch, because foot's `include=` directive is not
+    /// re-read on SIGUSR1 reload. Same pattern as GTK settings.ini.
+    pub fn foot_config_path(&self) -> PathBuf {
+        self.config_home.join("foot").join("foot.ini")
+    }
+
     /// Root of the Floorp profile tree. Currently hardcoded to
     /// `~/.floorp` — future work may support profile_path override
     /// from kara-beautify.toml for users with a non-default install.
