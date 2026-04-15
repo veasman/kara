@@ -1135,6 +1135,29 @@ pub fn run(
         if !state.running {
             tracing::info!("shutting down");
             kara_ipc::server::cleanup_socket();
+
+            // Pause every DrmDevice before the Drop impls run. Pausing
+            // clears each device's internal "active" flag, which makes
+            // smithay's Drop skip its best-effort state restore — that
+            // restore tries to issue an atomic commit with
+            // ALLOW_MODESET and fails EACCES here because kara was
+            // opened in unprivileged mode (see `Unable to become drm
+            // master, assuming unprivileged mode` warnings earlier in
+            // the log), which in turn leaves the DisplayLink/evdi
+            // devices wedged until the user re-runs their
+            // `displaylink-setup.sh`. Skipping the doomed restore lets
+            // the kernel / DisplayLinkManager daemon hand the panels
+            // back to getty cleanly on its own.
+            //
+            // Dropping output_instances first forces any DrmCompositor
+            // / DrmSurface drops to run while the devices are still
+            // around (their own Drop impls are quieter once their
+            // parent device is paused).
+            drop(output_instances);
+            for entry in devices.values_mut() {
+                entry.drm_device.pause();
+            }
+
             break;
         }
 
