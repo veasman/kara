@@ -369,39 +369,39 @@ fn theme_wallpapers_dir(repo_root: &Path, paths: &KaraPaths, theme_name: &str) -
 }
 
 fn list_themes(repo_root: &Path, paths: &KaraPaths) -> Result<()> {
+    use crate::state::paths::ThemeSource;
     use std::collections::BTreeMap;
-    // theme name → (search-path index, absolute dir). Lower index wins.
-    let mut seen: BTreeMap<String, (usize, PathBuf)> = BTreeMap::new();
+    // theme name → (priority, source, absolute dir). Lower priority wins.
+    let mut seen: BTreeMap<String, (usize, ThemeSource, PathBuf)> = BTreeMap::new();
 
-    for (idx, base) in paths.theme_search_paths(Some(repo_root)).iter().enumerate() {
+    for (idx, (source, base)) in paths
+        .theme_search_paths_labeled(Some(repo_root))
+        .into_iter()
+        .enumerate()
+    {
         if !base.is_dir() {
             continue;
         }
-        for entry in fs::read_dir(base)? {
+        for entry in fs::read_dir(&base)? {
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() && path.join("theme.toml").is_file() {
                 let name = entry.file_name().to_string_lossy().to_string();
                 seen.entry(name)
-                    .and_modify(|(existing_idx, existing_path)| {
+                    .and_modify(|(existing_idx, existing_source, existing_path)| {
                         if idx < *existing_idx {
                             *existing_idx = idx;
+                            *existing_source = source;
                             *existing_path = path.clone();
                         }
                     })
-                    .or_insert((idx, path));
+                    .or_insert((idx, source, path));
             }
         }
     }
 
-    for (name, (idx, path)) in seen {
-        let source = match idx {
-            0 => "user",
-            1 => "data",
-            2 => "repo",
-            _ => "system",
-        };
-        println!("{name:<16} [{source}] {}", path.display());
+    for (name, (_, source, path)) in seen {
+        println!("{name:<16} [{}] {}", source.label(), path.display());
     }
 
     Ok(())

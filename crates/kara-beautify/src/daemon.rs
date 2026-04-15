@@ -141,15 +141,15 @@ fn handle_get_state(s: &DaemonState) -> Result<Response> {
 }
 
 fn handle_list_themes(s: &DaemonState) -> Result<Response> {
-    let search = s.paths.theme_search_paths(Some(&s.repo_root));
+    let search = s.paths.theme_search_paths_labeled(Some(&s.repo_root));
     let mut entries: Vec<ThemeEntry> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = Default::default();
 
-    for (idx, base) in search.iter().enumerate() {
+    for (source, base) in search {
         if !base.is_dir() {
             continue;
         }
-        for entry in fs::read_dir(base)? {
+        for entry in fs::read_dir(&base)? {
             let entry = entry?;
             let path = entry.path();
             let manifest = path.join("theme.toml");
@@ -171,12 +171,7 @@ fn handle_list_themes(s: &DaemonState) -> Result<Response> {
                 author: spec.meta.author.clone(),
                 default_variant: spec.meta.default_variant.clone(),
                 variant_count: spec.variants.len(),
-                source: match idx {
-                    0 => "user".to_string(),
-                    1 => "data".to_string(),
-                    2 => "repo".to_string(),
-                    _ => "system".to_string(),
-                },
+                source: source.label().to_string(),
             });
         }
     }

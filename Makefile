@@ -65,6 +65,20 @@ install:
 	install -m 0644 session/kara.desktop "$(DESTDIR)$(DATADIR)/wayland-sessions/kara.desktop"
 	install -d "$(DESTDIR)$(DATADIR)/xdg-desktop-portal"
 	install -m 0644 session/kara-portals.conf "$(DESTDIR)$(DATADIR)/xdg-desktop-portal/kara-portals.conf"
+	# Ship every theme directory under themes/ to /usr/share/kara/themes/
+	# so a fresh install can run `kara-beautify apply default` with no
+	# further setup. kara-beautify's theme search path picks up this
+	# location as its system-level fallback (see KaraPaths::theme_search_paths).
+	@for theme in themes/*/; do \
+		name="$$(basename $$theme)"; \
+		install -d "$(DESTDIR)$(APPDIR)/themes/$$name"; \
+		install -m 0644 "$$theme/theme.toml" "$(DESTDIR)$(APPDIR)/themes/$$name/theme.toml"; \
+		if [ -d "$$theme/wallpapers" ]; then \
+			install -d "$(DESTDIR)$(APPDIR)/themes/$$name/wallpapers"; \
+			find "$$theme/wallpapers" -maxdepth 1 -type f \
+				-exec install -m 0644 {} "$(DESTDIR)$(APPDIR)/themes/$$name/wallpapers/" \; ; \
+		fi; \
+	done
 	install -d "$(DESTDIR)$(DATADIR)/licenses/kara"
 	install -m 0644 LICENSE "$(DESTDIR)$(DATADIR)/licenses/kara/LICENSE"
 	@mkdir -p "$(HOME)/.config/kara"

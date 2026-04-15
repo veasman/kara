@@ -4,6 +4,27 @@ use std::path::PathBuf;
 
 use anyhow::{Result, anyhow};
 
+/// Where a theme came from in the search path. Printed by `list`
+/// and used in error messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeSource {
+    User,
+    Data,
+    Repo,
+    System,
+}
+
+impl ThemeSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemeSource::User => "user",
+            ThemeSource::Data => "data",
+            ThemeSource::Repo => "repo",
+            ThemeSource::System => "system",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct KaraPaths {
@@ -50,22 +71,61 @@ impl KaraPaths {
     /// Users who want to author their own theme drop a directory into
     /// `~/.config/kara/themes/<name>/` with a `theme.toml` inside. No
     /// kara rebuild needed.
+    ///
+    /// Search order:
+    ///   1. `$XDG_CONFIG_HOME/kara/themes/` — user-authored (highest)
+    ///   2. `$XDG_DATA_HOME/kara/themes/` — installed via theme fetch
+    ///   3. `<repo_root>/themes/` — dev mode when running from source
+    ///   4. `$XDG_DATA_DIRS/kara/themes/` for each entry in $XDG_DATA_DIRS
+    ///      (typically `/usr/local/share:/usr/share`) — system install
+    ///
+    /// Iterating XDG_DATA_DIRS means `make install PREFIX=/usr/local`
+    /// lands themes at `/usr/local/share/kara/themes/` and a
+    /// distribution package that installs to `/usr/share/kara/themes/`
+    /// both work without anyone having to hand-edit search paths.
     pub fn theme_search_paths(&self, repo_root: Option<&std::path::Path>) -> Vec<PathBuf> {
+        self.theme_search_paths_labeled(repo_root)
+            .into_iter()
+            .map(|(_, p)| p)
+            .collect()
+    }
+
+    /// Same as `theme_search_paths` but each entry is tagged with its
+    /// source label. Used by `list` to print where each theme comes
+    /// from and by log/error messages.
+    pub fn theme_search_paths_labeled(
+        &self,
+        repo_root: Option<&std::path::Path>,
+    ) -> Vec<(ThemeSource, PathBuf)> {
         let mut out = Vec::new();
 
-        // 1. User config: ~/.config/kara/themes/
-        out.push(self.config_home.join("kara").join("themes"));
+        out.push((
+            ThemeSource::User,
+            self.config_home.join("kara").join("themes"),
+        ));
+        out.push((
+            ThemeSource::Data,
+            self.data_home.join("kara").join("themes"),
+        ));
 
-        // 2. User data: ~/.local/share/kara/themes/
-        out.push(self.data_home.join("kara").join("themes"));
-
-        // 3. Repo-bundled (dev mode): <repo_root>/themes/
         if let Some(root) = repo_root {
-            out.push(root.join("themes"));
+            let bundled = root.join("themes");
+            if bundled.is_dir() {
+                out.push((ThemeSource::Repo, bundled));
+            }
         }
 
-        // 4. System install: /usr/share/kara/themes/
-        out.push(PathBuf::from("/usr/share/kara/themes"));
+        let data_dirs = env::var("XDG_DATA_DIRS")
+            .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
+        for dir in data_dirs.split(':') {
+            if dir.is_empty() {
+                continue;
+            }
+            out.push((
+                ThemeSource::System,
+                PathBuf::from(dir).join("kara").join("themes"),
+            ));
+        }
 
         out
     }
