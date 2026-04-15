@@ -387,21 +387,40 @@ impl Gate {
         // scrolls — without it the browser's internal delta computes to 0
         // and page scrolling silently breaks. The old `if / else if` meant
         // kara sent one or the other but never both.
-        if let Some(amount) = event.amount(Axis::Horizontal) {
+        let h_amount = event.amount(Axis::Horizontal);
+        let v_amount = event.amount(Axis::Vertical);
+        let h_v120 = event.amount_v120(Axis::Horizontal);
+        let v_v120 = event.amount_v120(Axis::Vertical);
+
+        if let Some(amount) = h_amount {
             frame = frame.value(Axis::Horizontal, amount);
         }
-        if let Some(discrete) = event.amount_v120(Axis::Horizontal) {
+        if let Some(discrete) = h_v120 {
             frame = frame.v120(Axis::Horizontal, discrete as i32);
         }
 
-        if let Some(amount) = event.amount(Axis::Vertical) {
+        if let Some(amount) = v_amount {
             frame = frame.value(Axis::Vertical, amount);
         }
-        if let Some(discrete) = event.amount_v120(Axis::Vertical) {
+        if let Some(discrete) = v_v120 {
             frame = frame.v120(Axis::Vertical, discrete as i32);
         }
 
-        frame = frame.source(event.source());
+        let source = event.source();
+        frame = frame.source(source);
+
+        // Diagnostic for Floorp scroll overshoot. Logs one line per axis
+        // event so we can compare raw libinput frame count against client
+        // observations. Drop once root cause is found.
+        tracing::debug!(
+            target: "kara_gate::input::axis",
+            ?source,
+            h_amount = ?h_amount,
+            v_amount = ?v_amount,
+            h_v120 = ?h_v120,
+            v_v120 = ?v_v120,
+            "pointer axis frame"
+        );
 
         pointer.axis(self, frame);
         pointer.frame(self);
