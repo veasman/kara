@@ -317,22 +317,63 @@ impl Default for CursorSpec {
     }
 }
 
-/// SVG overlay reference used across every visible kara surface that
-/// can draw custom decoration artwork — window borders, bar background,
-/// notifications, launcher, lock screen. Reserved slot: no renderer
-/// consumes this yet; theme TOMLs can carry it so future renderer
-/// sessions slot in without touching the schema.
+/// Decorative SVG artwork anchored at a point on a surface — used for
+/// corner glyphs, notification accent art, launcher logos, etc. Not
+/// tiled or stretched across an edge. For repeating edge patterns use
+/// `SvgTileSpec` instead. Reserved slot: no renderer yet.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SvgOverlaySpec {
     pub path: String,
     /// How the SVG is placed relative to the surface it decorates.
-    /// Interpretation is renderer-specific.
+    /// Interpretation is renderer-specific. Common values: `"corner"`,
+    /// `"edge"`, `"full"`.
     #[serde(default)]
     pub anchor: Option<String>,
     /// Draw mode hint for renderers that support multiple layering
     /// modes (e.g. `"background"`, `"accent"`, `"frame"`).
     #[serde(default)]
     pub mode: Option<String>,
+    #[serde(default)]
+    pub opacity: Option<f32>,
+    /// Optional palette-key reference for renderer tinting
+    /// (e.g. `"$accent"`). Resolved lazily by each consumer.
+    #[serde(default)]
+    pub tint_from_palette: Option<String>,
+}
+
+/// Tileable SVG graphic used in place of a solid-color border or
+/// background. The renderer rasterizes the SVG once per tile size and
+/// repeats (or 9-slices) it around the target surface. Used by window
+/// borders and bar backgrounds / outlines / module surfaces.
+///
+/// **Reserved slot — no renderer consumes this yet.** When the SVG
+/// rasterizer lands (planned: add `resvg` crate, per-size pixmap cache,
+/// TextureBuffer element wrapping each tile), this spec becomes the
+/// wire format. Until then, theme TOMLs can carry it and solid-color
+/// fallbacks apply.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SvgTileSpec {
+    /// Path to the .svg file. Relative paths are resolved against the
+    /// theme's directory (e.g. `themes/fantasy/borders/tile.svg`).
+    pub path: String,
+    /// Tile width in logical pixels. Controls how often the pattern
+    /// repeats along the horizontal edge.
+    #[serde(default)]
+    pub tile_width: Option<u16>,
+    /// Tile height in logical pixels.
+    #[serde(default)]
+    pub tile_height: Option<u16>,
+    /// How to fill the target surface: `"repeat"` (default — tiles
+    /// repeat across the edge), `"stretch"` (single copy stretched to
+    /// fit), `"nine_slice"` (9-slice border with the `slice_px` inset
+    /// below treated as corner/edge regions).
+    #[serde(default)]
+    pub edge_mode: Option<String>,
+    /// Inset in pixels for 9-slice rendering — the distance from each
+    /// edge of the SVG that forms the corner region. Ignored unless
+    /// `edge_mode = "nine_slice"`.
+    #[serde(default)]
+    pub slice_px: Option<u16>,
     #[serde(default)]
     pub opacity: Option<f32>,
     /// Optional palette-key reference for renderer tinting
@@ -353,9 +394,17 @@ pub struct WindowBorderSpec {
     pub color_unfocused: Option<String>,
     #[serde(default)]
     pub color_urgent: Option<String>,
-    /// Reserved slot for per-theme border SVG artwork. No renderer yet.
+    /// Decorative overlay artwork (corner glyphs, etc). Reserved slot,
+    /// no renderer yet.
     #[serde(default)]
     pub svg_overlay: Option<SvgOverlaySpec>,
+    /// Repeating SVG tile that replaces the solid-color border edges.
+    /// When set, the compositor draws the SVG around the window in
+    /// place of the `color_focused` / `color_unfocused` fill. Reserved
+    /// slot — needs the SVG rasterizer renderer; until then the
+    /// compositor falls back to the solid colors above.
+    #[serde(default)]
+    pub svg_tile: Option<SvgTileSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -374,8 +423,32 @@ pub struct BarStyleSpec {
     pub module_fg: Option<String>,
     #[serde(default)]
     pub module_bg: Option<String>,
+    /// Outline color drawn around the bar itself (when non-zero
+    /// outline width is configured).
+    #[serde(default)]
+    pub outline_color: Option<String>,
+    /// Outline color drawn around each module pill.
+    #[serde(default)]
+    pub module_outline_color: Option<String>,
+    /// Decorative overlay artwork positioned on the bar. Reserved.
     #[serde(default)]
     pub svg_overlay: Option<SvgOverlaySpec>,
+    /// Tileable SVG that replaces the bar's solid background fill.
+    /// Reserved slot — needs the SVG rasterizer.
+    #[serde(default)]
+    pub background_svg: Option<SvgTileSpec>,
+    /// Tileable SVG drawn as the bar's outer frame/outline.
+    /// Reserved slot.
+    #[serde(default)]
+    pub outline_svg: Option<SvgTileSpec>,
+    /// Tileable SVG used as the background of each module pill.
+    /// Reserved slot.
+    #[serde(default)]
+    pub module_background_svg: Option<SvgTileSpec>,
+    /// Tileable SVG drawn as the outline of each module pill.
+    /// Reserved slot.
+    #[serde(default)]
+    pub module_outline_svg: Option<SvgTileSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

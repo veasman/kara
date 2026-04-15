@@ -112,6 +112,8 @@ pub fn resolve_theme(spec: &ThemeSpec, variant: Option<&str>) -> Result<Resolved
         gtk_theme_override: spec.gtk_theme.clone(),
         icon_theme_override: spec.icon_theme.clone(),
         file_icon_theme_override: spec.file_icon_theme.clone(),
+        window_border: spec.window_border.clone(),
+        bar: spec.bar.clone(),
         variant_preset: matched_preset,
     })
 }

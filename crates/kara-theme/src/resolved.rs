@@ -1,5 +1,5 @@
 use kara_color::Color;
-use crate::{CursorSpec, Density, FontSpec, NvimPreset, SurfaceStyle, UiMode};
+use crate::{CursorSpec, Density, FontSpec, NvimPreset, SurfaceStyle, UiMode, WindowBorderSpec, BarStyleSpec};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SemanticColors {
@@ -70,6 +70,14 @@ pub struct ResolvedTheme {
     /// `icon_theme_override` when unset — most users pick one theme
     /// that covers both.
     pub file_icon_theme_override: Option<String>,
+    /// Theme-driven window border settings. When present, the kara-gate
+    /// renderer emits `general { border_px border_radius }` and
+    /// `theme { accent border }` keys derived from this spec, overriding
+    /// whatever the user's static config had.
+    pub window_border: Option<WindowBorderSpec>,
+    /// Theme-driven bar settings. Reserved — kara-sight renderer will
+    /// consume these once module config cleanup lands.
+    pub bar: Option<BarStyleSpec>,
     /// The preset key that materialized this theme's semantic palette.
     /// One of "gruvbox", "vague", "nord", ... or None for the
     /// derive-from-primary path. Lets downstream renderers dispatch to
@@ -123,5 +131,43 @@ impl ResolvedTheme {
             UiMode::Light => "prefer-light",
             UiMode::Dark | UiMode::Auto => "prefer-dark",
         }
+    }
+
+    /// Resolve a palette-reference string to a concrete hex color.
+    ///
+    /// Accepts three forms:
+    ///   * `"$accent"` / `"$bg2"` / etc — looked up in `semantic`
+    ///   * `"#1a2b3c"` or `"1a2b3c"` — returned as lowercase hex
+    ///   * anything else — returned unchanged (caller decides whether
+    ///     to accept it)
+    ///
+    /// Returned strings are **without** a leading `#` so callers can
+    /// prefix as needed (kara-gate uses `0x…`, CSS uses `#…`).
+    pub fn resolve_palette_ref(&self, input: &str) -> String {
+        if let Some(key) = input.strip_prefix('$') {
+            let c = &self.semantic;
+            let color = match key {
+                "bg" | "bg0" => c.bg0,
+                "bg1" | "surface" => c.bg1,
+                "bg2" | "bg_alt" | "bg_dim" => c.bg2,
+                "fg" | "fg0" | "text" => c.fg0,
+                "fg1" => c.fg1,
+                "fg_muted" | "text_muted" => c.fg_muted,
+                "accent" => c.accent,
+                "accent_soft" => c.accent_soft,
+                "accent_contrast" => c.accent_contrast,
+                "border" | "border_subtle" => c.border_subtle,
+                "border_strong" => c.border_strong,
+                "selection_bg" => c.selection_bg,
+                "selection_fg" => c.selection_fg,
+                "success" => c.success,
+                "warning" => c.warning,
+                "danger" | "red" => c.danger,
+                "info" => c.info,
+                _ => return input.trim_start_matches('#').to_ascii_lowercase(),
+            };
+            return color.to_hex().trim_start_matches('#').to_ascii_lowercase();
+        }
+        input.trim_start_matches('#').to_ascii_lowercase()
     }
 }
