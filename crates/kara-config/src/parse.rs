@@ -607,6 +607,11 @@ fn parse_scratchpad_line(tokens: &[String], scratch: &mut ScratchpadConfig, ctx:
             }
         }
         "blur" => scratch.blur = parse_bool(val).unwrap_or(false),
+        "blur_passes" => {
+            if let Ok(v) = val.parse::<u32>() {
+                scratch.blur_passes = v.clamp(1, 5);
+            }
+        }
         "overlay" => scratch.overlay = Some(val.clone()),
         "autostart" => scratch.autostart.push(val.clone()),
         "capture" => {

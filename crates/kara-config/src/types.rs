@@ -297,6 +297,11 @@ pub struct ScratchpadConfig {
     pub gap_px: i32,
     pub dim_alpha: i32,
     pub blur: bool,
+    /// Number of Gaussian blur iterations applied to the scratchpad
+    /// backdrop at 1/4 resolution. Higher = softer, smoother blur at
+    /// cost of a few extra render passes. Clamped to 1..=5 at render
+    /// time. Default 2. Ignored when `blur = false`.
+    pub blur_passes: u32,
     pub overlay: Option<String>,
     /// Commands to spawn the first time the scratchpad is toggled
     /// visible (and again after it goes empty via auto-hide). Each
@@ -313,6 +318,7 @@ impl ScratchpadConfig {
             gap_px: 30,
             dim_alpha: 48,
             blur: false,
+            blur_passes: 2,
             overlay: None,
             autostart: Vec::new(),
             captures: Vec::new(),

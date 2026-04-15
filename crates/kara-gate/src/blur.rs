@@ -110,32 +110,52 @@ impl Default for BlurProgram {
 ///
 /// Allocated eagerly for non-rotated outputs (rotated outputs skip blur),
 /// because the pong dmabuf needs `primary_gbm` which is only in scope at
-/// init. The intermediate GlesTextures are allocated lazily on the first
-/// blur-enabled frame so outputs that never see a blurred scratchpad
-/// never pay the renderer-side texture cost.
+/// init. The intermediate GlesTexture is allocated lazily on the first
+/// blur-enabled frame.
+///
+/// **Full resolution throughout**. Earlier revisions tried a 1/4 and
+/// then a 1/2 downsample-then-upsample round trip to widen the
+/// effective Gaussian kernel cheaply, but bilinear upsample from a
+/// downsampled buffer produces visible block artifacts on
+/// high-frequency wallpaper content (tree branches, text) that reads
+/// as "boxes" rather than "smooth blur". Working at full res with a
+/// modest 9-tap separable Gaussian per iteration gives clean soft
+/// blur at the cost of ~2–5 ms GPU time for a few iterations, which
+/// is well within frame budget.
+///
+/// Radius range:
+///   - `blur_passes = 1`: 1 iter → ~6 px effective radius (very soft)
+///   - `blur_passes = 5`: 5 iter → ~13 px (mild-moderate)
+///
+/// If heavier blur is wanted later, a second knob like `blur_scale`
+/// could reintroduce downsampling with more care around block artifacts
+/// (likely needs a multi-level dual-kawase pyramid rather than a single
+/// 2× or 4× step).
 pub struct BlurState {
-    /// Final blur target. Render target for the vertical pass. Lives as a
-    /// GBM dmabuf because kara's main render element type wraps
-    /// `MultiTexture`, and the only way to get a `MultiTexture` from a
-    /// self-rendered texture is to round-trip through dmabuf+import.
+    /// Final blur target. Lives as a GBM dmabuf because kara's main
+    /// render element type wraps `MultiTexture`, and the only way to
+    /// get a `MultiTexture` from a self-rendered texture is to
+    /// round-trip through dmabuf+import.
     pub pong_dmabuf: Dmabuf,
-    /// Physical pixel size of every buffer in this BlurState — backdrop,
-    /// ping, and pong all match. Equals the output's scanout size at init;
-    /// if the output resizes we currently keep using the old size until
-    /// next kara-gate restart (M2 doesn't handle live resize).
+    /// Full physical pixel size of the output. Every buffer in this
+    /// BlurState matches this size.
     pub size: Size<i32, Physical>,
-    /// Scratch texture: captures the backdrop element subset each frame.
-    /// Read by the horizontal pass. Allocated on first use.
+    /// Captures the backdrop element subset each frame via the
+    /// MultiRenderer frame path. Also serves as the ping-pong partner
+    /// for the Gaussian vertical pass after iteration 0 (the original
+    /// captured content is only read by iter 0's horizontal pass and
+    /// can be safely overwritten afterwards). Allocated on first use.
     pub backdrop: Option<GlesTexture>,
-    /// Scratch texture: horizontal pass output, vertical pass input.
-    /// Allocated on first use.
-    pub ping: Option<GlesTexture>,
+    /// Scratch texture — horizontal-pass destination + vertical-pass
+    /// source. Allocated on first use.
+    pub scratch: Option<GlesTexture>,
 }
 
 impl BlurState {
-    /// Allocate the persistent pong dmabuf from primary_gbm. Called at
-    /// OutputInstance construction time. Returns `None` on allocation
-    /// failure — blur gracefully degrades for that output.
+    /// Allocate the persistent pong dmabuf from primary_gbm at the
+    /// output's full physical size. Called at OutputInstance
+    /// construction time. Returns `None` on allocation failure — blur
+    /// gracefully degrades for that output.
     pub fn try_new(
         gbm: &GbmDevice<DrmDeviceFd>,
         size: Size<i32, Physical>,
@@ -152,7 +172,10 @@ impl BlurState {
         ) {
             Ok(b) => b,
             Err(e) => {
-                tracing::warn!("blur: pong allocation failed ({}x{}): {e:?}", size.w, size.h);
+                tracing::warn!(
+                    "blur: pong allocation failed ({}x{}): {e:?}",
+                    size.w, size.h,
+                );
                 return None;
             }
         };
@@ -167,7 +190,7 @@ impl BlurState {
             pong_dmabuf: dmabuf,
             size,
             backdrop: None,
-            ping: None,
+            scratch: None,
         })
     }
 }
