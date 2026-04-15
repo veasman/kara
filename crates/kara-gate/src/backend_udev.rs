@@ -191,6 +191,55 @@ struct OutputInstance {
     /// import on an evdi output under load.
     render_errors: u64,
     queue_errors: u64,
+    /// Present when kara is rendering this output via the two-pass
+    /// rotation path (bypassing smithay's broken rotated-render code
+    /// path). See [`TwoPassState`] and `render_frame_two_pass`.
+    two_pass: Option<TwoPassState>,
+}
+
+/// Per-output state for kara's two-pass rotation render.
+///
+/// **Why this exists**: smithay 0.7 + this repo's evdi hybrid-swapchain
+/// setup clips half the physical framebuffer when the Output has a
+/// non-Normal transform (see `session_2026_04_15_rotation_bug` memory
+/// note for the full investigation). Rather than try to fix smithay
+/// from the outside, kara does the rotation itself:
+///
+///   1. Allocate an offscreen `GlesTexture` at the **portrait** logical
+///      size (e.g. 1080x1920 for a `rotate right` 1920x1080 panel).
+///   2. Each frame, render all kara elements (wallpaper, bar, borders,
+///      windows, cursor, layer surfaces) into that texture with
+///      `Transform::Normal` — a plain un-rotated portrait render.
+///   3. Wrap the offscreen texture in a single `TextureRenderElement`
+///      with element `transform = rotation`, covering the full
+///      **landscape** scanout buffer.
+///   4. Hand that single element to the output's `DrmCompositor`, which
+///      was constructed with `OutputModeSource::Static { transform:
+///      Normal, .. }` so its damage tracker runs landscape-only and
+///      never hits the broken rotated path.
+///
+/// The Output object itself still carries the real `Transform::_90`
+/// (etc) transform so `wl_output.transform` advertising and
+/// `Space::output_geometry` both stay portrait, which means kara's
+/// layout, workarea, input handling, and client-side buffer rotation
+/// all Just Work without further changes.
+struct TwoPassState {
+    /// Persistent offscreen render target. Allocated from primary_gbm
+    /// as a Linear Abgr8888 buffer at portrait dimensions and exported
+    /// as a Dmabuf once — the Dmabuf is both the bind target for
+    /// Phase A (portrait-space render) and gets imported as a
+    /// `MultiTexture` each frame for Phase B (landscape blit).
+    dmabuf: smithay::backend::allocator::dmabuf::Dmabuf,
+    /// Portrait dimensions of `dmabuf` in physical pixels (e.g.
+    /// 1080x1920). Matches `state.outputs[idx].size` for this output.
+    portrait_size: Size<i32, Physical>,
+    /// Landscape (DRM mode) dimensions of the scanout buffer this
+    /// offscreen eventually blits into.
+    landscape_size: Size<i32, Physical>,
+    /// The real configured rotation transform — applied as the
+    /// element transform on the single `TextureRenderElement` that
+    /// wraps `offscreen` in the landscape blit pass.
+    rotation: Transform,
 }
 
 /// Per-GPU runtime state. Every DRM device kara can see is opened and stashed
@@ -517,15 +566,16 @@ pub fn run(
             refresh: (drm_mode.vrefresh() * 1000) as i32,
         };
 
-        // Resolve the user's rotation config and convert to a smithay
-        // Transform. The transform is what the compositor applies when it
-        // composites elements onto the output's framebuffer; the underlying
-        // DRM mode is still the unrotated physical resolution.
+        // Resolve the user's rotation config. `transform` is what we hand
+        // to `Output::change_current_state` (drives wl_output advertising
+        // + `Space::output_geometry`). `two_pass` flags whether this
+        // output should render via kara's offscreen two-pass path (which
+        // bypasses smithay's rotated render — see `ROTATION_TWO_PASS`).
         let mon_rotation = mon_config
             .as_ref()
             .map(|mc| mc.rotation)
             .unwrap_or(kara_config::MonitorRotation::Normal);
-        let transform = monitor_rotation_to_transform(mon_rotation);
+        let (transform, two_pass) = resolve_rotation(mon_rotation);
 
         // For 90°/270° rotations the OUTPUT's logical (user-facing) size is
         // the mode size with width/height swapped — a 1920x1080 panel in
@@ -587,8 +637,28 @@ pub fn run(
         );
         let gbm_exporter = GbmFramebufferExporter::new(primary_gbm.clone(), None);
 
+        // Build the mode source for this output's DrmCompositor. For the
+        // two-pass rotation path we pin it to Static(landscape, Normal) so
+        // smithay's damage tracker never sees a rotated output (which is
+        // the path that clips half the framebuffer on this repo's
+        // AMD+evdi hybrid swapchain). For non-rotated outputs we pass the
+        // Output directly and let Auto tracking run as before.
+        let landscape_size: Size<i32, Physical> =
+            Size::from((mode_size.0 as i32, mode_size.1 as i32));
+        let portrait_size: Size<i32, Physical> =
+            Size::from((logical_size.0, logical_size.1));
+        let mode_source = if two_pass {
+            smithay::output::OutputModeSource::Static {
+                size: landscape_size,
+                scale: smithay::utils::Scale::from(1.0),
+                transform: Transform::Normal,
+            }
+        } else {
+            smithay::output::OutputModeSource::Auto(output.clone())
+        };
+
         let drm_compositor = match DrmCompositor::new(
-            &output,
+            mode_source,
             drm_surface,
             None,
             gbm_allocator,
@@ -608,10 +678,47 @@ pub fn run(
             }
         };
 
+        // Two-pass rotation: allocate a persistent Dmabuf from the
+        // primary GBM device at portrait dimensions. Reused as the
+        // bind target for the per-frame portrait render, and re-
+        // imported as a MultiTexture each frame for the landscape
+        // blit pass.
+        let two_pass_state = if two_pass {
+            use smithay::backend::allocator::{dmabuf::AsDmabuf, Allocator, Fourcc, Modifier};
+            let mut allocator = GbmAllocator::new(
+                primary_gbm.clone(),
+                GbmBufferFlags::RENDERING,
+            );
+            match allocator
+                .create_buffer(
+                    portrait_size.w as u32,
+                    portrait_size.h as u32,
+                    Fourcc::Abgr8888,
+                    &[Modifier::Linear],
+                )
+                .and_then(|buffer| buffer.export().map_err(std::io::Error::other))
+            {
+                Ok(dmabuf) => Some(TwoPassState {
+                    dmabuf,
+                    portrait_size,
+                    landscape_size,
+                    rotation: config_rotation_transform(mon_rotation),
+                }),
+                Err(e) => {
+                    tracing::error!(
+                        "two-pass: offscreen dmabuf alloc failed for {output_name}: {e:?}"
+                    );
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+
         tracing::info!(
-            "output {output_name}: {}x{}@{}Hz at pos=({},{}) crtc={:?}",
+            "output {output_name}: {}x{}@{}Hz at pos=({},{}) crtc={:?} two_pass={}",
             mode_size.0, mode_size.1, drm_mode.vrefresh(),
-            mon_position.0, mon_position.1, crtc_handle
+            mon_position.0, mon_position.1, crtc_handle, two_pass
         );
 
         output_instances.push(OutputInstance {
@@ -622,6 +729,7 @@ pub fn run(
             frame_pending: false,
             render_errors: 0,
             queue_errors: 0,
+            two_pass: two_pass_state,
         });
 
         x_offset += mode_size.0 as i32;
@@ -767,7 +875,7 @@ pub fn run(
                 .as_ref()
                 .map(|mc| mc.rotation)
                 .unwrap_or(kara_config::MonitorRotation::Normal);
-            let transform = monitor_rotation_to_transform(mon_rotation);
+            let (transform, two_pass) = resolve_rotation(mon_rotation);
             let logical_size = if matches!(transform,
                 Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270)
             {
@@ -853,11 +961,31 @@ pub fn run(
             );
             let gbm_exporter = GbmFramebufferExporter::new(evdi_gbm.clone(), None);
 
+            // Same two-pass branch as the primary loop — see the matching
+            // comment there. For rotated evdi outputs we pin the
+            // DrmCompositor's mode source to Static(landscape, Normal) so
+            // smithay's damage tracker never runs rotated (the broken
+            // path), and kara handles rotation via the offscreen texture
+            // in `render_frame_two_pass`.
+            let evdi_landscape_size: Size<i32, Physical> =
+                Size::from((mode_size.0 as i32, mode_size.1 as i32));
+            let evdi_portrait_size: Size<i32, Physical> =
+                Size::from((logical_size.0, logical_size.1));
+            let evdi_mode_source = if two_pass {
+                smithay::output::OutputModeSource::Static {
+                    size: evdi_landscape_size,
+                    scale: smithay::utils::Scale::from(1.0),
+                    transform: Transform::Normal,
+                }
+            } else {
+                smithay::output::OutputModeSource::Auto(output.clone())
+            };
+
             // Last arg is cursor_gbm: None disables HW cursor plane. evdi has
             // no cursor plane; the cursor is composited into the primary
             // framebuffer on the render GPU instead.
             let drm_compositor = match DrmCompositor::new(
-                &output,
+                evdi_mode_source,
                 drm_surface,
                 None,
                 gbm_allocator,
@@ -879,14 +1007,49 @@ pub fn run(
                 }
             };
 
+            // Two-pass offscreen dmabuf allocation — see the primary
+            // loop's matching block for why.
+            let evdi_two_pass_state = if two_pass {
+                use smithay::backend::allocator::{dmabuf::AsDmabuf, Allocator, Fourcc, Modifier};
+                let mut allocator = GbmAllocator::new(
+                    primary_gbm.clone(),
+                    GbmBufferFlags::RENDERING,
+                );
+                match allocator
+                    .create_buffer(
+                        evdi_portrait_size.w as u32,
+                        evdi_portrait_size.h as u32,
+                        Fourcc::Abgr8888,
+                        &[Modifier::Linear],
+                    )
+                    .and_then(|buffer| buffer.export().map_err(std::io::Error::other))
+                {
+                    Ok(dmabuf) => Some(TwoPassState {
+                        dmabuf,
+                        portrait_size: evdi_portrait_size,
+                        landscape_size: evdi_landscape_size,
+                        rotation: config_rotation_transform(mon_rotation),
+                    }),
+                    Err(e) => {
+                        tracing::error!(
+                            "{card_name}: two-pass offscreen dmabuf alloc failed for {output_name}: {e:?}"
+                        );
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
+
             tracing::info!(
-                "{card_name}: output {output_name}: {}x{}@{}Hz at pos=({},{}) crtc={:?}",
+                "{card_name}: output {output_name}: {}x{}@{}Hz at pos=({},{}) crtc={:?} two_pass={}",
                 mode_size.0,
                 mode_size.1,
                 drm_mode.vrefresh(),
                 mon_position.0,
                 mon_position.1,
                 crtc_handle,
+                two_pass,
             );
 
             output_instances.push(OutputInstance {
@@ -897,6 +1060,7 @@ pub fn run(
                 frame_pending: false,
                 render_errors: 0,
                 queue_errors: 0,
+                two_pass: evdi_two_pass_state,
             });
 
             x_offset += mode_size.0 as i32;
@@ -1426,6 +1590,29 @@ fn render_frame(
     let is_evdi = instance.node != primary_node;
     let output_name = instance.output.name();
 
+    // Two-pass rotation: render the portrait element vec into the
+    // offscreen dmabuf, then replace `elements` with a single
+    // landscape-sized TextureRenderElement wrapping that dmabuf (with
+    // the element transform set so the sampled content rotates back
+    // into the landscape scanout buffer). The DrmCompositor was
+    // built with OutputModeSource::Static(landscape, Normal), so its
+    // damage tracker runs landscape-only and never touches the broken
+    // rotated-render path.
+    if instance.two_pass.is_some() {
+        if let Err(phase) =
+            run_two_pass(&mut renderer, instance, &mut elements, primary_node)
+        {
+            log_rate_limited_error(
+                &mut instance.render_errors,
+                phase,
+                &output_name,
+                is_evdi,
+                "two-pass pipeline failed",
+            );
+            return;
+        }
+    }
+
     match instance.drm_compositor.render_frame(
         &mut renderer,
         &elements,
@@ -1498,6 +1685,113 @@ fn log_rate_limited_error(
             count = *counter,
         );
     }
+}
+
+/// Two-pass render pipeline for rotated outputs.
+///
+/// Phase A: bind the output's persistent offscreen dmabuf, render
+/// `elements` into it at portrait dimensions with `Transform::Normal`.
+/// Phase B: import the dmabuf as a `MultiTexture`, wrap it in a single
+/// `TextureRenderElement` sized to the landscape scanout buffer with
+/// element transform set to the configured rotation, and overwrite
+/// `elements` so the caller's `DrmCompositor::render_frame` sees only
+/// that one landscape-sized blit element.
+///
+/// Returns `Err(&'static str)` naming the failing phase so the caller
+/// can feed it into the rate-limited error logger. On success the
+/// element vec is mutated in place and the caller proceeds straight
+/// into `drm_compositor.render_frame` as usual.
+fn run_two_pass<'a>(
+    renderer: &mut KaraRenderer<'a>,
+    instance: &mut OutputInstance,
+    elements: &mut Vec<DrmRenderElement<'a>>,
+    _primary_node: DrmNode,
+) -> Result<(), &'static str> {
+    use smithay::backend::renderer::element::Kind;
+    use smithay::backend::renderer::element::texture::{
+        TextureBuffer, TextureRenderElement,
+    };
+    use smithay::backend::renderer::{Bind, Frame as _, ImportDma, Renderer as _};
+    use smithay::backend::renderer::Color32F;
+    use smithay::utils::{Point, Rectangle};
+
+    let ts = match instance.two_pass.as_mut() {
+        Some(ts) => ts,
+        None => return Ok(()),
+    };
+
+    let portrait_size = ts.portrait_size;
+    let landscape_size = ts.landscape_size;
+    let rotation = ts.rotation;
+    let portrait_rect: Rectangle<i32, Physical> = Rectangle::from_size(portrait_size);
+    let scale_one = Scale::from(1.0);
+
+    // ── Phase A: render portrait element vec into the offscreen dmabuf ──
+    {
+        let mut target = renderer
+            .bind(&mut ts.dmabuf)
+            .map_err(|_| "two_pass_bind")?;
+        {
+            let mut frame = renderer
+                .render(&mut target, portrait_size, Transform::Normal)
+                .map_err(|_| "two_pass_render_start")?;
+            frame
+                .clear(
+                    Color32F::from([0.05, 0.05, 0.05, 1.0]),
+                    &[portrait_rect],
+                )
+                .map_err(|_| "two_pass_clear")?;
+            // The element vec is ordered front-to-back (index 0 =
+            // topmost). Iterate in reverse so later elements paint on
+            // top of earlier ones.
+            for elem in elements.iter().rev() {
+                let geo = elem.geometry(scale_one);
+                let src = elem.src();
+                if let Err(_e) = RenderElement::<KaraRenderer<'_>>::draw(
+                    elem,
+                    &mut frame,
+                    src,
+                    geo,
+                    &[Rectangle::from_size(geo.size)],
+                    &[],
+                ) {
+                    // Individual element failures shouldn't abort the whole
+                    // frame — log once via the rate limiter at the outer
+                    // call site and keep going on the rest of the elements.
+                }
+            }
+            // Drop frame before target to satisfy the RAII order.
+            let _ = frame.finish();
+        }
+        // target drops → unbind
+    }
+
+    // ── Phase B: build a single rotated blit element ──
+    let multi_tex = renderer
+        .import_dmabuf(&ts.dmabuf, None)
+        .map_err(|_| "two_pass_import")?;
+
+    let buffer = TextureBuffer::from_texture(
+        &*renderer,
+        multi_tex,
+        1,
+        rotation,
+        None,
+    );
+
+    let blit_element: TextureRenderElement<KaraTexture> =
+        TextureRenderElement::from_texture_buffer(
+            Point::from((0.0, 0.0)),
+            &buffer,
+            None,
+            None,
+            Some(landscape_size.to_logical(1)),
+            Kind::Unspecified,
+        );
+
+    elements.clear();
+    elements.push(DrmRenderElement::Texture(blit_element));
+    Ok(())
 }
 
 fn capture_screenshot<'a>(
@@ -1601,49 +1895,84 @@ fn capture_screenshot<'a>(
     }
 }
 
-/// Kill switch: forces every monitor's transform to `Normal` regardless of
-/// config. See `monitor_rotation_to_transform` for the why.
+/// When `true`, kara honors configured monitor rotation via its own
+/// two-pass render path (render portrait elements into an offscreen
+/// texture, then blit that texture rotated into the landscape scanout
+/// buffer). The Output object still carries the real transform so
+/// `wl_output.transform` and `Space::output_geometry` behave correctly,
+/// but the DrmCompositor is configured with `OutputModeSource::Static`
+/// at landscape + Normal so its damage tracker never runs smithay's
+/// buggy rotated-render path.
 ///
-/// Flip back to `true` and rebuild once the kara-side pre-rotation pass
-/// (plan option B in `~/.claude/plans/serene-snacking-boole.md`) lands,
-/// OR once a smithay upstream fix ships and the crate is bumped.
-const ROTATION_ENABLED: bool = false;
+/// When `false`, rotation falls back to the smithay-native path (see
+/// [`ROTATION_SMITHAY_NATIVE`]) or to the kill-switch "render landscape
+/// sideways" fallback.
+const ROTATION_TWO_PASS: bool = true;
 
-/// Map a kara monitor rotation config to a smithay `Transform`.
+/// When `true`, configured rotation uses smithay's built-in rotated
+/// render path (setting the Output transform and letting damage tracker
+/// handle rotation). Known broken on this repo's AMD + DisplayLink/evdi
+/// hybrid swapchain combination — half the physical framebuffer never
+/// gets painted. Left toggleable so anyone who doesn't hit the bug (pure
+/// single-GPU without evdi scanout) can use the upstream path.
 ///
-/// Convention (when enabled): kara's `rotate left` matches xrandr's
-/// `--rotate left` — monitor's top edge points left, content rotated 90°
-/// counter-clockwise. In smithay's `Transform` enum that's `_270` (rotate
-/// 270° clockwise). `rotate right` is 90° clockwise (`_90`); `rotate
-/// flipped` is 180°.
+/// If both this and [`ROTATION_TWO_PASS`] are `true`, two-pass wins.
+/// If both are `false`, rotation is kill-switched to Normal with a
+/// warning.
+const ROTATION_SMITHAY_NATIVE: bool = false;
+
+/// Direct mapping of a kara monitor rotation config to a smithay
+/// `Transform`, ignoring both kill switches. Used everywhere that needs
+/// to know the user's *intent*, regardless of which rendering path is
+/// active.
 ///
-/// **Currently disabled** via `ROTATION_ENABLED = false`. Rotated outputs
-/// on this user's AMD + DisplayLink/evdi hybrid swapchain path clip to
-/// half the physical framebuffer — the lower half of the logical portrait
-/// never receives pixels. Confirmed via side-by-side testing: same panel,
-/// same cable, same evdi path, rotation off = full framebuffer coverage.
-/// Smithay 0.7's rotated render math looks correct by inspection, so this
-/// is likely a driver/multigpu edge case rather than a simple bug. For now
-/// we fall back to `Transform::Normal` and log a warning so users with
-/// `rotate` in their config get a clear pointer rather than a dead panel.
-fn monitor_rotation_to_transform(r: kara_config::MonitorRotation) -> Transform {
-    if !ROTATION_ENABLED && r != kara_config::MonitorRotation::Normal {
-        tracing::warn!(
-            "monitor rotation '{:?}' requested in config but is currently \
-             disabled due to a smithay/DisplayLink rendering bug (half-framebuffer \
-             clip on rotated outputs). Falling back to Transform::Normal — \
-             physically-rotated panels will render sideways until a fix lands. \
-             See crates/kara-gate/src/backend_udev.rs ROTATION_ENABLED for \
-             context.",
-            r
-        );
-        return Transform::Normal;
-    }
+/// Convention: kara's `rotate left` matches xrandr's `--rotate left` —
+/// monitor's top edge points left, content rotated 90° counter-clockwise.
+/// In smithay's `Transform` enum that's `_270` (rotate 270° clockwise).
+/// `rotate right` is 90° clockwise (`_90`); `rotate flipped` is 180°.
+fn config_rotation_transform(r: kara_config::MonitorRotation) -> Transform {
     match r {
         kara_config::MonitorRotation::Normal => Transform::Normal,
         kara_config::MonitorRotation::Left => Transform::_270,
         kara_config::MonitorRotation::Right => Transform::_90,
         kara_config::MonitorRotation::Flipped => Transform::_180,
+    }
+}
+
+/// Pick the actual `Transform` to hand to smithay's `Output` (which
+/// controls `wl_output.transform`, `Space::output_geometry`, and —
+/// under the smithay-native path only — the DrmCompositor's damage
+/// tracker). Also returns whether kara's internal two-pass rendering
+/// should run for this output.
+///
+/// The return tuple is `(output_transform, use_two_pass)`:
+///   - `output_transform` is what to pass to `change_current_state`.
+///   - `use_two_pass` is whether the two-pass offscreen render path
+///     should drive this output's frames.
+fn resolve_rotation(r: kara_config::MonitorRotation) -> (Transform, bool) {
+    let config = config_rotation_transform(r);
+    if config == Transform::Normal {
+        return (Transform::Normal, false);
+    }
+
+    if ROTATION_TWO_PASS {
+        // Keep Output::transform = config so wl_output advertising and
+        // Space geometry are portrait. The DrmCompositor will be created
+        // with a Static mode source that bypasses smithay's rotation.
+        (config, true)
+    } else if ROTATION_SMITHAY_NATIVE {
+        // Let smithay rotate. Broken on AMD + evdi, works elsewhere.
+        (config, false)
+    } else {
+        tracing::warn!(
+            "monitor rotation '{:?}' requested in config but all rotation \
+             paths are disabled. Falling back to Transform::Normal — \
+             physically-rotated panels will render sideways until the \
+             two-pass fix is re-enabled. See ROTATION_TWO_PASS in \
+             crates/kara-gate/src/backend_udev.rs.",
+            r
+        );
+        (Transform::Normal, false)
     }
 }
 
