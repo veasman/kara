@@ -20,8 +20,10 @@
 # GTK / icon theme picks — dark, cool-leaning. Override freely.
 # (Root-level keys must appear before any [section] header.)
 gtk_theme = "Adwaita-dark"
-icon_theme = "Papirus-Dark"
-# file_icon_theme defaults to icon_theme when unset
+icon_theme = "Adwaita"
+# file_icon_theme defaults to icon_theme when unset.
+# NOTE: install `papirus-icon-theme` (AUR) and swap icon_theme to
+# `Papirus-Dark` for a denser, more colorful look.
 
 [meta]
 name = "moonlight"

@@ -26,7 +26,9 @@
 # parchment theme) when one is chosen.
 # (Root-level keys must appear before any [section] header.)
 gtk_theme = "Adwaita-dark"
-icon_theme = "Papirus-Dark"
+icon_theme = "Adwaita"
+# NOTE: install `papirus-icon-theme` for a denser colored set that
+# reads better against fantasy palettes.
 
 [meta]
 name = "fantasy"
@@ -57,10 +59,10 @@ mono_size = 13
 
 [cursor]
 # Night Diamond pairs with the fantasy palette. AUR:
-# night-diamond-cursor-theme. The installed directory name may vary
-# (`Night-Diamond`, `NightDiamond-Blue`, etc.) — verify with
-# `ls /usr/share/icons` after install and adjust if needed.
-theme = "Night-Diamond"
+# night-diamond-cursor-theme installs both `Night-Diamond-Red` and
+# `Night-Diamond-Blue` under /usr/share/icons. Red fits the canonical
+# `blood` variant; swap to Blue for a cooler fantasy feel.
+theme = "Night-Diamond-Red"
 size = 24
 
 # ─── Reserved structured slots (no renderer consumes these yet) ────
