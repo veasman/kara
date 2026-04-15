@@ -5,7 +5,9 @@ use anyhow::Result;
 use kara_theme::resolve_theme;
 use kara_theme::render::{
     floorp::render_floorp_user_js,
-    foot::{foot_color_pairs, foot_color_section, render_foot_theme},
+    foot::{
+        foot_color_pairs, foot_color_section, foot_main_section_pairs, render_foot_theme,
+    },
     fzf::render_fzf_theme, gtk::gtk_settings_pairs, kitty::render_kitty_theme,
     nvim::render_nvim_theme, session::render_session_theme, tmux::render_tmux_theme,
     kara_gate::render_kara_gate_theme,
@@ -104,6 +106,9 @@ pub fn apply_theme_file(
     let foot_pairs = foot_color_pairs(&resolved);
     let foot_pairs_ref: Vec<(&str, String)> =
         foot_pairs.iter().map(|(k, v)| (*k, v.clone())).collect();
+    let foot_main_pairs = foot_main_section_pairs(&resolved);
+    let foot_main_pairs_ref: Vec<(&str, String)> =
+        foot_main_pairs.iter().map(|(k, v)| (*k, v.clone())).collect();
     let nvim = render_nvim_theme(&resolved);
     let tmux = render_tmux_theme(&resolved);
     let fzf = render_fzf_theme(&resolved);
@@ -205,16 +210,23 @@ pub fn apply_theme_file(
         // user's foot.ini so SIGUSR1 picks up the change live.
         // See crate::ini_patch::patch_ini_section; same pattern as
         // GTK settings.ini. Non-color keys in that section (if any)
-        // are preserved. Trigger the foot reload only if the patch
-        // actually changed something — idempotent re-applies don't
-        // spam signals.
-        let foot_changed =
+        // are preserved.
+        let colors_changed =
             patch_ini_section(&paths.foot_config_path(), foot_section, &foot_pairs_ref)?;
+        // Also patch [main] theme=dark|light so foot's section
+        // dispatch doesn't depend on xdg-desktop-portal's runtime
+        // color-scheme detection. Without an explicit theme=, foot
+        // picks [colors-dark] vs [colors-light] based on mode — and
+        // apparently doesn't re-evaluate that decision on SIGUSR1
+        // reload, so [colors-dark] patches landed but weren't
+        // applied to the running display.
+        let main_changed =
+            patch_ini_section(&paths.foot_config_path(), "main", &foot_main_pairs_ref)?;
         // Keep writing the preview file to the state dir so
         // `kara-beautify render foot` and manual inspection still
         // work. Not on the reload path anymore.
         let _ = write_if_changed(&paths.foot_theme_path(), &foot_preview)?;
-        reload_plan.foot = foot_changed;
+        reload_plan.foot = colors_changed || main_changed;
     }
     if c.nvim {
         reload_plan.nvim = write_if_changed(&paths.nvim_theme_path(), &nvim)?;

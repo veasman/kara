@@ -1,22 +1,44 @@
 use crate::{ResolvedTheme, UiMode};
 
-/// Which INI section foot owns for the current mode. Used by both
-/// the renderer (pretty-print) and apply.rs's patch-in-place path.
+/// Which INI section foot owns for the current mode.
 ///
-/// foot supports mode-scoped color sections:
-///   [colors-dark]  applies when foot is in dark mode
-///   [colors-light] applies when foot is in light mode
-///   [colors]       is a plain fallback overridden by either of the above
+/// We use mode-scoped `[colors-dark]` / `[colors-light]` rather
+/// than the plain `[colors]` fallback because plain `[colors]` is
+/// deprecated in foot and produces a startup warning on every foot
+/// invocation.
 ///
-/// We emit the palette into the section matching the theme's
-/// resolved mode so foot's native mode detection (driven by
-/// xdg-desktop-portal's color-scheme signal) still picks the right
-/// colors automatically if the user later toggles into auto mode.
+/// To keep foot's runtime section dispatch unambiguous (so a
+/// SIGUSR1 reload always knows which section to apply), we ALSO
+/// patch `[main] theme=dark|light` alongside the color section
+/// — see `foot_main_section_pairs`. With an explicit `theme=`
+/// set, foot ignores the system color-scheme and always applies
+/// the corresponding `[colors-<mode>]` section regardless of how
+/// or when it reloads.
 pub fn foot_color_section(theme: &ResolvedTheme) -> &'static str {
     match theme.mode {
         UiMode::Light => "colors-light",
         UiMode::Dark | UiMode::Auto => "colors-dark",
     }
+}
+
+/// Keys patched into foot's `[main]` section. Right now we only
+/// set `theme=dark|light` so foot's mode selection is explicit —
+/// without it, foot's dark/light auto-detect may not re-evaluate
+/// on SIGUSR1 reload, and `[colors-dark]` changes would land in
+/// the file but not take effect in the running display until
+/// the user toggled system mode.
+///
+/// Returns pairs to be applied with `ini_patch::patch_ini_section`
+/// against the `[main]` section. Note that foot treats top-of-file
+/// keys as implicit `[main]` members — the patcher will either
+/// create an explicit `[main]` header if needed, or merge into an
+/// existing one.
+pub fn foot_main_section_pairs(theme: &ResolvedTheme) -> Vec<(&'static str, String)> {
+    let theme_value = match theme.mode {
+        UiMode::Light => "light",
+        UiMode::Dark | UiMode::Auto => "dark",
+    };
+    vec![("theme", theme_value.to_string())]
 }
 
 /// Return every color key kara-beautify owns as `(key, value)`
