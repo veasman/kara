@@ -448,9 +448,12 @@ impl Gate {
         // for the matching change that stops pointer motion from updating
         // focused_output.
 
-        // Repaint every bar so the focused-monitor highlight moves.
+        // Repaint every bar so the focused-monitor highlight moves, and
+        // re-run layout so each output's border rasterization picks up the
+        // new global focus (only the focused monitor shows the accent).
         self.bar_dirty = true;
 
+        self.apply_layout();
         self.apply_focus();
         let name = self.outputs[new_idx].output.name();
         tracing::debug!("focused monitor {new_idx} ({name})");

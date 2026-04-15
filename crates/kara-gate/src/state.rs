@@ -719,6 +719,7 @@ impl Gate {
         }
 
         // Layout each output's workspace
+        let focused_output = self.focused_output;
         for (out_idx, ws_idx, out_size, workarea, location, fs_window) in &output_ws {
             // Fullscreen on this output
             if let Some(fs_window) = fs_window {
@@ -756,8 +757,11 @@ impl Gate {
                     self.window_base_positions.push((geom.window.clone(), geom.rect.loc));
 
                     if let Some(br) = geom.border_rect {
-                        // Store border with index matching window_base_positions
-                        self.border_rects.push((br, geom.is_focused));
+                        // Accent only on the globally-focused output; other
+                        // outputs show their focused window in the unfocused
+                        // border color so only one monitor lights up.
+                        let is_focused = geom.is_focused && *out_idx == focused_output;
+                        self.border_rects.push((br, is_focused));
                     }
                 } else {
                     self.space.unmap_elem(&geom.window);
@@ -791,8 +795,11 @@ impl Gate {
         if !sp.visible {
             return;
         }
+        // Copy the owning output index so the immutable `sp` borrow can end
+        // before we start mutating other fields of `self` below.
+        let sp_output_idx = sp.output_idx;
 
-        let workarea = self.outputs.get(sp.output_idx)
+        let workarea = self.outputs.get(sp_output_idx)
             .map(|o| o.workarea)
             .unwrap_or_else(|| Rectangle::new((0, 0).into(), (800, 600).into()));
 
@@ -842,7 +849,10 @@ impl Gate {
                 mapped_windows.push(geom.window.clone());
 
                 if let Some(br) = geom.border_rect {
-                    self.scratchpad_border_rects.push((br, geom.is_focused));
+                    // Accent only when the owning output is the globally
+                    // focused one — same logic as apply_layout's border mask.
+                    let is_focused = geom.is_focused && sp_output_idx == self.focused_output;
+                    self.scratchpad_border_rects.push((br, is_focused));
                 }
             } else {
                 self.space.unmap_elem(&geom.window);

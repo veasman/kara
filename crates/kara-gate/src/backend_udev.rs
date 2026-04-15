@@ -32,9 +32,9 @@ use smithay::reexports::wayland_server::Display;
 use smithay::utils::{DeviceFd, Size, Transform};
 
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
-use smithay::backend::renderer::element::{Element, Id, RenderElement};
-use smithay::backend::renderer::utils::CommitCounter;
-use smithay::utils::{Buffer, Physical, Rectangle, Scale};
+use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement};
+use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
+use smithay::utils::{Buffer, Physical, Point, Rectangle, Scale};
 
 use crate::render::build_custom_elements;
 use crate::state::Gate;
@@ -66,6 +66,16 @@ pub enum DrmRenderElement<'a> {
 }
 
 impl<'a> Element for DrmRenderElement<'a> {
+    // IMPORTANT: every method on `Element` must be forwarded to the
+    // inner element. The trait ships default impls for `transform`,
+    // `location`, `damage_since`, `opaque_regions`, `alpha`, and `kind`
+    // that silently return wrong values (Normal transform, empty
+    // opaque regions, full-element damage, etc.) — on a non-rotated
+    // output the defaults happen to render correctly, but on a
+    // rotated output the damage tracker's transform-aware math
+    // produces a half-output scissor and half the framebuffer never
+    // gets painted. If you add a new method to the wrapper, forward
+    // it here too.
     fn id(&self) -> &Id {
         match self {
             Self::Texture(e) => e.id(),
@@ -80,10 +90,10 @@ impl<'a> Element for DrmRenderElement<'a> {
         }
     }
 
-    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
+    fn location(&self, scale: Scale<f64>) -> Point<i32, Physical> {
         match self {
-            Self::Texture(e) => e.geometry(scale),
-            Self::Surface(e) => e.geometry(scale),
+            Self::Texture(e) => e.location(scale),
+            Self::Surface(e) => e.location(scale),
         }
     }
 
@@ -91,6 +101,52 @@ impl<'a> Element for DrmRenderElement<'a> {
         match self {
             Self::Texture(e) => e.src(),
             Self::Surface(e) => e.src(),
+        }
+    }
+
+    fn transform(&self) -> Transform {
+        match self {
+            Self::Texture(e) => e.transform(),
+            Self::Surface(e) => e.transform(),
+        }
+    }
+
+    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
+        match self {
+            Self::Texture(e) => e.geometry(scale),
+            Self::Surface(e) => e.geometry(scale),
+        }
+    }
+
+    fn damage_since(
+        &self,
+        scale: Scale<f64>,
+        commit: Option<CommitCounter>,
+    ) -> DamageSet<i32, Physical> {
+        match self {
+            Self::Texture(e) => e.damage_since(scale, commit),
+            Self::Surface(e) => e.damage_since(scale, commit),
+        }
+    }
+
+    fn opaque_regions(&self, scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+        match self {
+            Self::Texture(e) => e.opaque_regions(scale),
+            Self::Surface(e) => e.opaque_regions(scale),
+        }
+    }
+
+    fn alpha(&self) -> f32 {
+        match self {
+            Self::Texture(e) => e.alpha(),
+            Self::Surface(e) => e.alpha(),
+        }
+    }
+
+    fn kind(&self) -> Kind {
+        match self {
+            Self::Texture(e) => e.kind(),
+            Self::Surface(e) => e.kind(),
         }
     }
 }
@@ -1445,13 +1501,44 @@ fn capture_screenshot<'a>(
     }
 }
 
+/// Kill switch: forces every monitor's transform to `Normal` regardless of
+/// config. See `monitor_rotation_to_transform` for the why.
+///
+/// Flip back to `true` and rebuild once the kara-side pre-rotation pass
+/// (plan option B in `~/.claude/plans/serene-snacking-boole.md`) lands,
+/// OR once a smithay upstream fix ships and the crate is bumped.
+const ROTATION_ENABLED: bool = false;
+
 /// Map a kara monitor rotation config to a smithay `Transform`.
 ///
-/// Convention: kara's `rotate left` matches xrandr's `--rotate left` —
-/// monitor's top edge points left, content rotated 90° counter-clockwise.
-/// In smithay's `Transform` enum that's `_270` (rotate 270° clockwise).
-/// `rotate right` is 90° clockwise (`_90`); `rotate flipped` is 180°.
+/// Convention (when enabled): kara's `rotate left` matches xrandr's
+/// `--rotate left` — monitor's top edge points left, content rotated 90°
+/// counter-clockwise. In smithay's `Transform` enum that's `_270` (rotate
+/// 270° clockwise). `rotate right` is 90° clockwise (`_90`); `rotate
+/// flipped` is 180°.
+///
+/// **Currently disabled** via `ROTATION_ENABLED = false`. Rotated outputs
+/// on this user's AMD + DisplayLink/evdi hybrid swapchain path clip to
+/// half the physical framebuffer — the lower half of the logical portrait
+/// never receives pixels. Confirmed via side-by-side testing: same panel,
+/// same cable, same evdi path, rotation off = full framebuffer coverage.
+/// Smithay 0.7's rotated render math looks correct by inspection, so this
+/// is likely a driver/multigpu edge case rather than a simple bug. For now
+/// we fall back to `Transform::Normal` and log a warning so users with
+/// `rotate` in their config get a clear pointer rather than a dead panel.
 fn monitor_rotation_to_transform(r: kara_config::MonitorRotation) -> Transform {
+    if !ROTATION_ENABLED && r != kara_config::MonitorRotation::Normal {
+        tracing::warn!(
+            "monitor rotation '{:?}' requested in config but is currently \
+             disabled due to a smithay/DisplayLink rendering bug (half-framebuffer \
+             clip on rotated outputs). Falling back to Transform::Normal — \
+             physically-rotated panels will render sideways until a fix lands. \
+             See crates/kara-gate/src/backend_udev.rs ROTATION_ENABLED for \
+             context.",
+            r
+        );
+        return Transform::Normal;
+    }
     match r {
         kara_config::MonitorRotation::Normal => Transform::Normal,
         kara_config::MonitorRotation::Left => Transform::_270,
