@@ -34,6 +34,7 @@ use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
 };
 use smithay::wayland::xdg_toplevel_icon::{XdgToplevelIconHandler, XdgToplevelIconManager};
+use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
@@ -196,6 +197,11 @@ pub struct Gate {
     pub xdg_activation_state: XdgActivationState,
     #[allow(dead_code)] // kept alive so the protocol global stays registered
     pub xdg_toplevel_icon_manager: XdgToplevelIconManager,
+    // Advertises wp_cursor_shape_v1. Held for its Drop-managed global;
+    // the protocol auto-dispatches to CursorImageStatus::Named which
+    // cursor.rs already renders.
+    #[allow(dead_code)]
+    pub cursor_shape_manager_state: CursorShapeManagerState,
     #[allow(dead_code)]
     pub output_manager_state: OutputManagerState,
     pub seat: Seat<Self>,
@@ -349,6 +355,7 @@ impl Gate {
         let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
         let xdg_activation_state = XdgActivationState::new::<Self>(&dh);
         let xdg_toplevel_icon_manager = XdgToplevelIconManager::new::<Self>(&dh);
+        let cursor_shape_manager_state = CursorShapeManagerState::new::<Self>(&dh);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
 
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
@@ -405,6 +412,7 @@ impl Gate {
             primary_selection_state,
             xdg_activation_state,
             xdg_toplevel_icon_manager,
+            cursor_shape_manager_state,
             output_manager_state,
             seat,
             layer_surfaces: Vec::new(),
@@ -1803,6 +1811,7 @@ impl XdgDecorationHandler for Gate {
 impl ClientDndGrabHandler for Gate {}
 impl ServerDndGrabHandler for Gate {}
 impl smithay::wayland::output::OutputHandler for Gate {}
+impl smithay::wayland::tablet_manager::TabletSeatHandler for Gate {}
 
 delegate_compositor!(Gate);
 delegate_xdg_shell!(Gate);
@@ -1814,6 +1823,7 @@ delegate_data_device!(Gate);
 delegate_primary_selection!(Gate);
 delegate_xdg_activation!(Gate);
 delegate_xdg_toplevel_icon!(Gate);
+smithay::delegate_cursor_shape!(Gate);
 
 impl XdgToplevelIconHandler for Gate {}
 delegate_output!(Gate);
