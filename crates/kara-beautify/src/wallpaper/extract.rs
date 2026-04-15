@@ -122,6 +122,7 @@ pub fn derive_theme_from_image(name: &str, image_path: &Path) -> Result<(ThemeSp
         variants: Default::default(),
         wallpaper: WallpaperSpec {
             default: wallpaper_name.clone(),
+            per_monitor: None,
         },
         palette: PaletteSpec {
             primary: primary.to_hex(),
@@ -135,6 +136,16 @@ pub fn derive_theme_from_image(name: &str, image_path: &Path) -> Result<(ThemeSp
             transparent: true,
         },
         vwm_bar,
+        gtk_theme: None,
+        icon_theme: None,
+        file_icon_theme: None,
+        window_border: None,
+        bar: None,
+        sounds: None,
+        notification: None,
+        launcher: None,
+        lock_screen: None,
+        animations: None,
     };
 
     Ok((spec, image_path.to_path_buf()))

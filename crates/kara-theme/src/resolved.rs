@@ -61,6 +61,15 @@ pub struct ResolvedTheme {
     pub nvim_preset: NvimPreset,
     pub nvim_transparent: bool,
     pub vwm_bar: VwmBarResolved,
+    /// User-selected GTK theme name from the theme TOML. Falls back to
+    /// Adwaita / Adwaita-dark (mode-dependent) when unset.
+    pub gtk_theme_override: Option<String>,
+    /// User-selected app icon theme. Falls back to Adwaita when unset.
+    pub icon_theme_override: Option<String>,
+    /// User-selected file icon theme. Falls back to
+    /// `icon_theme_override` when unset — most users pick one theme
+    /// that covers both.
+    pub file_icon_theme_override: Option<String>,
     /// The preset key that materialized this theme's semantic palette.
     /// One of "gruvbox", "vague", "nord", ... or None for the
     /// derive-from-primary path. Lets downstream renderers dispatch to
@@ -71,15 +80,35 @@ pub struct ResolvedTheme {
 }
 
 impl ResolvedTheme {
-    pub fn gtk_theme_name(&self) -> &'static str {
+    pub fn gtk_theme_name(&self) -> &str {
+        if let Some(name) = self.gtk_theme_override.as_deref() {
+            return name;
+        }
         match self.mode {
             UiMode::Light => "Adwaita",
             UiMode::Dark | UiMode::Auto => "Adwaita-dark",
         }
     }
 
-    pub fn gtk_icon_theme_name(&self) -> &'static str {
-        "Adwaita"
+    pub fn gtk_icon_theme_name(&self) -> &str {
+        self.icon_theme_override
+            .as_deref()
+            .unwrap_or("Adwaita")
+    }
+
+    /// File icon theme for file managers. Falls back to the app
+    /// `icon_theme_name` when unset — this is the typical behavior for
+    /// themes that don't differentiate.
+    pub fn gtk_file_icon_theme_name(&self) -> &str {
+        self.file_icon_theme_override
+            .as_deref()
+            .unwrap_or_else(|| self.gtk_icon_theme_name())
+    }
+
+    /// GTK `gtk-font-name` value — the font family followed by the
+    /// point size, in GTK's Pango-style format.
+    pub fn gtk_font_name(&self) -> String {
+        format!("{} {}", self.fonts.ui_family, self.fonts.ui_size)
     }
 
     pub fn prefer_dark_flag(&self) -> u8 {

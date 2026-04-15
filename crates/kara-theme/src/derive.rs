@@ -109,6 +109,9 @@ pub fn resolve_theme(spec: &ThemeSpec, variant: Option<&str>) -> Result<Resolved
         nvim_preset: spec.nvim.preset,
         nvim_transparent: spec.nvim.transparent,
         vwm_bar,
+        gtk_theme_override: spec.gtk_theme.clone(),
+        icon_theme_override: spec.icon_theme.clone(),
+        file_icon_theme_override: spec.file_icon_theme.clone(),
         variant_preset: matched_preset,
     })
 }

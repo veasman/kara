@@ -108,6 +108,11 @@ pub struct ThemeMeta {
 pub struct WallpaperSpec {
     #[serde(default)]
     pub default: Option<String>,
+    /// Per-monitor wallpaper overrides keyed by output connector name
+    /// (e.g. `"DP-2"`, `"HDMI-A-1"`). Reserved slot — no renderer reads
+    /// this yet; beautify currently applies `default` to all outputs.
+    #[serde(default)]
+    pub per_monitor: Option<std::collections::BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -312,6 +317,143 @@ impl Default for CursorSpec {
     }
 }
 
+/// SVG overlay reference used across every visible kara surface that
+/// can draw custom decoration artwork — window borders, bar background,
+/// notifications, launcher, lock screen. Reserved slot: no renderer
+/// consumes this yet; theme TOMLs can carry it so future renderer
+/// sessions slot in without touching the schema.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SvgOverlaySpec {
+    pub path: String,
+    /// How the SVG is placed relative to the surface it decorates.
+    /// Interpretation is renderer-specific.
+    #[serde(default)]
+    pub anchor: Option<String>,
+    /// Draw mode hint for renderers that support multiple layering
+    /// modes (e.g. `"background"`, `"accent"`, `"frame"`).
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub opacity: Option<f32>,
+    /// Optional palette-key reference for renderer tinting
+    /// (e.g. `"$accent"`). Resolved lazily by each consumer.
+    #[serde(default)]
+    pub tint_from_palette: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WindowBorderSpec {
+    #[serde(default)]
+    pub width: Option<u16>,
+    #[serde(default)]
+    pub radius: Option<u16>,
+    #[serde(default)]
+    pub color_focused: Option<String>,
+    #[serde(default)]
+    pub color_unfocused: Option<String>,
+    #[serde(default)]
+    pub color_urgent: Option<String>,
+    /// Reserved slot for per-theme border SVG artwork. No renderer yet.
+    #[serde(default)]
+    pub svg_overlay: Option<SvgOverlaySpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BarStyleSpec {
+    #[serde(default)]
+    pub background_color: Option<String>,
+    #[serde(default)]
+    pub font_family: Option<String>,
+    #[serde(default)]
+    pub font_size: Option<u16>,
+    /// `[horizontal, vertical]` padding in px. Parsed as a free-form
+    /// array for forward compatibility.
+    #[serde(default)]
+    pub padding: Option<Vec<u16>>,
+    #[serde(default)]
+    pub module_fg: Option<String>,
+    #[serde(default)]
+    pub module_bg: Option<String>,
+    #[serde(default)]
+    pub svg_overlay: Option<SvgOverlaySpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SoundsSpec {
+    /// Freedesktop sound theme name (looked up in
+    /// `/usr/share/sounds/<theme_name>/`). Reserved slot — whisper and
+    /// kara-gate event hooks will read this when sound support lands.
+    #[serde(default)]
+    pub theme_name: Option<String>,
+    /// Per-event sound overrides. Values are relative filenames inside
+    /// the sound theme directory (e.g. `"message.oga"`).
+    #[serde(default)]
+    pub events: Option<std::collections::BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NotificationStyleSpec {
+    #[serde(default)]
+    pub background: Option<String>,
+    #[serde(default)]
+    pub border: Option<String>,
+    #[serde(default)]
+    pub fg: Option<String>,
+    #[serde(default)]
+    pub font_family: Option<String>,
+    #[serde(default)]
+    pub font_size: Option<u16>,
+    #[serde(default)]
+    pub radius: Option<u16>,
+    #[serde(default)]
+    pub svg_overlay: Option<SvgOverlaySpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LauncherStyleSpec {
+    #[serde(default)]
+    pub background: Option<String>,
+    #[serde(default)]
+    pub accent: Option<String>,
+    #[serde(default)]
+    pub fg: Option<String>,
+    #[serde(default)]
+    pub selected_bg: Option<String>,
+    #[serde(default)]
+    pub font_family: Option<String>,
+    #[serde(default)]
+    pub font_size: Option<u16>,
+    #[serde(default)]
+    pub radius: Option<u16>,
+    #[serde(default)]
+    pub svg_overlay: Option<SvgOverlaySpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LockScreenStyleSpec {
+    #[serde(default)]
+    pub background: Option<String>,
+    #[serde(default)]
+    pub accent: Option<String>,
+    #[serde(default)]
+    pub fg: Option<String>,
+    #[serde(default)]
+    pub svg_overlay: Option<SvgOverlaySpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AnimationsSpec {
+    #[serde(default)]
+    pub duration_ms_fast: Option<u32>,
+    #[serde(default)]
+    pub duration_ms_normal: Option<u32>,
+    #[serde(default)]
+    pub duration_ms_slow: Option<u32>,
+    /// Named easing curve (e.g. `"ease-out-cubic"`, `"linear"`).
+    #[serde(default)]
+    pub easing: Option<String>,
+}
+
 /// One named palette swap within a theme. A variant either references a
 /// built-in preset by name (fast path, hand-tuned colors) OR specifies
 /// its palette inline via `primary` + the standard PaletteSpec knobs —
@@ -366,6 +508,48 @@ pub struct ThemeSpec {
     pub nvim: NvimSpec,
     #[serde(default)]
     pub vwm_bar: VwmBarSpec,
+    /// GTK theme name override. When omitted, resolver falls back to
+    /// `Adwaita` / `Adwaita-dark` based on `meta.mode`. Renderer:
+    /// `gtk-theme-name` key in `gtk-settings.ini`.
+    #[serde(default)]
+    pub gtk_theme: Option<String>,
+    /// App icon theme. Rendered as `gtk-icon-theme-name`. Falls back to
+    /// `Adwaita` when unset.
+    #[serde(default)]
+    pub icon_theme: Option<String>,
+    /// File icon theme for file managers. Falls back to `icon_theme`
+    /// when unset — most users pick one theme that covers both.
+    /// Reserved for renderers that can differentiate (e.g. nautilus /
+    /// thunar file icon lookups).
+    #[serde(default)]
+    pub file_icon_theme: Option<String>,
+    /// Window border styling (width, radius, colors, SVG overlay).
+    /// Partially consumed — kara-gate reads `width`/colors from the
+    /// compositor config today; this block is the theme-driven
+    /// equivalent. SVG overlay is reserved.
+    #[serde(default)]
+    pub window_border: Option<WindowBorderSpec>,
+    /// Bar (kara-sight) styling. Reserved — kara-sight renderer will
+    /// pick these up once module config cleanup lands.
+    #[serde(default)]
+    pub bar: Option<BarStyleSpec>,
+    /// Sound theme + per-event overrides. Reserved — whisper + kara-gate
+    /// event hooks will consume these when sound support lands.
+    #[serde(default)]
+    pub sounds: Option<SoundsSpec>,
+    /// Notification (kara-whisper) style. Reserved.
+    #[serde(default)]
+    pub notification: Option<NotificationStyleSpec>,
+    /// Launcher (kara-summon) style. Reserved.
+    #[serde(default)]
+    pub launcher: Option<LauncherStyleSpec>,
+    /// Lock screen (kara-veil) style. Reserved.
+    #[serde(default)]
+    pub lock_screen: Option<LockScreenStyleSpec>,
+    /// Animation durations and easing curves. Reserved — kara-gate and
+    /// kara-beautify animation path will consume these.
+    #[serde(default)]
+    pub animations: Option<AnimationsSpec>,
     /// Named variants. Empty map means "single-palette theme" and the
     /// resolver uses the top-level palette block. Populated means the
     /// theme is multi-variant and `default_variant` (or `--variant`)

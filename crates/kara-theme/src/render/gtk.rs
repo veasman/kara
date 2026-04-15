@@ -1,19 +1,19 @@
 use crate::ResolvedTheme;
 
-/// Return the five GTK `[Settings]` keys kara-beautify owns as
-/// `(key, value)` pairs. Callers are expected to PATCH these keys
-/// into an existing `settings.ini` rather than replace the file —
-/// users typically ship their own settings.ini with additional keys
-/// (font-name, button order, etc.) and beautify must not clobber them.
+/// Return the GTK `[Settings]` keys kara-beautify owns as `(key, value)`
+/// pairs. Callers are expected to PATCH these keys into an existing
+/// `settings.ini` rather than replace the file — users typically ship
+/// their own settings.ini with additional keys (button order, toolbar
+/// style, etc.) and beautify must not clobber them. Note: `gtk-font-name`
+/// is owned by kara-beautify starting this version; pre-existing
+/// user-set values will be overwritten on apply.
 pub fn gtk_settings_pairs(theme: &ResolvedTheme) -> Vec<(&'static str, String)> {
     vec![
         ("gtk-theme-name", theme.gtk_theme_name().to_string()),
         ("gtk-icon-theme-name", theme.gtk_icon_theme_name().to_string()),
         ("gtk-cursor-theme-name", theme.cursor.theme.clone()),
-        (
-            "gtk-cursor-theme-size",
-            theme.cursor.size.to_string(),
-        ),
+        ("gtk-cursor-theme-size", theme.cursor.size.to_string()),
+        ("gtk-font-name", theme.gtk_font_name()),
         (
             "gtk-application-prefer-dark-theme",
             theme.prefer_dark_flag().to_string(),
