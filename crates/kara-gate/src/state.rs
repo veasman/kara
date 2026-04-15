@@ -999,6 +999,19 @@ impl Gate {
     /// `set_activated(true)`) lives on exactly one window — even when a
     /// scratchpad is visible on a different monitor than the focused one.
     pub fn apply_focus(&mut self) {
+        // If an exclusive-keyboard layer surface (kara-summon, the
+        // theme picker, glimpse overlay, etc.) currently holds
+        // keyboard focus, leave it alone. apply_focus gets called
+        // from ~15 sites — animation completion, helper client
+        // lifecycle, activation requests, workspace switches — and
+        // any one of those firing while an exclusive layer is open
+        // would otherwise yank keyboard focus out from under it.
+        // The layer gets its focus back via `layer_destroyed` when
+        // it closes on its own terms.
+        if self.keyboard_focus_is_exclusive_layer() {
+            return;
+        }
+
         let serial = SERIAL_COUNTER.next_serial();
 
         let focused_window = self.compute_focused_window();
@@ -1394,12 +1407,19 @@ impl XdgShellHandler for Gate {
         }
 
         // Drop hidden helper windows (e.g. wl-clipboard) and restore keyboard
-        // focus to the active workspace window.
+        // focus. If an exclusive-keyboard layer surface (kara-summon picker,
+        // theme picker, glimpse overlay) is still mapped, prefer restoring
+        // focus there — otherwise a tmux mouse-drag that spawns wl-copy
+        // will land keyboard focus on the workspace window and steal it
+        // out from under the still-open layer. Same fallback pattern as
+        // `layer_destroyed`.
         if let Some(idx) = self.hidden_helpers.iter().position(|w| {
             w.toplevel().map_or(false, |t| t == &surface)
         }) {
             self.hidden_helpers.remove(idx);
-            self.apply_focus();
+            if !self.refocus_top_exclusive_layer() {
+                self.apply_focus();
+            }
             return;
         }
 

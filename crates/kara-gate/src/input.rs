@@ -88,7 +88,10 @@ impl Gate {
     /// dispatcher to suppress global keybinds while an exclusive
     /// layer (picker, glimpse capture, summon launcher, etc.)
     /// holds focus — those surfaces expect to consume every key.
-    fn keyboard_focus_is_exclusive_layer(&self) -> bool {
+    /// Also called from `apply_focus` so the focus-recompute
+    /// paths don't yank keyboard focus out from under an open
+    /// exclusive layer.
+    pub(crate) fn keyboard_focus_is_exclusive_layer(&self) -> bool {
         use smithay::desktop::layer_map_for_output;
         use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
 
@@ -347,8 +350,12 @@ impl Gate {
         let pointer = self.seat.get_pointer().unwrap();
         let pos = pointer.current_location();
 
-        // On click, focus the window under the pointer
-        if event.state() == ButtonState::Pressed {
+        // On click, focus the window under the pointer — unless an
+        // exclusive-keyboard layer surface (picker, launcher) owns
+        // focus. wlr-layer-shell exclusive layers consume all
+        // keyboard input; clicking a background window should route
+        // the click but leave keyboard focus on the layer.
+        if event.state() == ButtonState::Pressed && !self.keyboard_focus_is_exclusive_layer() {
             if let Some((window, _)) = self.space.element_under(pos) {
                 let window = window.clone();
                 self.focus_window(&window);
