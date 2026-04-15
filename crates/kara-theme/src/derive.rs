@@ -68,8 +68,8 @@ pub fn resolve_theme(spec: &ThemeSpec, variant: Option<&str>) -> Result<Resolved
     let fonts = spec.fonts.clone();
     let vwm_bar = resolve_vwm_bar(spec);
 
-    let (semantic, ansi, base16) = match preset_by_name(&preset_key) {
-        Some(preset) => preset,
+    let (semantic, ansi, base16, matched_preset) = match preset_by_name(&preset_key) {
+        Some(preset) => (preset.0, preset.1, preset.2, Some(preset_key.clone())),
         None => {
             let semantic = derive_semantic(
                 spec.meta.mode,
@@ -79,7 +79,7 @@ pub fn resolve_theme(spec: &ThemeSpec, variant: Option<&str>) -> Result<Resolved
             );
             let ansi = derive_ansi(semantic, primary).0;
             let base16 = derive_base16(semantic, ansi);
-            (semantic, ansi, base16)
+            (semantic, ansi, base16, None)
         }
     };
 
@@ -109,6 +109,7 @@ pub fn resolve_theme(spec: &ThemeSpec, variant: Option<&str>) -> Result<Resolved
         nvim_preset: spec.nvim.preset,
         nvim_transparent: spec.nvim.transparent,
         vwm_bar,
+        variant_preset: matched_preset,
     })
 }
 

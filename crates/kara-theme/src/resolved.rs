@@ -61,6 +61,13 @@ pub struct ResolvedTheme {
     pub nvim_preset: NvimPreset,
     pub nvim_transparent: bool,
     pub vwm_bar: VwmBarResolved,
+    /// The preset key that materialized this theme's semantic palette.
+    /// One of "gruvbox", "vague", "nord", ... or None for the
+    /// derive-from-primary path. Lets downstream renderers dispatch to
+    /// hand-tuned plugins (nvim: nord.nvim, gruvbox.nvim, vague.nvim)
+    /// when a known preset is in play, and fall back to generic
+    /// base16-driven output otherwise.
+    pub variant_preset: Option<String>,
 }
 
 impl ResolvedTheme {

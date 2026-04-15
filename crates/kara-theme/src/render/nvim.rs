@@ -15,17 +15,46 @@ pub fn render_nvim_theme(theme: &ResolvedTheme) -> String {
         ));
     }
 
-    let (colorscheme, variant) = match theme.nvim_preset {
-        NvimPreset::Gruvbox => ("gruvbox", "dark"),
-        NvimPreset::Vague => ("vague", "dark"),
-        NvimPreset::Semantic => (
-            "kara-custom",
+    // Dispatch priority:
+    //   1. `variant_preset` — when the theme resolved via a hand-tuned
+    //      built-in preset (gruvbox/vague/nord/…), use its plugin so
+    //      the editor gets a real tuned colorscheme (treesitter groups,
+    //      LSP, telescope, etc.) instead of a generic base16 derivation.
+    //   2. `nvim_preset` from theme.toml — the legacy `[nvim] preset = ...`
+    //      override users can set per-theme.
+    //   3. Fall through to `kara-custom`, which kara_theme.lua dispatches
+    //      to mini.base16 with the resolved palette.
+    //
+    // Known plugin colorscheme names here must stay in sync with
+    // kara_theme.lua's apply_* dispatch table.
+    let known_plugin = match theme.variant_preset.as_deref() {
+        Some("gruvbox") => Some("gruvbox"),
+        Some("vague") => Some("vague"),
+        Some("nord") => Some("nord"),
+        _ => None,
+    };
+
+    let (colorscheme, variant) = if let Some(name) = known_plugin {
+        (
+            name,
             match theme.mode {
                 crate::UiMode::Light => "light",
-                crate::UiMode::Dark => "dark",
-                crate::UiMode::Auto => "dark",
+                crate::UiMode::Dark | crate::UiMode::Auto => "dark",
             },
-        ),
+        )
+    } else {
+        match theme.nvim_preset {
+            NvimPreset::Gruvbox => ("gruvbox", "dark"),
+            NvimPreset::Vague => ("vague", "dark"),
+            NvimPreset::Semantic => (
+                "kara-custom",
+                match theme.mode {
+                    crate::UiMode::Light => "light",
+                    crate::UiMode::Dark => "dark",
+                    crate::UiMode::Auto => "dark",
+                },
+            ),
+        }
     };
 
     format!(
