@@ -206,27 +206,27 @@ pub fn apply_theme_file(
         reload_plan.kitty = write_if_changed(&paths.kitty_theme_path(), &kitty)?;
     }
     if c.foot {
-        // Patch [colors-dark] / [colors-light] directly into the
-        // user's foot.ini so SIGUSR1 picks up the change live.
-        // See crate::ini_patch::patch_ini_section; same pattern as
-        // GTK settings.ini. Non-color keys in that section (if any)
-        // are preserved.
+        // Patch the active [colors-<mode>] section directly into
+        // foot.ini. Non-color keys in that section (if any) are
+        // preserved by ini_patch. Same pattern as GTK settings.ini.
         let colors_changed =
             patch_ini_section(&paths.foot_config_path(), foot_section, &foot_pairs_ref)?;
         // Also patch [main] theme=dark|light so foot's section
-        // dispatch doesn't depend on xdg-desktop-portal's runtime
-        // color-scheme detection. Without an explicit theme=, foot
-        // picks [colors-dark] vs [colors-light] based on mode — and
-        // apparently doesn't re-evaluate that decision on SIGUSR1
-        // reload, so [colors-dark] patches landed but weren't
-        // applied to the running display.
+        // dispatch is unconditional (doesn't depend on runtime
+        // color-scheme detection via xdg-desktop-portal).
         let main_changed =
             patch_ini_section(&paths.foot_config_path(), "main", &foot_main_pairs_ref)?;
-        // Keep writing the preview file to the state dir so
-        // `kara-beautify render foot` and manual inspection still
-        // work. Not on the reload path anymore.
+        // Human-readable preview for `kara-beautify render foot`
+        // and manual inspection. Not on the reload path.
         let _ = write_if_changed(&paths.foot_theme_path(), &foot_preview)?;
         reload_plan.foot = colors_changed || main_changed;
+        // Tell the reload plan which mode to round-trip back TO.
+        // reload_foot() uses this to pick the correct SIGUSR
+        // sequence that forces foot to re-read the active section.
+        reload_plan.foot_dark = matches!(
+            resolved.mode,
+            kara_theme::UiMode::Dark | kara_theme::UiMode::Auto
+        );
     }
     if c.nvim {
         reload_plan.nvim = write_if_changed(&paths.nvim_theme_path(), &nvim)?;
