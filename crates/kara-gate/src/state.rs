@@ -102,15 +102,29 @@ fn load_startup_wallpaper() -> Option<crate::wallpaper::Wallpaper> {
     None
 }
 
-/// Mark all four `tiled_*` state flags on an `xdg_toplevel` pending state so that
-/// CSD clients (Firefox/Floorp, GTK apps) know they are inside a tiling layout and
-/// should suppress rounded corners, drop shadows, and client-side resize handles.
+/// Mark all four `tiled_*` state flags **and** `Maximized` on an
+/// `xdg_toplevel` pending state so that CSD clients (Firefox/Floorp,
+/// GTK apps, Foot) know they are inside a tiling layout and should
+/// suppress rounded corners, drop shadows, and client-side resize
+/// handles.
+///
+/// Foot in particular rounds corners at "normal" window sizes but
+/// drops them when the toplevel is in the `Maximized` state, which
+/// the TiledLeft/Right/Top/Bottom flags alone don't reliably trigger
+/// — foot checks specifically for `Maximized` before disabling its
+/// CSD radius. Without this, scratchpad foot windows render rounded
+/// corners because their inner tile size is much smaller than the
+/// full output (so foot treats them as "normal floating"), while
+/// workspace foot windows happen to look square because the tile is
+/// basically full-screen and foot falls out of its rounding path by
+/// size heuristic. Setting Maximized makes both paths consistent.
 fn mark_tiled(state: &mut smithay::wayland::shell::xdg::ToplevelState) {
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
     state.states.set(xdg_toplevel::State::TiledLeft);
     state.states.set(xdg_toplevel::State::TiledRight);
     state.states.set(xdg_toplevel::State::TiledTop);
     state.states.set(xdg_toplevel::State::TiledBottom);
+    state.states.set(xdg_toplevel::State::Maximized);
 }
 
 
