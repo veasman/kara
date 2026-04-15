@@ -13,13 +13,18 @@
 //!   │ cancel                           │
 //!   └──────────────────────────────────┘
 //!
-//! Keybinds (matches the plan's B9 spec):
-//!   Tab / Shift+Tab     — next/previous section (Theme ↔ Variant)
-//!   j / k / ↓ / ↑       — next/previous item within the current section
-//!   Ctrl+n / Ctrl+p     — same (vim-alt)
-//!   Enter               — commit the current (theme, variant) selection
-//!                         to kara-beautify via SetTheme IPC
-//!   Escape / Ctrl+c     — cancel, close without applying
+//! Keybinds match the layout's geometry — two rows stacked
+//! vertically, chips flow left-to-right within each row — so
+//! vim-hjkl maps cleanly:
+//!
+//!   Tab / j / ↓         — next section (Theme → Variant)
+//!   Shift+Tab / k / ↑   — previous section (Variant → Theme)
+//!   l / →               — next chip in the current section
+//!   h / ←               — previous chip in the current section
+//!   Ctrl+n / Ctrl+p     — next/previous chip (vim-alt for l/h)
+//!   Enter               — commit current (theme, variant) via
+//!                         SetTheme IPC and exit
+//!   Escape / Ctrl+c     — cancel, exit without applying
 //!
 //! Wallpaper carousel (B9b) and live-preview-on-navigation (B9c)
 //! come in follow-up passes. This module ships the theme picker
@@ -413,7 +418,7 @@ impl Picker {
         }
 
         // Footer: keybind hints
-        let hint = "[Tab] section   [← →] navigate   [Enter] apply   [Esc] cancel";
+        let hint = "[j/k] section   [h/l] item   [Enter] apply   [Esc] cancel";
         let hint_y = (h as i32 - PADDING - 4) as f32;
         self.text
             .draw(&mut pixmap, hint, PADDING as f32, hint_y, t.text_muted);
@@ -643,18 +648,6 @@ impl KeyboardHandler for Picker {
         &mut self, _: &Connection, _qh: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32,
         event: KeyEvent,
     ) {
-        // ─── Section navigation ───────────────────────────────
-        if event.keysym == Keysym::Tab {
-            self.focus = self.focus.next();
-            self.draw();
-            return;
-        }
-        if event.keysym == Keysym::ISO_Left_Tab {
-            self.focus = self.focus.prev();
-            self.draw();
-            return;
-        }
-
         // ─── Exit ─────────────────────────────────────────────
         if event.keysym == Keysym::Escape
             || (self.ctrl_held && event.keysym == Keysym::c)
@@ -670,25 +663,41 @@ impl KeyboardHandler for Picker {
             return;
         }
 
-        // ─── Intra-section navigation ────────────────────────
-        // Horizontal primary (h/l/←/→) because chips are laid out
-        // in a row; vertical aliases (j/k/↑/↓) map to the same
-        // thing so users don't have to think about direction.
-        let prev = matches!(
+        // ─── Section navigation (vertical: j/k/↓/↑/Tab) ──────
+        // The layout stacks Theme over Variant, so "move down"
+        // advances to the next section and "move up" moves back.
+        let section_next = matches!(
             event.keysym,
-            Keysym::h | Keysym::k | Keysym::Left | Keysym::Up
-        ) || (self.ctrl_held && event.keysym == Keysym::p);
-        let next = matches!(
+            Keysym::j | Keysym::Down | Keysym::Tab
+        );
+        let section_prev = matches!(
             event.keysym,
-            Keysym::l | Keysym::j | Keysym::Right | Keysym::Down
-        ) || (self.ctrl_held && event.keysym == Keysym::n);
+            Keysym::k | Keysym::Up | Keysym::ISO_Left_Tab
+        );
+        if section_next {
+            self.focus = self.focus.next();
+            self.draw();
+            return;
+        }
+        if section_prev {
+            self.focus = self.focus.prev();
+            self.draw();
+            return;
+        }
 
-        if prev {
+        // ─── Chip navigation (horizontal: h/l/←/→/C-p/C-n) ───
+        // Chips flow left-to-right within the focused row, so
+        // horizontal keys step between adjacent chips.
+        let chip_prev = matches!(event.keysym, Keysym::h | Keysym::Left)
+            || (self.ctrl_held && event.keysym == Keysym::p);
+        let chip_next = matches!(event.keysym, Keysym::l | Keysym::Right)
+            || (self.ctrl_held && event.keysym == Keysym::n);
+        if chip_prev {
             self.move_selection(-1);
             self.draw();
             return;
         }
-        if next {
+        if chip_next {
             self.move_selection(1);
             self.draw();
             return;

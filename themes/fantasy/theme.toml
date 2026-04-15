@@ -23,7 +23,6 @@
 
 [meta]
 name = "fantasy"
-display_name = "Fantasy"
 author = "kara"
 mode = "dark"
 default_variant = "blood"
@@ -82,7 +81,6 @@ padding_y = 2
 # stays as a fallback if a user rebuilds without those presets.
 
 [variants.blood]
-display_name = "Fantasy — Blood"
 [variants.blood.palette]
 primary = "#a02828"
 accent_strategy = "balanced"
@@ -114,7 +112,6 @@ focus = "sounds/fantasy-focus.ogg"
 
 
 [variants.venom]
-display_name = "Fantasy — Venom"
 [variants.venom.palette]
 # Toxic green — poison, alchemy, rot. Muted so it reads as
 # decayed rather than neon.
@@ -134,7 +131,6 @@ background_tile = true
 
 
 [variants.wraith]
-display_name = "Fantasy — Wraith"
 [variants.wraith.palette]
 # Ghostly purple — undead, spectral, arcane. On the muted side
 # so it feels like drifting mist rather than a neon accent.
