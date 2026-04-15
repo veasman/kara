@@ -5,9 +5,7 @@ use anyhow::Result;
 use kara_theme::resolve_theme;
 use kara_theme::render::{
     floorp::render_floorp_user_js,
-    foot::{
-        foot_color_pairs, foot_color_section, foot_main_section_pairs, render_foot_theme,
-    },
+    foot::{foot_color_pairs, foot_color_section, render_foot_theme},
     fzf::render_fzf_theme, gtk::gtk_settings_pairs, kitty::render_kitty_theme,
     nvim::render_nvim_theme, session::render_session_theme, tmux::render_tmux_theme,
     kara_gate::render_kara_gate_theme,
@@ -106,9 +104,6 @@ pub fn apply_theme_file(
     let foot_pairs = foot_color_pairs(&resolved);
     let foot_pairs_ref: Vec<(&str, String)> =
         foot_pairs.iter().map(|(k, v)| (*k, v.clone())).collect();
-    let foot_main_pairs = foot_main_section_pairs(&resolved);
-    let foot_main_pairs_ref: Vec<(&str, String)> =
-        foot_main_pairs.iter().map(|(k, v)| (*k, v.clone())).collect();
     let nvim = render_nvim_theme(&resolved);
     let tmux = render_tmux_theme(&resolved);
     let fzf = render_fzf_theme(&resolved);
@@ -209,20 +204,18 @@ pub fn apply_theme_file(
         // Patch the active [colors-<mode>] section directly into
         // foot.ini. Non-color keys in that section (if any) are
         // preserved by ini_patch. Same pattern as GTK settings.ini.
+        //
+        // Foot's mode dispatch (which section to use) comes from
+        // xdg-desktop-portal's color-scheme at runtime, so we don't
+        // patch anything in [main] — earlier attempts to add
+        // `theme=dark` there broke foot's config parse because
+        // `theme` isn't a valid [main] key.
         let colors_changed =
             patch_ini_section(&paths.foot_config_path(), foot_section, &foot_pairs_ref)?;
-        // Also patch [main] theme=dark|light so foot's section
-        // dispatch is unconditional (doesn't depend on runtime
-        // color-scheme detection via xdg-desktop-portal).
-        let main_changed =
-            patch_ini_section(&paths.foot_config_path(), "main", &foot_main_pairs_ref)?;
         // Human-readable preview for `kara-beautify render foot`
         // and manual inspection. Not on the reload path.
         let _ = write_if_changed(&paths.foot_theme_path(), &foot_preview)?;
-        reload_plan.foot = colors_changed || main_changed;
-        // Tell the reload plan which mode to round-trip back TO.
-        // reload_foot() uses this to pick the correct SIGUSR
-        // sequence that forces foot to re-read the active section.
+        reload_plan.foot = colors_changed;
         reload_plan.foot_dark = matches!(
             resolved.mode,
             kara_theme::UiMode::Dark | kara_theme::UiMode::Auto

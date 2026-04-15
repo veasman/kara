@@ -21,25 +21,18 @@ pub fn foot_color_section(theme: &ResolvedTheme) -> &'static str {
     }
 }
 
-/// Keys patched into foot's `[main]` section. Right now we only
-/// set `theme=dark|light` so foot's mode selection is explicit —
-/// without it, foot's dark/light auto-detect may not re-evaluate
-/// on SIGUSR1 reload, and `[colors-dark]` changes would land in
-/// the file but not take effect in the running display until
-/// the user toggled system mode.
-///
-/// Returns pairs to be applied with `ini_patch::patch_ini_section`
-/// against the `[main]` section. Note that foot treats top-of-file
-/// keys as implicit `[main]` members — the patcher will either
-/// create an explicit `[main]` header if needed, or merge into an
-/// existing one.
-pub fn foot_main_section_pairs(theme: &ResolvedTheme) -> Vec<(&'static str, String)> {
-    let theme_value = match theme.mode {
-        UiMode::Light => "light",
-        UiMode::Dark | UiMode::Auto => "dark",
-    };
-    vec![("theme", theme_value.to_string())]
-}
+// NOTE: earlier iterations patched a `[main] theme=dark|light`
+// key to pin foot's mode dispatch, but `theme` is NOT a valid
+// key in foot's [main] section — foot errors out on config parse
+// with "not a valid option: theme" and falls back to whatever
+// config it last successfully loaded (usually the startup one).
+// That's what broke foot reload during the daemon debug thread.
+//
+// The correct model is: foot determines dark/light via
+// xdg-desktop-portal's org.freedesktop.appearance color-scheme
+// setting at runtime. We don't need to patch anything in [main] —
+// the round-trip SIGUSR2→SIGUSR1 in reload_foot() is enough to
+// force foot to re-read the active [colors-<mode>] section.
 
 /// Return every color key kara-beautify owns as `(key, value)`
 /// pairs. The `[colors-dark]` / `[colors-light]` section of the
