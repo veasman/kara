@@ -1140,9 +1140,18 @@ pub fn run(
                 .iter()
                 .position(|o| o.output.name() == *name)
         });
-        by_config
-            .or_else(|| state.outputs.iter().position(|o| o.location.x == 0))
-            .unwrap_or(0)
+        let leftmost = state.outputs.iter().position(|o| o.location.x == 0);
+        let chosen = by_config.or(leftmost).unwrap_or(0);
+        let picked_name = state
+            .outputs
+            .get(chosen)
+            .map(|o| o.output.name())
+            .unwrap_or_default();
+        tracing::info!(
+            "primary monitor: config_name={:?} by_config_idx={:?} leftmost_idx={:?} chosen_idx={} chosen_name={}",
+            primary_name, by_config, leftmost, chosen, picked_name,
+        );
+        chosen
     };
     state.focused_output = primary_idx;
 
@@ -1488,7 +1497,15 @@ fn render_frame(
     // visible scratchpad, the scratchpad group is empty and the workspace
     // group holds everything — same visual result as before.
     use smithay::backend::renderer::element::AsRenderElements;
+    // Three window buckets:
+    //   - scratchpad_elements: windows in any scratchpad's workspace
+    //   - floating_elements:   non-scratchpad windows marked floating in
+    //                          their regular workspace
+    //   - workspace_elements:  non-scratchpad tiled windows
+    // Floating sits above tiled in the final vec so floaters stay visible
+    // when a tiling layout is in use.
     let mut workspace_elements: Vec<WaylandSurfaceRenderElement<KaraRenderer<'_>>> = Vec::new();
+    let mut floating_elements: Vec<WaylandSurfaceRenderElement<KaraRenderer<'_>>> = Vec::new();
     let mut scratchpad_elements: Vec<WaylandSurfaceRenderElement<KaraRenderer<'_>>> = Vec::new();
     let space_windows: Vec<_> = state.space.elements().cloned().collect();
     for window in space_windows {
@@ -1511,6 +1528,25 @@ fn render_frame(
             .iter()
             .any(|sp| sp.workspace.clients.contains(&window));
 
+        // Find the regular workspace that owns this window so we can
+        // check its floating flag. Only relevant for non-scratchpad
+        // windows — scratchpad windows go into their own bucket
+        // regardless of floating state.
+        let is_floating = if is_scratchpad {
+            false
+        } else {
+            let mut found = false;
+            'find: for out_pool in &state.workspaces {
+                for ws in out_pool {
+                    if let Some(idx) = ws.clients.iter().position(|w| w == &window) {
+                        found = ws.is_floating(idx);
+                        break 'find;
+                    }
+                }
+            }
+            found
+        };
+
         // Mirror smithay's Space::render_elements_for_output math:
         // render_location = element_location - window.geometry().loc - output_geo.loc
         // The geometry.loc subtraction is what positions CSD clients (Firefox,
@@ -1531,6 +1567,8 @@ fn render_frame(
 
         if is_scratchpad {
             scratchpad_elements.extend(win_elements);
+        } else if is_floating {
+            floating_elements.extend(win_elements);
         } else {
             workspace_elements.extend(win_elements);
         }
@@ -1538,20 +1576,21 @@ fn render_frame(
 
     // Element order (front-to-back for DrmCompositor — first is topmost):
     //   cursor > keybind > layers > sp_borders > scratchpad_elements
-    //          > sp_dim > workspace_elements > custom
+    //          > sp_dim > floating_elements > workspace_elements > custom
     //
     // Drawn back-to-front the sequence is:
     //   custom (wallpaper, bar, workspace borders)
-    //   → workspace windows (dimmed if sp_dim is present)
-    //   → sp_dim (full-screen rect — dims workspace even in the in-scratchpad
-    //     window gaps, which the old four-rects-around-a-hole approach left
-    //     showing through)
+    //   → workspace windows — tiled (dimmed if sp_dim is present)
+    //   → floating windows (above tiled, also dimmed by sp_dim)
+    //   → sp_dim (full-screen rect — dims workspace + floaters even in
+    //     the in-scratchpad window gaps)
     //   → scratchpad windows (unaffected by the dim)
     //   → sp_borders → layers → keybind overlay → cursor
     let mut elements: Vec<DrmRenderElement<'_>> = Vec::with_capacity(
         custom_elements.len()
             + sp_borders.len()
             + sp_dim.len()
+            + floating_elements.len()
             + workspace_elements.len()
             + scratchpad_elements.len()
             + 1,
@@ -1596,6 +1635,12 @@ fn render_frame(
     // Full-screen dim (if any visible scratchpad on this output)
     elements.extend(sp_dim.into_iter().map(DrmRenderElement::Texture));
 
+    // Floating windows — above tiled workspace windows so they stay
+    // visible in tiling mode, below sp_dim so scratchpad mode dims them
+    // along with the rest of the workspace backdrop.
+    let floating_len_saved = floating_elements.len();
+    elements.extend(floating_elements.into_iter().map(DrmRenderElement::Surface));
+
     // Workspace windows — drawn below the dim so they get dimmed.
     let workspace_len_saved = workspace_elements.len();
     elements.extend(workspace_elements.into_iter().map(DrmRenderElement::Surface));
@@ -1621,7 +1666,10 @@ fn render_frame(
     // into the landscape scanout. The branches below enforce that.
     let want_blur = instance.blur.is_some() && scratchpad_wants_blur(state, output_idx);
     if want_blur {
-        let backdrop_len = workspace_len_saved + custom_len_saved;
+        // The blur backdrop covers everything below sp_dim: the floating
+        // bucket, the tiled workspace bucket, and the custom texture
+        // block (wallpaper/bar/borders). Drain all three in one shot.
+        let backdrop_len = floating_len_saved + workspace_len_saved + custom_len_saved;
         let blur_passes = scratchpad_max_blur_passes(state, output_idx);
         if backdrop_len > 0 && blur_passes > 0 {
             if let Err(phase) = run_scratchpad_blur(

@@ -260,6 +260,47 @@ impl Gate {
             return;
         }
 
+        // One-scratchpad-per-monitor: if any OTHER scratchpad is
+        // currently visible on the focused output, hide it first so the
+        // new one replaces it rather than stacking. This matches the
+        // mental model of "the scratchpad slot" as a single overlay
+        // per monitor.
+        let focused_out = self.focused_output;
+        let others_to_hide: Vec<usize> = self
+            .scratchpads
+            .iter()
+            .enumerate()
+            .filter(|(i, sp)| *i != sp_idx && sp.visible && sp.output_idx == focused_out)
+            .map(|(i, _)| i)
+            .collect();
+        let had_others = !others_to_hide.is_empty();
+        for other_idx in others_to_hide {
+            let windows: Vec<_> = self.scratchpads[other_idx].workspace.clients.clone();
+            for window in &windows {
+                self.animations.cancel(window);
+                self.space.unmap_elem(window);
+            }
+            self.scratchpads[other_idx].visible = false;
+            if self.focused_scratchpad == Some(other_idx) {
+                self.focused_scratchpad = None;
+            }
+            let other_name = self
+                .config
+                .scratchpads
+                .get(self.scratchpads[other_idx].config_idx)
+                .map(|s| s.name.as_str())
+                .unwrap_or("?")
+                .to_string();
+            tracing::debug!(
+                "scratchpad '{other_name}' auto-hidden (swapping to '{sp_name}')"
+            );
+        }
+        if had_others {
+            self.scratchpad_border_rects.clear();
+            self.scratchpad_border_cache.clear();
+            self.scratchpad_border_offsets.clear();
+        }
+
         // Autostart on first toggle. A scratchpad can declare multiple
         // `autostart` entries — we seed `autostart_remaining` with the
         // full list and spawn only the first one. The rest are
@@ -276,6 +317,10 @@ impl Gate {
                 .map(|sc| sc.autostart.clone())
                 .unwrap_or_default();
             if !cmds.is_empty() {
+                tracing::info!(
+                    "scratchpad '{sp_name}' autostart seeded with {} cmds: {:?}",
+                    cmds.len(), cmds,
+                );
                 self.scratchpads[sp_idx].autostart_remaining = cmds;
                 let first = self.scratchpads[sp_idx].autostart_remaining[0].clone();
                 self.spawn_raw(&first);
@@ -656,8 +701,12 @@ impl Gate {
                         .filter(|m| *m < self.outputs.len())
                         .unwrap_or(self.focused_output);
                     let target_ws = entry.workspace.unwrap_or_else(|| self.effective_ws(target_out));
-                    self.pending_autostart_routes
-                        .push((app_id.clone(), target_out, target_ws));
+                    self.pending_autostart_routes.push((
+                        app_id.clone(),
+                        target_out,
+                        target_ws,
+                        std::time::Instant::now(),
+                    ));
                     tracing::info!(
                         "autostart: queued route app_id={app_id:?} → output {target_out} ws {}",
                         target_ws + 1,

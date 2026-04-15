@@ -157,6 +157,13 @@ impl ClientData for ClientState {
     fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
 }
 
+/// How long a queued `autostart` route stays valid before being discarded.
+/// Chosen to be long enough for typical client startup (foot, Floorp, etc.)
+/// but short enough that a route from a wrapper like `footclient` — which
+/// exits immediately without producing its own toplevel — can't capture a
+/// window the user manually spawns minutes later with the same app_id.
+const AUTOSTART_ROUTE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct Gate {
     pub display_handle: DisplayHandle,
     pub loop_signal: LoopSignal,
@@ -219,7 +226,14 @@ pub struct Gate {
     /// stored here. The next window that maps with a matching app_id gets
     /// routed to (N, M) and the entry is removed. Entries are dropped if
     /// not matched within a reasonable time to avoid stale routing.
-    pub pending_autostart_routes: Vec<(String /* app_id */, usize /* output */, usize /* ws */)>,
+    /// Queued routes from `autostart` entries with `monitor`/`workspace`
+    /// hints. The `Instant` is the time the route was pushed; routes
+    /// older than `AUTOSTART_ROUTE_TTL` are discarded at match time to
+    /// prevent stale routes from capturing a window the user manually
+    /// spawned much later (e.g., when the original autostart command
+    /// was a short-lived wrapper like `footclient` that exited without
+    /// producing a new toplevel).
+    pub pending_autostart_routes: Vec<(String /* app_id */, usize /* output */, usize /* ws */, std::time::Instant)>,
     /// Helper-client toplevels (e.g. wl-clipboard) given transient keyboard focus so
     /// they can call `wl_data_device.set_selection`, but never added to a workspace.
     /// Focus is restored to the active workspace when the helper is destroyed.
@@ -1173,10 +1187,12 @@ impl Gate {
             // Remove the one we were waiting for.
             self.scratchpads[sp_idx].autostart_remaining.remove(0);
             let next_cmd = self.scratchpads[sp_idx].autostart_remaining.first().cloned();
-            tracing::debug!(
-                "autostart capture ({} remaining) for scratchpad '{}'",
-                self.scratchpads[sp_idx].autostart_remaining.len(),
+            tracing::info!(
+                "scratchpad '{}' captured autostart window ({}); remaining={:?}, next={:?}",
                 self.config.scratchpads.get(sp_idx).map(|s| s.name.as_str()).unwrap_or("?"),
+                app_id,
+                self.scratchpads[sp_idx].autostart_remaining,
+                next_cmd,
             );
             self.scratchpads[sp_idx].workspace.add_client(window);
             if self.scratchpads[sp_idx].visible {
@@ -1205,6 +1221,16 @@ impl Gate {
             return;
         }
 
+        // Expire pending autostart routes older than AUTOSTART_ROUTE_TTL
+        // (5 seconds). This prevents a stale route from a wrapper like
+        // `footclient` — which exits immediately without producing its
+        // own toplevel — from capturing a window the user manually
+        // spawns minutes later. The TTL also acts as a hard cleanup so
+        // the queue never grows unbounded.
+        let now = std::time::Instant::now();
+        self.pending_autostart_routes
+            .retain(|(_, _, _, ts)| now.duration_since(*ts) < AUTOSTART_ROUTE_TTL);
+
         // Check pending autostart routes FIRST. If this app_id was queued
         // for placement at a specific (output, workspace) by a recent
         // autostart entry, consume the route and place the window there
@@ -1213,9 +1239,10 @@ impl Gate {
             if let Some(pos) = self
                 .pending_autostart_routes
                 .iter()
-                .position(|(a, _, _)| a == &app_id)
+                .position(|(a, _, _, _)| a == &app_id)
             {
-                let (_, target_out, target_ws) = self.pending_autostart_routes.remove(pos);
+                let (_, target_out, target_ws, _) =
+                    self.pending_autostart_routes.remove(pos);
                 if target_out < self.workspaces.len() && target_ws < self.workspaces[target_out].len() {
                     self.workspaces[target_out][target_ws]
                         .add_client_floating(window.clone(), false);
