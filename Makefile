@@ -49,16 +49,22 @@ install:
 	@test -f "target/release/$(TARGET)" || { echo "error: run 'make' first to build"; exit 1; }
 	install -d "$(DESTDIR)$(BINDIR)"
 	install -m 0755 "target/release/$(TARGET)" "$(DESTDIR)$(BINDIR)/$(TARGET)"
+	install -m 0755 session/kara "$(DESTDIR)$(BINDIR)/kara"
 	@test -f "target/release/kara-summon" && \
 		install -m 0755 "target/release/kara-summon" "$(DESTDIR)$(BINDIR)/kara-summon" || true
 	@test -f "target/release/kara-glimpse" && \
 		install -m 0755 "target/release/kara-glimpse" "$(DESTDIR)$(BINDIR)/kara-glimpse" || true
 	@test -f "target/release/kara-whisper" && \
 		install -m 0755 "target/release/kara-whisper" "$(DESTDIR)$(BINDIR)/kara-whisper" || true
+	@test -f "target/release/kara-beautify" && \
+		install -m 0755 "target/release/kara-beautify" "$(DESTDIR)$(BINDIR)/kara-beautify" || true
 	install -d "$(DESTDIR)$(APPDIR)"
 	install -m 0644 example/kara-gate.conf "$(DESTDIR)$(APPDIR)/kara-gate.conf.example"
+	install -m 0644 example/kara-beautify.toml "$(DESTDIR)$(APPDIR)/kara-beautify.toml.example"
 	install -d "$(DESTDIR)$(DATADIR)/wayland-sessions"
 	install -m 0644 session/kara.desktop "$(DESTDIR)$(DATADIR)/wayland-sessions/kara.desktop"
+	install -d "$(DESTDIR)$(DATADIR)/xdg-desktop-portal"
+	install -m 0644 session/kara-portals.conf "$(DESTDIR)$(DATADIR)/xdg-desktop-portal/kara-portals.conf"
 	install -d "$(DESTDIR)$(DATADIR)/licenses/kara"
 	install -m 0644 LICENSE "$(DESTDIR)$(DATADIR)/licenses/kara/LICENSE"
 	@mkdir -p "$(HOME)/.config/kara"
@@ -71,11 +77,15 @@ install:
 
 uninstall:
 	rm -f "$(DESTDIR)$(BINDIR)/$(TARGET)"
+	rm -f "$(DESTDIR)$(BINDIR)/kara"
 	rm -f "$(DESTDIR)$(BINDIR)/kara-summon"
 	rm -f "$(DESTDIR)$(BINDIR)/kara-glimpse"
 	rm -f "$(DESTDIR)$(BINDIR)/kara-whisper"
+	rm -f "$(DESTDIR)$(BINDIR)/kara-beautify"
 	rm -f "$(DESTDIR)$(APPDIR)/kara-gate.conf.example"
+	rm -f "$(DESTDIR)$(APPDIR)/kara-beautify.toml.example"
 	rm -f "$(DESTDIR)$(DATADIR)/wayland-sessions/kara.desktop"
+	rm -f "$(DESTDIR)$(DATADIR)/xdg-desktop-portal/kara-portals.conf"
 	rm -f "$(DESTDIR)$(DATADIR)/licenses/kara/LICENSE"
 
 pkg:

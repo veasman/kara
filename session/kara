@@ -1,0 +1,79 @@
+#!/usr/bin/env sh
+# kara — session launcher for the kara desktop environment
+#
+# Run this from a TTY or as the Exec= line in a wayland-session
+# .desktop file instead of `kara-gate` directly. It wraps the
+# compositor in `dbus-run-session` so every child process
+# (kara-gate, kara-beautify, xdg-desktop-portal, Firefox/Floorp,
+# GTK apps, ...) sees a single user D-Bus session bus.
+#
+# Why this matters:
+#   On systemd-based distros, `dbus.socket` is started automatically
+#   as a user unit at login. On OpenRC / runit / s6 / dinit (Artix,
+#   Void, Gentoo, Alpine), nothing starts a user session bus by
+#   default — you either wrap `startx`/`sway`/`<compositor>` in
+#   `dbus-run-session` yourself, or you have no session bus at all.
+#
+#   Without a session bus:
+#     - xdg-desktop-portal can't register its service → no portal
+#     - Firefox / Floorp can't receive live color-scheme updates
+#       (kara-beautify's `gsettings set color-scheme prefer-dark`
+#       writes to dconf, but the portal signal chain that tells
+#       running GTK/Firefox apps "flip now" is broken)
+#     - notification daemons, clipboard managers, secret services,
+#       and anything else that speaks D-Bus silently degrades
+#
+#   This wrapper guarantees a session bus exists for the lifetime of
+#   your kara session on every init system.
+#
+# Usage:
+#   From a TTY:            kara
+#   From a display mgr:    exec=kara   (session/kara.desktop wires this)
+#
+# Args after `kara` are forwarded to kara-gate as-is, so
+# `kara --log-level debug` works.
+
+set -Eeu
+
+# ─── Session theme environment ────────────────────────────────────────
+# Preload kara-beautify's generated session env (fzf color opts,
+# XCURSOR vars, anything else kara-theme/render/session.rs emits)
+# so child processes inherit the right values from frame one.
+# Silently skipped if kara-beautify has never been run.
+_kara_session_theme="${XDG_STATE_HOME:-$HOME/.local/state}/kara/generated/session-theme.sh"
+if [ -f "$_kara_session_theme" ]; then
+    # shellcheck disable=SC1090
+    . "$_kara_session_theme"
+fi
+unset _kara_session_theme
+
+# ─── Wayland + toolkit hints ──────────────────────────────────────────
+# kara-gate.conf's [environment] block sets these too, but clients
+# launched BEFORE kara-gate parses its config (e.g. xdg-desktop-portal
+# spawned by the first portal D-Bus call) need them earlier — so we
+# export them here, and kara-gate's block acts as a no-op override.
+export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-kara}"
+export XDG_SESSION_TYPE="${XDG_SESSION_TYPE:-wayland}"
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland}"
+export MOZ_ENABLE_WAYLAND="${MOZ_ENABLE_WAYLAND:-1}"
+export ELECTRON_OZONE_PLATFORM_HINT="${ELECTRON_OZONE_PLATFORM_HINT:-wayland}"
+export _JAVA_AWT_WM_NONREPARENTING="${_JAVA_AWT_WM_NONREPARENTING:-1}"
+
+# ─── D-Bus session ────────────────────────────────────────────────────
+# dbus-run-session:
+#   - starts a private dbus-daemon for this session
+#   - exports DBUS_SESSION_BUS_ADDRESS + DBUS_SESSION_BUS_PID
+#   - runs kara-gate as the session leader
+#   - tears the bus down when kara-gate exits
+#
+# If dbus-run-session isn't installed we fall through to plain
+# kara-gate with a warning so the user isn't left staring at a
+# blank TTY.
+if command -v dbus-run-session >/dev/null 2>&1; then
+    exec dbus-run-session -- kara-gate "$@"
+else
+    echo "kara: warning: dbus-run-session not found — session D-Bus"     >&2
+    echo "kara:          will not be available. Install dbus to enable"  >&2
+    echo "kara:          live theme switching in Firefox/GTK apps."      >&2
+    exec kara-gate "$@"
+fi
