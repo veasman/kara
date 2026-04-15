@@ -37,13 +37,29 @@ use crate::state::runtime::{
     clear_current_variant,
 };
 
-/// Daemon state held across requests. The in-memory redo stack lives
-/// here (resets on daemon exit, which matches user intuition —
-/// "redo" is a short-term affordance after an accidental undo).
+/// Daemon state held across requests.
 pub struct DaemonState {
     pub repo_root: PathBuf,
     pub paths: KaraPaths,
+
+    /// In-memory redo stack. Resets on daemon exit, which matches
+    /// user intuition — "redo" is a short-term affordance after
+    /// an accidental undo, not a long-term history.
     pub redo_stack: Vec<HistoryEntry>,
+
+    /// Snapshot of the theme state at the moment the current
+    /// preview session began. Populated on the first
+    /// `ApplyPreview` after a clean state; cleared on
+    /// `CommitPreview` or `CancelPreview`. When present, the
+    /// current on-disk state is a live preview that CancelPreview
+    /// can revert to by re-applying this snapshot.
+    ///
+    /// In-memory only — if the daemon crashes during a preview,
+    /// the last-applied preview state stays on disk and there's
+    /// no revert path. That matches the design trade-off
+    /// documented in the B9 plan: previews are transient UX, not
+    /// a durable transaction layer.
+    pub preview_snapshot: Option<HistoryEntry>,
 }
 
 pub fn run(repo_root: PathBuf, paths: KaraPaths) -> Result<()> {
@@ -61,6 +77,7 @@ pub fn run(repo_root: PathBuf, paths: KaraPaths) -> Result<()> {
         repo_root,
         paths,
         redo_stack: Vec::new(),
+        preview_snapshot: None,
     });
 
     // Simple accept loop. Each client is handled to completion
@@ -363,28 +380,150 @@ fn handle_redo(s: &mut DaemonState) -> Result<Response> {
     })
 }
 
-// Preview handlers — stubbed until the picker (B9) wires them.
+// ─── Preview state machine (B9c) ───────────────────────────────────
+//
+// Flow:
+//   1. Picker opens → no snapshot yet
+//   2. User navigates → ApplyPreview fires
+//       - First preview captures current on-disk state as the
+//         snapshot (the "revert target")
+//       - Subsequent previews re-apply the new target WITHOUT
+//         re-snapshotting — the original pre-picker state stays
+//         as the revert point
+//   3. User hits Enter → CommitPreview
+//       - The live applied state is already what the user wants,
+//         so this just records it in history and clears the
+//         snapshot
+//   4. User hits Escape → CancelPreview
+//       - Re-apply the snapshot (original state), clear it
+//
+// No-op robustness:
+//   - Commit with no snapshot: Ok (nothing to commit)
+//   - Cancel with no snapshot: Ok (nothing to cancel)
+//   - Apply with no snapshot: capture snapshot + apply
+//   - Apply with existing snapshot: just apply (preserve snapshot)
+
 fn handle_apply_preview(
-    _s: &mut DaemonState,
-    _theme: Option<&str>,
-    _variant: Option<&str>,
+    s: &mut DaemonState,
+    theme: Option<&str>,
+    variant: Option<&str>,
     _wallpaper: Option<&std::path::Path>,
 ) -> Result<Response> {
-    Ok(Response::Error {
-        message: "preview not yet implemented — lands with the picker (B9)".to_string(),
+    // Resolve the target — preview needs at least one of theme or
+    // variant. Picker always passes both on navigation so we don't
+    // normally hit the edge cases, but guard against an empty
+    // request to avoid silently applying "the current theme" which
+    // would look like a no-op to the user.
+    let target_theme = theme
+        .map(|s| s.to_string())
+        .or_else(|| {
+            read_current_theme(&s.paths).ok().flatten()
+        })
+        .context("ApplyPreview with no theme and no current theme in state")?;
+
+    // If no snapshot exists yet, capture the pre-preview state so
+    // CancelPreview can revert.
+    if s.preview_snapshot.is_none() {
+        let current_theme = read_current_theme(&s.paths)?;
+        let current_variant = read_current_variant(&s.paths)?;
+        if let Some(t) = current_theme {
+            s.preview_snapshot = Some(HistoryEntry::new(&t, current_variant.as_deref()));
+        }
+    }
+
+    // Apply the target without recording in history — preview
+    // navigation shouldn't pollute the undo/redo stack.
+    apply_state(s, &target_theme, variant)?;
+
+    Ok(Response::OkWithMessage {
+        message: format!(
+            "preview: {target_theme}{}",
+            variant
+                .map(|v| format!(":{v}"))
+                .unwrap_or_default()
+        ),
     })
 }
 
-fn handle_commit_preview(_s: &mut DaemonState) -> Result<Response> {
-    Ok(Response::Error {
-        message: "preview not yet implemented".to_string(),
+fn handle_commit_preview(s: &mut DaemonState) -> Result<Response> {
+    if s.preview_snapshot.is_none() {
+        // No active preview — nothing to commit. Return Ok so
+        // picker-on-enter-with-no-navigation doesn't error.
+        return Ok(Response::Ok);
+    }
+
+    // The on-disk state is already the preview (we wrote it in
+    // ApplyPreview). Now record it in history so undo/redo works,
+    // and clear the snapshot.
+    let current_theme = read_current_theme(&s.paths)?
+        .context("CommitPreview with no current_theme on disk")?;
+    let current_variant = read_current_variant(&s.paths)?;
+
+    let mut history = History::load(&history_path(&s.paths))?;
+    history.push(HistoryEntry::new(&current_theme, current_variant.as_deref()));
+    history.save(&history_path(&s.paths))?;
+
+    s.redo_stack.clear();
+    s.preview_snapshot = None;
+
+    Ok(Response::OkWithMessage {
+        message: format!(
+            "committed: {current_theme}{}",
+            current_variant
+                .as_deref()
+                .map(|v| format!(":{v}"))
+                .unwrap_or_default()
+        ),
     })
 }
 
-fn handle_cancel_preview(_s: &mut DaemonState) -> Result<Response> {
-    Ok(Response::Error {
-        message: "preview not yet implemented".to_string(),
+fn handle_cancel_preview(s: &mut DaemonState) -> Result<Response> {
+    let Some(snapshot) = s.preview_snapshot.take() else {
+        // No active preview — nothing to cancel. Ok so
+        // picker-on-escape-with-no-navigation doesn't error.
+        return Ok(Response::Ok);
+    };
+
+    // Re-apply the snapshot without recording.
+    apply_state(s, &snapshot.theme, snapshot.variant.as_deref())?;
+
+    Ok(Response::OkWithMessage {
+        message: format!(
+            "reverted: {}{}",
+            snapshot.theme,
+            snapshot
+                .variant
+                .as_deref()
+                .map(|v| format!(":{v}"))
+                .unwrap_or_default()
+        ),
     })
+}
+
+/// Shared apply helper used by both the preview path and undo/redo.
+/// Writes generated state files + fires reloads + updates the
+/// current_theme/current_variant state files, but does NOT touch
+/// history or the redo stack. Callers that need history tracking
+/// use `apply_and_record` instead.
+fn apply_state(s: &DaemonState, theme_name: &str, variant: Option<&str>) -> Result<()> {
+    let theme_dir = s
+        .paths
+        .find_theme(theme_name, Some(&s.repo_root))
+        .with_context(|| format!("theme '{theme_name}' not found"))?;
+    let file = theme_dir.join("theme.toml");
+
+    // Validate the variant before writing anything.
+    let spec = ThemeSpec::load_from_file(&file)?;
+    let _ = resolve_theme(&spec, variant)?;
+
+    apply_theme_file(
+        &file,
+        &theme_dir,
+        &s.paths,
+        variant,
+        ApplyOptions::default(),
+    )?;
+    Ok(())
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────

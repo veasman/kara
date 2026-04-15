@@ -218,19 +218,12 @@ pub fn run(theme: ThemeColors) {
         }
     }
 
+    // Commit or cancel the preview that was driven by navigation.
+    // See fire_preview() for the ApplyPreview-on-nav wiring.
     if picker.commit_on_exit {
-        if let Some(group) = picker.groups.get(picker.theme_idx) {
-            let variant = group
-                .variants
-                .as_ref()
-                .and_then(|vs| vs.get(picker.variant_idx))
-                .map(|v| v.name.clone());
-            let _ = beautify_ipc::try_request(&Request::SetTheme {
-                name: group.entry.name.clone(),
-                variant,
-                wallpaper: None,
-            });
-        }
+        let _ = beautify_ipc::try_request(&Request::CommitPreview);
+    } else {
+        let _ = beautify_ipc::try_request(&Request::CancelPreview);
     }
 }
 
@@ -298,27 +291,63 @@ impl Picker {
     }
 
     fn move_selection(&mut self, delta: isize) {
-        match self.focus {
+        let changed = match self.focus {
             Focus::Theme => {
                 if self.groups.is_empty() {
-                    return;
-                }
-                let new_idx = wrap(self.theme_idx as isize + delta, self.groups.len());
-                if new_idx != self.theme_idx {
-                    self.theme_idx = new_idx;
-                    // Load the new theme's variants on first focus.
-                    fetch_variants_for(&mut self.groups, self.theme_idx);
-                    self.variant_idx = 0;
+                    false
+                } else {
+                    let new_idx = wrap(self.theme_idx as isize + delta, self.groups.len());
+                    if new_idx != self.theme_idx {
+                        self.theme_idx = new_idx;
+                        fetch_variants_for(&mut self.groups, self.theme_idx);
+                        self.variant_idx = 0;
+                        true
+                    } else {
+                        false
+                    }
                 }
             }
             Focus::Variant => {
                 let n = self.active_variants().len();
                 if n == 0 {
-                    return;
+                    false
+                } else {
+                    let new_idx = wrap(self.variant_idx as isize + delta, n);
+                    if new_idx != self.variant_idx {
+                        self.variant_idx = new_idx;
+                        true
+                    } else {
+                        false
+                    }
                 }
-                self.variant_idx = wrap(self.variant_idx as isize + delta, n);
             }
+        };
+
+        if changed {
+            self.fire_preview();
         }
+    }
+
+    /// Fire an ApplyPreview IPC request for the currently-selected
+    /// (theme, variant) pair. Best-effort; if the daemon isn't
+    /// reachable the picker still lets the user navigate (but no
+    /// live feedback on the desktop).
+    fn fire_preview(&mut self) {
+        let Some(group) = self.groups.get(self.theme_idx) else {
+            return;
+        };
+        let theme_name = group.entry.name.clone();
+        let variant_name = group
+            .variants
+            .as_ref()
+            .and_then(|vs| vs.get(self.variant_idx))
+            .map(|v| v.name.clone());
+
+        let _ = beautify_ipc::try_request(&Request::ApplyPreview {
+            theme: Some(theme_name),
+            variant: variant_name,
+            wallpaper: None,
+        });
     }
 
     fn draw(&mut self) {
