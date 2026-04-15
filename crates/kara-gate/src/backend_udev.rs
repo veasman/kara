@@ -1904,10 +1904,21 @@ fn capture_screenshot<'a>(
 /// at landscape + Normal so its damage tracker never runs smithay's
 /// buggy rotated-render path.
 ///
+/// **Currently off.** The pipeline compiled cleanly and all log
+/// targets confirm it runs without per-frame errors, but on first-run
+/// the whole render loop produces blank output on every monitor —
+/// something about `run_two_pass` poisons shared renderer state so
+/// even the non-rotated outputs stop drawing anything visible. The
+/// plumbing (per-output `TwoPassState`, Dmabuf allocator, Static
+/// mode-source DrmCompositor, `run_two_pass` dispatcher) is all in
+/// place, so picking this back up is just "figure out what run_two_pass
+/// is doing wrong". Flip this back to `true` once that's diagnosed
+/// (see session handoff for debug plan).
+///
 /// When `false`, rotation falls back to the smithay-native path (see
 /// [`ROTATION_SMITHAY_NATIVE`]) or to the kill-switch "render landscape
 /// sideways" fallback.
-const ROTATION_TWO_PASS: bool = true;
+const ROTATION_TWO_PASS: bool = false;
 
 /// When `true`, configured rotation uses smithay's built-in rotated
 /// render path (setting the Output transform and letting damage tracker
