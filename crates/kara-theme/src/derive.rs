@@ -21,6 +21,23 @@ pub struct Palette16(pub [Color; 16]);
 /// built-in preset by name. Unknown preset names fall back to the
 /// derive-from-primary code path using the variant's inline palette.
 pub fn resolve_theme(spec: &ThemeSpec, variant: Option<&str>) -> Result<ResolvedTheme> {
+    // If the caller explicitly asked for a variant, it must exist.
+    // Previously unknown variants silently fell through to deriving
+    // from the top-level palette, which hides typos ("--variant noord")
+    // behind a mystery fallback. Now they're a hard error so the user
+    // knows immediately.
+    if let Some(requested) = variant {
+        if !spec.variants.is_empty() && !spec.variants.contains_key(requested) {
+            let available: Vec<&str> =
+                spec.variants.keys().map(|s| s.as_str()).collect();
+            anyhow::bail!(
+                "variant '{requested}' not found in theme '{}'. available: {}",
+                spec.meta.name,
+                available.join(", ")
+            );
+        }
+    }
+
     // Figure out which variant (if any) to apply.
     let variant_name = variant
         .map(|s| s.to_string())

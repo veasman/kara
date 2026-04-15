@@ -1388,6 +1388,7 @@ dependencies = [
  "kara-color",
  "kara-ipc",
  "kara-theme",
+ "serde",
  "serde_json",
  "toml",
 ]

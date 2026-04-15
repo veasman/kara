@@ -139,6 +139,10 @@ impl KaraPaths {
         self.generated_dir().join("kitty-theme.conf")
     }
 
+    pub fn foot_theme_path(&self) -> PathBuf {
+        self.generated_dir().join("foot-theme.ini")
+    }
+
     pub fn nvim_theme_path(&self) -> PathBuf {
         self.generated_dir().join("nvim-theme.lua")
     }

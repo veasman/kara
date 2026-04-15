@@ -4,13 +4,15 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use kara_theme::resolve_theme;
 use kara_theme::render::{
-    fzf::render_fzf_theme, gtk::render_gtk_settings,
+    foot::render_foot_theme, fzf::render_fzf_theme, gtk::gtk_settings_pairs,
     kitty::render_kitty_theme, nvim::render_nvim_theme,
     session::render_session_theme, tmux::render_tmux_theme,
     kara_gate::render_kara_gate_theme,
 };
 use kara_theme::ThemeSpec;
 
+use crate::config::BeautifyConfig;
+use crate::ini_patch::patch_ini_section;
 use crate::state::paths::KaraPaths;
 use crate::state::runtime::{read_theme_wallpaper, write_current_theme};
 use crate::desktop::sync_desktop_appearance;
@@ -65,6 +67,7 @@ pub fn debug_theme_file(
         generated_paths: vec![
             ("kara-gate".to_string(), paths.kara_gate_theme_path()),
             ("kitty".to_string(), paths.kitty_theme_path()),
+            ("foot".to_string(), paths.foot_theme_path()),
             ("nvim".to_string(), paths.nvim_theme_path()),
             ("tmux".to_string(), paths.tmux_theme_path()),
             ("fzf".to_string(), paths.fzf_theme_path()),
@@ -86,27 +89,61 @@ pub fn apply_theme_file(
 
     let spec = ThemeSpec::load_from_file(theme_file)?;
     let resolved = resolve_theme(&spec, variant)?;
+    // Per-consumer opt-outs from ~/.config/kara/kara-beautify.toml.
+    // Every flag defaults to true so no config = current behavior.
+    let user_cfg = BeautifyConfig::load(paths)?;
+    let c = &user_cfg.consumers;
 
     let mut reload_plan = ReloadPlan::default();
 
     let kara_gate = render_kara_gate_theme(&resolved);
     let kitty = render_kitty_theme(&resolved);
+    let foot = render_foot_theme(&resolved);
     let nvim = render_nvim_theme(&resolved);
     let tmux = render_tmux_theme(&resolved);
     let fzf = render_fzf_theme(&resolved);
     let session = render_session_theme(&resolved);
-    let gtk = render_gtk_settings(&resolved);
+    let gtk_pairs = gtk_settings_pairs(&resolved);
+    let gtk_pairs_ref: Vec<(&str, String)> =
+        gtk_pairs.iter().map(|(k, v)| (*k, v.clone())).collect();
 
     if options.dry_run {
         println!("dry-run: {}", spec.meta.name);
-        println!("  would write: {}", paths.kara_gate_theme_path().display());
-        println!("  would write: {}", paths.kitty_theme_path().display());
-        println!("  would write: {}", paths.nvim_theme_path().display());
-        println!("  would write: {}", paths.tmux_theme_path().display());
-        println!("  would write: {}", paths.fzf_theme_path().display());
-        println!("  would write: {}", paths.session_theme_path().display());
-        println!("  would write: {}", paths.gtk3_settings_path().display());
-        println!("  would write: {}", paths.gtk4_settings_path().display());
+        if c.kara_gate {
+            println!("  would write: {}", paths.kara_gate_theme_path().display());
+        }
+        if c.kitty {
+            println!("  would write: {}", paths.kitty_theme_path().display());
+        }
+        if c.foot {
+            println!("  would write: {}", paths.foot_theme_path().display());
+        }
+        if c.nvim {
+            println!("  would write: {}", paths.nvim_theme_path().display());
+        }
+        if c.tmux {
+            println!("  would write: {}", paths.tmux_theme_path().display());
+        }
+        if c.fzf {
+            println!("  would write: {}", paths.fzf_theme_path().display());
+        }
+        if c.session {
+            println!("  would write: {}", paths.session_theme_path().display());
+        }
+        if c.gtk {
+            println!(
+                "  would patch: {} (5 keys)",
+                paths.gtk3_settings_path().display()
+            );
+            println!(
+                "  would patch: {} (5 keys)",
+                paths.gtk4_settings_path().display()
+            );
+        }
+        println!(
+            "  (consumers: kara_gate={} kitty={} foot={} nvim={} tmux={} fzf={} session={} gtk={})",
+            c.kara_gate, c.kitty, c.foot, c.nvim, c.tmux, c.fzf, c.session, c.gtk
+        );
 
         if let Some(wallpaper) = selected_wallpaper(
             theme_root,
@@ -122,17 +159,40 @@ pub fn apply_theme_file(
         return Ok(());
     }
 
-    reload_plan.kara_gate = write_if_changed(&paths.kara_gate_theme_path(), &kara_gate)?;
-    reload_plan.kitty = write_if_changed(&paths.kitty_theme_path(), &kitty)?;
-    reload_plan.nvim = write_if_changed(&paths.nvim_theme_path(), &nvim)?;
-    reload_plan.tmux = write_if_changed(&paths.tmux_theme_path(), &tmux)?;
-    let _ = write_if_changed(&paths.fzf_theme_path(), &fzf)?;
-    let _ = write_if_changed(&paths.session_theme_path(), &session)?;
+    // Gate every write on its consumer flag. Disabled consumers skip
+    // the render output AND the reload signal that would fire later.
+    if c.kara_gate {
+        reload_plan.kara_gate =
+            write_if_changed(&paths.kara_gate_theme_path(), &kara_gate)?;
+    }
+    if c.kitty {
+        reload_plan.kitty = write_if_changed(&paths.kitty_theme_path(), &kitty)?;
+    }
+    if c.foot {
+        reload_plan.foot = write_if_changed(&paths.foot_theme_path(), &foot)?;
+    }
+    if c.nvim {
+        reload_plan.nvim = write_if_changed(&paths.nvim_theme_path(), &nvim)?;
+    }
+    if c.tmux {
+        reload_plan.tmux = write_if_changed(&paths.tmux_theme_path(), &tmux)?;
+    }
+    if c.fzf {
+        let _ = write_if_changed(&paths.fzf_theme_path(), &fzf)?;
+    }
+    if c.session {
+        let _ = write_if_changed(&paths.session_theme_path(), &session)?;
+    }
 
-    let _ = write_if_changed(&paths.gtk3_settings_path(), &gtk)?;
-    let _ = write_if_changed(&paths.gtk4_settings_path(), &gtk)?;
-
-    sync_desktop_appearance(&resolved)?;
+    if c.gtk {
+        // Patch in place so user-added keys (font-name, button order,
+        // overlay-scrolling, etc.) survive. See crate::ini_patch.
+        let _ =
+            patch_ini_section(&paths.gtk3_settings_path(), "Settings", &gtk_pairs_ref)?;
+        let _ =
+            patch_ini_section(&paths.gtk4_settings_path(), "Settings", &gtk_pairs_ref)?;
+        sync_desktop_appearance(&resolved)?;
+    }
     // write_current_theme takes the bare theme name (not "theme:variant"
     // because the state file is also how kara-gate and kara-summon
     // identify which theme is active, and they shouldn't have to parse

@@ -1,8 +1,10 @@
 mod state;
 mod wallpaper;
+mod config;
 mod doctor;
 mod apply;
 mod desktop;
+mod ini_patch;
 mod reload;
 mod wallpaper_agent;
 
@@ -23,7 +25,7 @@ use crate::wallpaper::{derive_theme_from_image, ranked_swatches_from_image};
 
 use kara_theme::resolve_theme;
 use kara_theme::render::{
-    fzf::render_fzf_theme, gtk::render_gtk_settings,
+    foot::render_foot_theme, fzf::render_fzf_theme, gtk::render_gtk_settings,
     kitty::render_kitty_theme, nvim::render_nvim_theme,
     session::render_session_theme, tmux::render_tmux_theme,
     kara_gate::render_kara_gate_theme,
@@ -134,6 +136,7 @@ enum WallpaperCommands {
 enum RenderTarget {
     Gtk,
     Kitty,
+    Foot,
     Nvim,
     Tmux,
     KaraGate,
@@ -782,6 +785,7 @@ fn render_command(
     let out = match target {
         RenderTarget::Gtk => render_gtk_settings(&resolved),
         RenderTarget::Kitty => render_kitty_theme(&resolved),
+        RenderTarget::Foot => render_foot_theme(&resolved),
         RenderTarget::Nvim => render_nvim_theme(&resolved),
         RenderTarget::Tmux => render_tmux_theme(&resolved),
         RenderTarget::KaraGate => render_kara_gate_theme(&resolved),

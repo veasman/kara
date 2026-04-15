@@ -5,13 +5,14 @@ use std::process::{Command, Stdio};
 pub struct ReloadPlan {
     pub kara_gate: bool,
     pub kitty: bool,
+    pub foot: bool,
     pub tmux: bool,
     pub nvim: bool,
 }
 
 impl ReloadPlan {
     pub fn any(self) -> bool {
-        self.kara_gate || self.kitty || self.tmux || self.nvim
+        self.kara_gate || self.kitty || self.foot || self.tmux || self.nvim
     }
 }
 
@@ -41,6 +42,12 @@ pub fn reload_kitty() {
     run_shell(r#"pidof kitty >/dev/null 2>&1 && pkill -USR1 -x kitty || true"#);
 }
 
+pub fn reload_foot() {
+    // foot reloads colors/config on SIGUSR1 — applies to every running
+    // instance including footclient children of a foot --server.
+    run_shell(r#"pidof foot >/dev/null 2>&1 && pkill -USR1 -x foot || true"#);
+}
+
 pub fn reload_tmux(theme_path: &Path) {
     let command = format!(
         "tmux source-file {} >/dev/null 2>&1 || true",
@@ -65,6 +72,9 @@ pub fn apply_runtime_reloads(plan: ReloadPlan, tmux_theme_path: &Path) {
     }
     if plan.kitty {
         reload_kitty();
+    }
+    if plan.foot {
+        reload_foot();
     }
     if plan.tmux {
         reload_tmux(tmux_theme_path);

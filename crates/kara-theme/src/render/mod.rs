@@ -1,3 +1,4 @@
+pub mod foot;
 pub mod fzf;
 pub mod gtk;
 pub mod kara_gate;

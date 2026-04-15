@@ -1,0 +1,54 @@
+# ~/.config/kara/kara-beautify.toml
+#
+# Optional — if this file doesn't exist, every consumer is enabled
+# and beautify writes every renderer's output on `kara-beautify apply`.
+#
+# Use the [consumers] block to opt out of individual renderers. This
+# is the primary tool for coordinating kara-beautify with a dotfiles
+# repo: set a consumer to `false` and beautify stops writing its
+# output file AND stops sending reload signals, so your hand-managed
+# config stays authoritative.
+#
+# Ownership reference:
+#
+#   kara_gate — writes ~/.local/state/kara/generated/kara-gate-theme.conf
+#               user's kara-gate.conf pulls it in with `include`.
+#               User config file: your dotfiles / ~/.config/kara/kara-gate.conf
+#
+#   kitty     — writes ~/.local/state/kara/generated/kitty-theme.conf
+#               user's kitty.conf pulls it in with `include`.
+#
+#   foot      — writes ~/.local/state/kara/generated/foot-theme.ini
+#               user's foot.ini pulls it in with `include=`.
+#
+#   nvim      — writes ~/.local/state/kara/generated/nvim-theme.lua
+#               the kara.nvim plugin (oracle.core.kara_theme in this
+#               repo's dotfiles reference impl) consumes it on apply.
+#
+#   tmux      — writes ~/.local/state/kara/generated/tmux-theme.conf
+#               user's tmux.conf pulls it in with `source-file`.
+#
+#   fzf       — writes ~/.local/state/kara/generated/fzf-theme.sh
+#               user's shell rc sources it.
+#
+#   session   — writes ~/.local/state/kara/generated/session-theme.sh
+#               user's shell profile or session startup sources it.
+#
+#   gtk       — PATCHES ~/.config/gtk-3.0/settings.ini and
+#               ~/.config/gtk-4.0/settings.ini in place. Only the five
+#               theming keys are touched; any font, button order, or
+#               custom keys from your dotfiles are preserved. If you
+#               prefer to own settings.ini entirely yourself, set this
+#               to `false` and beautify will skip it (and gsettings).
+
+[consumers]
+# Every flag defaults to `true`. Uncomment and set to `false` to opt
+# out of a renderer you'd rather manage by hand.
+# kara_gate = true
+# kitty     = true
+# foot      = true
+# nvim      = true
+# tmux      = true
+# fzf       = true
+# session   = true
+# gtk       = true
