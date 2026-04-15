@@ -18,8 +18,17 @@
 #   kitty     — writes ~/.local/state/kara/generated/kitty-theme.conf
 #               user's kitty.conf pulls it in with `include`.
 #
-#   foot      — writes ~/.local/state/kara/generated/foot-theme.ini
-#               user's foot.ini pulls it in with `include=`.
+#   foot      — PATCHES ~/.config/foot/foot.ini in place. kara owns
+#               only the [colors-dark] / [colors-light] section's
+#               color keys (alpha/foreground/background/selection-*/
+#               urls/regular0-7/bright0-7). Every other key in the
+#               file is preserved. Foot's `include=` directive isn't
+#               re-read on SIGUSR1 reload, so the include pattern
+#               didn't live-reload — patching the main file directly
+#               is what works with foot's native reload path.
+#               A human-readable preview is also written to
+#               ~/.local/state/kara/generated/foot-theme.ini for
+#               `kara-beautify render <theme> foot` inspection.
 #
 #   nvim      — writes ~/.local/state/kara/generated/nvim-theme.lua
 #               the kara.nvim plugin (oracle.core.kara_theme in this
