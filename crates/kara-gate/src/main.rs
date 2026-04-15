@@ -2,6 +2,7 @@ mod actions;
 mod animation;
 mod backend_udev;
 mod backend_winit;
+mod blur;
 mod cursor;
 mod input;
 mod ipc;

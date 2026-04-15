@@ -1374,6 +1374,20 @@ fn render_frame(
     // Custom elements: wallpaper, workspace borders, bar (behind everything)
     elements.extend(custom_elements.into_iter().map(DrmRenderElement::Texture));
 
+    // M1 blur scaffolding: when KARA_BLUR_TWO_PASS=1 is set, run a
+    // no-op offscreen pre-pass before the main DrmCompositor frame.
+    // This proves we can bind Offscreen<GlesTexture> on the
+    // MultiRenderer + udev render loop without wrecking the
+    // subsequent DrmCompositor bind. Nothing is sampled from the
+    // pre-pass result yet — M2 adds element-layer split + persists
+    // the texture, M3 adds the blur shader.
+    //
+    // See ~/.claude/plans/kara-blur-pipeline.md for the full plan.
+    if std::env::var_os("KARA_BLUR_TWO_PASS").is_some() {
+        let size = state.outputs.get(output_idx).map(|o| o.size).unwrap_or((0, 0));
+        crate::blur::pre_pass(&mut renderer, size);
+    }
+
     match instance.drm_compositor.render_frame(
         &mut renderer,
         &elements,
