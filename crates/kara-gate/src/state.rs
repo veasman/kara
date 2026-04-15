@@ -282,6 +282,11 @@ pub struct Gate {
     /// entire map is cleared whenever `bar_dirty` flips on.
     pub bar_cache: std::collections::HashMap<usize, (Vec<u8>, u32, u32)>,
 
+    /// Lazily-compiled Gaussian shader program for scratchpad backdrop
+    /// blur. Compiled on first blur-enabled frame; shared across all
+    /// outputs. Falls to `Failed` on compile error to avoid retry spam.
+    pub blur_program: crate::blur::BlurProgram,
+
     // Cursor rendering
     pub cursor_status: CursorImageStatus,
     pub cursor_cache: Option<crate::cursor::CursorCache>,
@@ -409,6 +414,7 @@ impl Gate {
             window_base_positions: Vec::new(),
             bar_dirty: true,
             bar_cache: std::collections::HashMap::new(),
+            blur_program: crate::blur::BlurProgram::new(),
             pointer_location: (0.0, 0.0).into(),
             cursor_status: CursorImageStatus::default_named(),
             cursor_cache: None,

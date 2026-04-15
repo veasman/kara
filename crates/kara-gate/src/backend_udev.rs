@@ -195,6 +195,12 @@ struct OutputInstance {
     /// rotation path (bypassing smithay's broken rotated-render code
     /// path). See [`TwoPassState`] and `render_frame_two_pass`.
     two_pass: Option<TwoPassState>,
+    /// Per-output working set for scratchpad backdrop blur. Eagerly
+    /// allocated at init on non-rotated outputs (the pong dmabuf needs
+    /// `primary_gbm` which is only in scope here); outputs using the
+    /// two-pass rotation path get `None` and fall back to flat dim
+    /// when a blurred scratchpad is visible on them.
+    blur: Option<crate::blur::BlurState>,
 }
 
 /// Per-output state for kara's two-pass rotation render.
@@ -721,6 +727,15 @@ pub fn run(
             mon_position.0, mon_position.1, crtc_handle, two_pass
         );
 
+        // Blur only runs on non-rotated outputs in M2 — combining blur
+        // with the rotation two-pass pipeline would need another round of
+        // offscreen indirection and isn't worth the complexity here.
+        let blur_state = if two_pass_state.is_some() {
+            None
+        } else {
+            crate::blur::BlurState::try_new(&primary_gbm, landscape_size)
+        };
+
         output_instances.push(OutputInstance {
             drm_compositor,
             output,
@@ -730,6 +745,7 @@ pub fn run(
             render_errors: 0,
             queue_errors: 0,
             two_pass: two_pass_state,
+            blur: blur_state,
         });
 
         x_offset += mode_size.0 as i32;
@@ -1052,6 +1068,12 @@ pub fn run(
                 two_pass,
             );
 
+            let evdi_blur_state = if evdi_two_pass_state.is_some() {
+                None
+            } else {
+                crate::blur::BlurState::try_new(&primary_gbm, evdi_landscape_size)
+            };
+
             output_instances.push(OutputInstance {
                 drm_compositor,
                 output,
@@ -1061,6 +1083,7 @@ pub fn run(
                 render_errors: 0,
                 queue_errors: 0,
                 two_pass: evdi_two_pass_state,
+                blur: evdi_blur_state,
             });
 
             x_offset += mode_size.0 as i32;
@@ -1568,27 +1591,50 @@ fn render_frame(
     elements.extend(sp_dim.into_iter().map(DrmRenderElement::Texture));
 
     // Workspace windows — drawn below the dim so they get dimmed.
+    let workspace_len_saved = workspace_elements.len();
     elements.extend(workspace_elements.into_iter().map(DrmRenderElement::Surface));
 
     // Custom elements: wallpaper, workspace borders, bar (behind everything)
+    let custom_len_saved = custom_elements.len();
     elements.extend(custom_elements.into_iter().map(DrmRenderElement::Texture));
-
-    // M1 blur scaffolding: when KARA_BLUR_TWO_PASS=1 is set, run a
-    // no-op offscreen pre-pass before the main DrmCompositor frame.
-    // This proves we can bind Offscreen<GlesTexture> on the
-    // MultiRenderer + udev render loop without wrecking the
-    // subsequent DrmCompositor bind. Nothing is sampled from the
-    // pre-pass result yet — M2 adds element-layer split + persists
-    // the texture, M3 adds the blur shader.
-    //
-    // See ~/.claude/plans/kara-blur-pipeline.md for the full plan.
-    if std::env::var_os("KARA_BLUR_TWO_PASS").is_some() {
-        let size = state.outputs.get(output_idx).map(|o| o.size).unwrap_or((0, 0));
-        crate::blur::pre_pass(&mut renderer, size);
-    }
 
     let is_evdi = instance.node != primary_node;
     let output_name = instance.output.name();
+
+    // Scratchpad backdrop blur: if any visible scratchpad on this output
+    // has `blur true`, replace the workspace+custom tail of `elements`
+    // with a single Texture element wrapping a blurred capture of those
+    // same elements. The existing sp_dim rect still sits above this new
+    // tail element and provides the darkening tint — so the visual is
+    // "blurred wallpaper+windows + flat dim multiply". Skipped on
+    // rotated outputs (blur doesn't compose with the two-pass rotation
+    // pipeline in M2).
+    let want_blur = instance.two_pass.is_none()
+        && instance.blur.is_some()
+        && scratchpad_wants_blur(state, output_idx);
+    if want_blur {
+        let backdrop_len = workspace_len_saved + custom_len_saved;
+        if backdrop_len > 0 {
+            if let Err(phase) = run_scratchpad_blur(
+                &mut renderer,
+                instance,
+                &mut state.blur_program,
+                &mut elements,
+                backdrop_len,
+                &output_name,
+            ) {
+                log_rate_limited_error(
+                    &mut instance.render_errors,
+                    phase,
+                    &output_name,
+                    is_evdi,
+                    "scratchpad blur failed (falling back to flat dim)",
+                );
+                // Fall through — the element vec is unchanged on error,
+                // so we still render a flat-dim scratchpad.
+            }
+        }
+    }
 
     // Two-pass rotation: render the portrait element vec into the
     // offscreen dmabuf, then replace `elements` with a single
@@ -1825,6 +1871,271 @@ fn run_two_pass<'a>(
 
     elements.clear();
     elements.push(DrmRenderElement::Texture(blit_element));
+    Ok(())
+}
+
+/// Returns true if any visible scratchpad on `output_idx` has
+/// `blur = true` in its config. Used by the scratchpad blur dispatcher
+/// to decide whether to run the blur pipeline for a given frame.
+fn scratchpad_wants_blur(state: &Gate, output_idx: usize) -> bool {
+    state.scratchpads.iter().any(|sp| {
+        sp.visible
+            && sp.output_idx == output_idx
+            && state
+                .config
+                .scratchpads
+                .get(sp.config_idx)
+                .map(|sc| sc.blur)
+                .unwrap_or(false)
+    })
+}
+
+/// Scratchpad backdrop blur pipeline.
+///
+/// Input: `elements` has already been built in full. The last
+/// `backdrop_len` entries are the workspace + custom subset (workspace
+/// windows, wallpaper, workspace borders, bar).
+///
+/// Steps:
+/// 1. Capture those trailing elements into a per-output GlesTexture
+///    (`instance.blur.backdrop`) via the MultiRenderer frame path.
+/// 2. Horizontal Gaussian pass: reach through to `GlesRenderer`, bind
+///    `instance.blur.ping`, blit the backdrop through the blur shader
+///    with `direction = (1/w, 0)`.
+/// 3. Vertical Gaussian pass: bind `instance.blur.pong_dmabuf`, blit
+///    ping through the same shader with `direction = (0, 1/h)`.
+/// 4. Drain the backdrop tail from `elements`. Import pong as a
+///    `MultiTexture`, wrap it in a full-output `TextureRenderElement`,
+///    and push it onto the vec (drawn first = bottom of stack).
+///
+/// On any error, `elements` is left untouched and the caller falls back
+/// to rendering the flat dim.
+fn run_scratchpad_blur<'a>(
+    renderer: &mut KaraRenderer<'a>,
+    instance: &mut OutputInstance,
+    blur_program: &mut crate::blur::BlurProgram,
+    elements: &mut Vec<DrmRenderElement<'a>>,
+    backdrop_len: usize,
+    output_name: &str,
+) -> Result<(), &'static str> {
+    use smithay::backend::allocator::Fourcc;
+    use smithay::backend::renderer::element::Kind;
+    use smithay::backend::renderer::element::texture::{
+        TextureBuffer, TextureRenderElement,
+    };
+    use smithay::backend::renderer::gles::Uniform;
+    use smithay::backend::renderer::{Bind, Color32F, Frame as _, ImportDma, Offscreen, Renderer as _};
+    use smithay::utils::{Point, Rectangle};
+
+    let blur = instance.blur.as_mut().ok_or("blur_missing_state")?;
+    let size = blur.size;
+    if size.w <= 0 || size.h <= 0 {
+        return Err("blur_bad_size");
+    }
+    let elements_len = elements.len();
+    if backdrop_len == 0 || backdrop_len > elements_len {
+        return Err("blur_bad_len");
+    }
+    let backdrop_start = elements_len - backdrop_len;
+    let full_rect: Rectangle<i32, Physical> = Rectangle::from_size(size);
+    let full_src = Rectangle::<f64, smithay::utils::Buffer>::from_size(
+        (size.w as f64, size.h as f64).into(),
+    );
+    let scale_one = Scale::from(1.0);
+
+    // Lazily allocate the intermediate GlesTextures on first blur frame.
+    // Reusing across frames avoids the per-frame allocation cost.
+    if blur.backdrop.is_none() {
+        match Offscreen::<smithay::backend::renderer::gles::GlesTexture>::create_buffer(
+            renderer,
+            Fourcc::Abgr8888,
+            size.to_logical(1).to_buffer(1, Transform::Normal),
+        ) {
+            Ok(t) => blur.backdrop = Some(t),
+            Err(_) => return Err("blur_alloc_backdrop"),
+        }
+    }
+    if blur.ping.is_none() {
+        match Offscreen::<smithay::backend::renderer::gles::GlesTexture>::create_buffer(
+            renderer,
+            Fourcc::Abgr8888,
+            size.to_logical(1).to_buffer(1, Transform::Normal),
+        ) {
+            Ok(t) => blur.ping = Some(t),
+            Err(_) => return Err("blur_alloc_ping"),
+        }
+    }
+
+    // ── Phase 1: capture backdrop into `blur.backdrop` via MultiFrame ──
+    {
+        let backdrop_tex = blur.backdrop.as_mut().ok_or("blur_backdrop_none")?;
+        let mut target = renderer
+            .bind(backdrop_tex)
+            .map_err(|e| {
+                tracing::error!(
+                    target: "kara_gate::blur",
+                    "backdrop bind failed output={} err={:?}", output_name, e,
+                );
+                "blur_bind_backdrop"
+            })?;
+        {
+            let mut frame = renderer
+                .render(&mut target, size, Transform::Normal)
+                .map_err(|e| {
+                    tracing::error!(
+                        target: "kara_gate::blur",
+                        "backdrop render start failed output={} err={:?}", output_name, e,
+                    );
+                    "blur_render_backdrop"
+                })?;
+            frame
+                .clear(Color32F::from([0.0, 0.0, 0.0, 1.0]), &[full_rect])
+                .map_err(|_| "blur_clear_backdrop")?;
+            // Draw backdrop elements in reverse (vec is front-to-back,
+            // draw back-to-front for correct layering).
+            for elem in elements[backdrop_start..].iter().rev() {
+                let geo = elem.geometry(scale_one);
+                let src = elem.src();
+                let _ = RenderElement::<KaraRenderer<'_>>::draw(
+                    elem,
+                    &mut frame,
+                    src,
+                    geo,
+                    &[Rectangle::from_size(geo.size)],
+                    &[],
+                );
+            }
+            let _ = frame.finish();
+        }
+    }
+
+    // ── Phase 2 + 3: Gaussian blur passes via GlesRenderer/GlesFrame ──
+    //
+    // Compile the shader lazily on first blur frame. If compile fails we
+    // degrade permanently to flat dim for this kara-gate session.
+    // The `renderer.as_mut()` call dereferences the MultiRenderer to its
+    // inner primary-node GlesRenderer, which is where custom texture
+    // shaders actually live.
+    let texel_w = 1.0f32 / (size.w as f32);
+    let texel_h = 1.0f32 / (size.h as f32);
+    const BLUR_SPREAD: f32 = 4.0;
+
+    {
+        let gles = renderer.as_mut();
+        let program = blur_program
+            .get_or_compile(gles)
+            .ok_or("blur_shader_uncompiled")?
+            .clone();
+
+        // Phase 2: horizontal pass  backdrop → ping
+        {
+            let ping_tex = blur.ping.as_mut().ok_or("blur_ping_none")?;
+            let mut target = gles.bind(ping_tex).map_err(|e| {
+                tracing::error!(
+                    target: "kara_gate::blur",
+                    "ping bind failed output={} err={:?}", output_name, e,
+                );
+                "blur_bind_ping"
+            })?;
+            let mut frame = gles
+                .render(&mut target, size, Transform::Normal)
+                .map_err(|_| "blur_render_ping")?;
+            let backdrop_tex = blur.backdrop.as_ref().ok_or("blur_backdrop_none2")?;
+            frame
+                .render_texture_from_to(
+                    backdrop_tex,
+                    full_src,
+                    full_rect,
+                    &[full_rect],
+                    &[],
+                    Transform::Normal,
+                    1.0,
+                    Some(&program),
+                    &[
+                        Uniform::new("direction", (texel_w, 0.0f32)),
+                        Uniform::new("spread", BLUR_SPREAD),
+                    ],
+                )
+                .map_err(|e| {
+                    tracing::error!(
+                        target: "kara_gate::blur",
+                        "horizontal pass failed output={} err={:?}", output_name, e,
+                    );
+                    "blur_pass_h"
+                })?;
+            let _ = frame.finish();
+        }
+
+        // Phase 3: vertical pass  ping → pong_dmabuf
+        {
+            let mut target = gles.bind(&mut blur.pong_dmabuf).map_err(|e| {
+                tracing::error!(
+                    target: "kara_gate::blur",
+                    "pong bind failed output={} err={:?}", output_name, e,
+                );
+                "blur_bind_pong"
+            })?;
+            let mut frame = gles
+                .render(&mut target, size, Transform::Normal)
+                .map_err(|_| "blur_render_pong")?;
+            let ping_tex = blur.ping.as_ref().ok_or("blur_ping_none2")?;
+            frame
+                .render_texture_from_to(
+                    ping_tex,
+                    full_src,
+                    full_rect,
+                    &[full_rect],
+                    &[],
+                    Transform::Normal,
+                    1.0,
+                    Some(&program),
+                    &[
+                        Uniform::new("direction", (0.0f32, texel_h)),
+                        Uniform::new("spread", BLUR_SPREAD),
+                    ],
+                )
+                .map_err(|e| {
+                    tracing::error!(
+                        target: "kara_gate::blur",
+                        "vertical pass failed output={} err={:?}", output_name, e,
+                    );
+                    "blur_pass_v"
+                })?;
+            let _ = frame.finish();
+        }
+
+    }
+
+    // ── Phase 4: drain backdrop tail, import pong as MultiTexture, push ──
+    let blur_ref = instance.blur.as_ref().ok_or("blur_missing_state2")?;
+    let multi_tex = renderer
+        .import_dmabuf(&blur_ref.pong_dmabuf, None)
+        .map_err(|e| {
+            tracing::error!(
+                target: "kara_gate::blur",
+                "import_dmabuf pong failed output={} err={:?}", output_name, e,
+            );
+            "blur_import_pong"
+        })?;
+    let buffer = TextureBuffer::from_texture(
+        &*renderer,
+        multi_tex,
+        1,
+        Transform::Normal,
+        None,
+    );
+    let blurred_element: TextureRenderElement<KaraTexture> =
+        TextureRenderElement::from_texture_buffer(
+            Point::from((0.0, 0.0)),
+            &buffer,
+            None,
+            None,
+            Some(size.to_logical(1)),
+            Kind::Unspecified,
+        );
+
+    elements.drain(backdrop_start..);
+    elements.push(DrmRenderElement::Texture(blurred_element));
     Ok(())
 }
 
