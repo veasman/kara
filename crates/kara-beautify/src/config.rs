@@ -63,6 +63,8 @@ pub struct ConsumerConfig {
     pub session: bool,
     #[serde(default = "default_true")]
     pub gtk: bool,
+    #[serde(default = "default_true")]
+    pub floorp: bool,
 }
 
 impl Default for ConsumerConfig {
@@ -76,6 +78,7 @@ impl Default for ConsumerConfig {
             fzf: true,
             session: true,
             gtk: true,
+            floorp: true,
         }
     }
 }

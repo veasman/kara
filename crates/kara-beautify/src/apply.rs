@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use kara_theme::resolve_theme;
 use kara_theme::render::{
-    foot::render_foot_theme, fzf::render_fzf_theme, gtk::gtk_settings_pairs,
-    kitty::render_kitty_theme, nvim::render_nvim_theme,
+    floorp::render_floorp_user_js, foot::render_foot_theme, fzf::render_fzf_theme,
+    gtk::gtk_settings_pairs, kitty::render_kitty_theme, nvim::render_nvim_theme,
     session::render_session_theme, tmux::render_tmux_theme,
     kara_gate::render_kara_gate_theme,
 };
@@ -103,9 +103,22 @@ pub fn apply_theme_file(
     let tmux = render_tmux_theme(&resolved);
     let fzf = render_fzf_theme(&resolved);
     let session = render_session_theme(&resolved);
+    let floorp_user_js = render_floorp_user_js(&resolved);
     let gtk_pairs = gtk_settings_pairs(&resolved);
     let gtk_pairs_ref: Vec<(&str, String)> =
         gtk_pairs.iter().map(|(k, v)| (*k, v.clone())).collect();
+
+    // Resolve the Floorp user.js target — None if the user has no
+    // profile yet or set consumers.floorp = false.
+    let floorp_user_js_path =
+        if c.floorp {
+            match crate::floorp_profile::find_active_profile(&paths.floorp_root())? {
+                Some(profile) => Some(profile.join("user.js")),
+                None => None,
+            }
+        } else {
+            None
+        };
 
     if options.dry_run {
         println!("dry-run: {}", spec.meta.name);
@@ -140,9 +153,14 @@ pub fn apply_theme_file(
                 paths.gtk4_settings_path().display()
             );
         }
+        if let Some(ref p) = floorp_user_js_path {
+            println!("  would write: {}", p.display());
+        } else if c.floorp {
+            println!("  would write: (floorp enabled but no profile found)");
+        }
         println!(
-            "  (consumers: kara_gate={} kitty={} foot={} nvim={} tmux={} fzf={} session={} gtk={})",
-            c.kara_gate, c.kitty, c.foot, c.nvim, c.tmux, c.fzf, c.session, c.gtk
+            "  (consumers: kara_gate={} kitty={} foot={} nvim={} tmux={} fzf={} session={} gtk={} floorp={})",
+            c.kara_gate, c.kitty, c.foot, c.nvim, c.tmux, c.fzf, c.session, c.gtk, c.floorp
         );
 
         if let Some(wallpaper) = selected_wallpaper(
@@ -192,6 +210,14 @@ pub fn apply_theme_file(
         let _ =
             patch_ini_section(&paths.gtk4_settings_path(), "Settings", &gtk_pairs_ref)?;
         sync_desktop_appearance(&resolved)?;
+    }
+
+    if let Some(ref path) = floorp_user_js_path {
+        // user.js is full-file-owned by kara-beautify since we don't
+        // want to merge with arbitrary user prefs — if the user wants
+        // custom prefs alongside, they can set consumers.floorp = false
+        // and maintain their own file. Atomic write via write_if_changed.
+        let _ = write_if_changed(path, &floorp_user_js)?;
     }
     // write_current_theme takes the bare theme name (not "theme:variant"
     // because the state file is also how kara-gate and kara-summon

@@ -1,3 +1,4 @@
+pub mod floorp;
 pub mod foot;
 pub mod fzf;
 pub mod gtk;

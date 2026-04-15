@@ -4,6 +4,7 @@ mod config;
 mod doctor;
 mod apply;
 mod desktop;
+mod floorp_profile;
 mod ini_patch;
 mod reload;
 mod wallpaper_agent;
@@ -25,8 +26,8 @@ use crate::wallpaper::{derive_theme_from_image, ranked_swatches_from_image};
 
 use kara_theme::resolve_theme;
 use kara_theme::render::{
-    foot::render_foot_theme, fzf::render_fzf_theme, gtk::render_gtk_settings,
-    kitty::render_kitty_theme, nvim::render_nvim_theme,
+    floorp::render_floorp_user_js, foot::render_foot_theme, fzf::render_fzf_theme,
+    gtk::render_gtk_settings, kitty::render_kitty_theme, nvim::render_nvim_theme,
     session::render_session_theme, tmux::render_tmux_theme,
     kara_gate::render_kara_gate_theme,
 };
@@ -142,6 +143,7 @@ enum RenderTarget {
     KaraGate,
     Fzf,
     Session,
+    Floorp,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -791,6 +793,7 @@ fn render_command(
         RenderTarget::KaraGate => render_kara_gate_theme(&resolved),
         RenderTarget::Fzf => render_fzf_theme(&resolved),
         RenderTarget::Session => render_session_theme(&resolved),
+        RenderTarget::Floorp => render_floorp_user_js(&resolved),
     };
 
     print!("{out}");

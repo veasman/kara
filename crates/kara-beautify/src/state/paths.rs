@@ -143,6 +143,13 @@ impl KaraPaths {
         self.generated_dir().join("foot-theme.ini")
     }
 
+    /// Root of the Floorp profile tree. Currently hardcoded to
+    /// `~/.floorp` — future work may support profile_path override
+    /// from kara-beautify.toml for users with a non-default install.
+    pub fn floorp_root(&self) -> PathBuf {
+        self.home.join(".floorp")
+    }
+
     pub fn nvim_theme_path(&self) -> PathBuf {
         self.generated_dir().join("nvim-theme.lua")
     }
