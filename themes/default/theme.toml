@@ -25,7 +25,10 @@ contrast = "medium"
 radius = "small"
 density = "normal"
 surface_style = "soft"
-transparency = 1.0
+# transparency = alpha for terminal backgrounds (foot, kitty).
+# 0.92 matches the user's previous gruvbox setup. Propagates to
+# both terminal renderers via ResolvedStyle.opacity.
+transparency = 0.92
 blur = false
 
 [fonts]
