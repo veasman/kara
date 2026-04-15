@@ -1599,7 +1599,70 @@ impl WlrLayerShellHandler for Gate {
             }
         }
 
-        self.apply_focus();
+        // Restore keyboard focus to the highest-priority surface
+        // still mapped. The naive fallback (apply_focus → workspace
+        // window) is wrong when ANOTHER exclusive-keyboard layer
+        // is still around — e.g. a screenshot tool opened on top
+        // of the theme picker, then closed, would steal focus from
+        // the picker without this check. Walk the layer stack first
+        // and only fall through to xdg-toplevel focus when no
+        // exclusive layer is left.
+        if !self.refocus_top_exclusive_layer() {
+            self.apply_focus();
+        }
+    }
+}
+
+impl Gate {
+    /// Find any exclusive-keyboard layer surface still mapped on
+    /// any output and give it keyboard focus. Used when the
+    /// previously-focused exclusive layer goes away (closed, or
+    /// a different exclusive layer was opened on top and then
+    /// dismissed) and we want focus to flow back to the layer
+    /// behind it instead of falling all the way through to a
+    /// workspace window.
+    ///
+    /// Returns true if a layer was found and focused; false if
+    /// no exclusive layer is left and the caller should fall
+    /// back to the normal workspace focus path.
+    pub fn refocus_top_exclusive_layer(&mut self) -> bool {
+        use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
+
+        // Collect candidate layer surfaces with exclusive
+        // keyboard interactivity. Iterate from front to back of
+        // each output's layer map so the highest layer wins.
+        let mut candidate: Option<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface> = None;
+        for out in &self.outputs {
+            let map = layer_map_for_output(&out.output);
+            for layer in map.layers() {
+                let interactivity = smithay::wayland::compositor::with_states(
+                    layer.wl_surface(),
+                    |states| {
+                        states
+                            .cached_state
+                            .get::<smithay::wayland::shell::wlr_layer::LayerSurfaceCachedState>()
+                            .current()
+                            .keyboard_interactivity
+                    },
+                );
+                if matches!(interactivity, KeyboardInteractivity::Exclusive) {
+                    candidate = Some(layer.wl_surface().clone());
+                    break;
+                }
+            }
+            if candidate.is_some() {
+                break;
+            }
+        }
+
+        if let Some(surface) = candidate {
+            let serial = SERIAL_COUNTER.next_serial();
+            let keyboard = self.seat.get_keyboard().unwrap();
+            keyboard.set_focus(self, Some(surface), serial);
+            true
+        } else {
+            false
+        }
     }
 }
 

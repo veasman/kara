@@ -634,6 +634,15 @@ impl Picker {
     /// border ring; non-focused selections get a muted ring so
     /// the user always knows which tile WILL be applied if they
     /// hit Enter regardless of which row they're navigating.
+    ///
+    /// Horizontal scroll: when the wallpaper count exceeds the
+    /// number of tiles that fit in the row, the row scrolls so
+    /// the SELECTED tile is always visible. Computes the visible
+    /// window from the picker width, anchors the scroll so the
+    /// selected index sits inside it, and draws only the visible
+    /// slice. A future improvement could add subtle "more →" /
+    /// "← more" affordances at the row edges when there's
+    /// off-screen content.
     fn draw_thumbnail_row(
         &mut self,
         pixmap: &mut Pixmap,
@@ -646,17 +655,30 @@ impl Picker {
 
         let t = self.theme_colors.clone();
         let start_x = PADDING + SECTION_LABEL_WIDTH;
+        let tile_w = THUMB_WIDTH as i32;
+        let tile_h = THUMB_HEIGHT as i32;
+        let avail_w = self.width as i32 - start_x - PADDING;
+
+        // How many tiles fit fully? At least 1 even when the math
+        // says 0 (degenerate narrow picker — clamp to draw the
+        // selected tile so the user can still see something).
+        let visible = ((avail_w + CHIP_GAP) / (tile_w + CHIP_GAP)).max(1) as usize;
+
+        // Anchor the scroll window so `selected` sits inside it.
+        // If the selection is at position 0, scroll = 0. If the
+        // selection is past the right edge of the current window,
+        // shift the window right just enough to include it.
+        let scroll_offset = if paths.len() <= visible {
+            0
+        } else if selected < visible {
+            0
+        } else {
+            selected + 1 - visible
+        };
+
         let mut cursor_x = start_x;
-
-        for (i, path) in paths.iter().enumerate() {
-            let tile_w = THUMB_WIDTH as i32;
-            let tile_h = THUMB_HEIGHT as i32;
-
-            // Bail if the next tile would overflow the picker
-            // surface — horizontal scroll is a B9b.2 nicety.
-            if cursor_x + tile_w > self.width as i32 - PADDING {
-                break;
-            }
+        for (offset, path) in paths.iter().enumerate().skip(scroll_offset).take(visible) {
+            let i = offset; // absolute index for selection comparison
 
             // Background fill (shows through if the thumbnail
             // hasn't decoded yet or failed to decode).
