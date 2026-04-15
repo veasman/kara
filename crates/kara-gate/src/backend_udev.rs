@@ -183,6 +183,14 @@ struct OutputInstance {
     /// `(node, crtc)` so multiple devices don't collide on the same handle.
     node: DrmNode,
     frame_pending: bool,
+    /// Backlog item #3 diagnostic: count of `render_frame` + `queue_frame`
+    /// failures since the output came up. The first error is logged
+    /// immediately and every 60th error after that is summarized. When the
+    /// DisplayLink flashing-line bug reproduces, these logs surface which
+    /// output / path is actually failing — most likely a cross-GPU dmabuf
+    /// import on an evdi output under load.
+    render_errors: u64,
+    queue_errors: u64,
 }
 
 /// Per-GPU runtime state. Every DRM device kara can see is opened and stashed
@@ -612,6 +620,8 @@ pub fn run(
             crtc: crtc_handle,
             node: primary_node,
             frame_pending: false,
+            render_errors: 0,
+            queue_errors: 0,
         });
 
         x_offset += mode_size.0 as i32;
@@ -885,6 +895,8 @@ pub fn run(
                 crtc: crtc_handle,
                 node: evdi_node,
                 frame_pending: false,
+                render_errors: 0,
+                queue_errors: 0,
             });
 
             x_offset += mode_size.0 as i32;
@@ -1411,6 +1423,9 @@ fn render_frame(
         crate::blur::pre_pass(&mut renderer, size);
     }
 
+    let is_evdi = instance.node != primary_node;
+    let output_name = instance.output.name();
+
     match instance.drm_compositor.render_frame(
         &mut renderer,
         &elements,
@@ -1421,7 +1436,15 @@ fn render_frame(
             if !result.is_empty {
                 match instance.drm_compositor.queue_frame(()) {
                     Ok(()) => instance.frame_pending = true,
-                    Err(e) => tracing::error!("failed to queue frame: {e:?}"),
+                    Err(e) => {
+                        log_rate_limited_error(
+                            &mut instance.queue_errors,
+                            "queue_frame",
+                            &output_name,
+                            is_evdi,
+                            &format!("{e:?}"),
+                        );
+                    }
                 }
             }
 
@@ -1432,8 +1455,48 @@ fn render_frame(
             }
         }
         Err(err) => {
-            tracing::error!("render_frame failed: {err:?}");
+            log_rate_limited_error(
+                &mut instance.render_errors,
+                "render_frame",
+                &output_name,
+                is_evdi,
+                &format!("{err:?}"),
+            );
         }
+    }
+}
+
+/// Rate-limited error logger for `render_frame`/`queue_frame` failures.
+///
+/// Backlog #3: the DisplayLink flashing-line bug only reproduces with
+/// three monitors plugged into the dock, and used to hide in raw
+/// `tracing::error!` spam. First failure per output/path gets a loud
+/// log with the is_evdi tag so it's obvious which path is failing;
+/// after that, every 60th failure re-emits a summary so a healthy log
+/// isn't drowned but sustained failure is still visible. Once the bug
+/// is root-caused and fixed, this helper can stay — it's a useful
+/// defensive log for any future DRM flake.
+fn log_rate_limited_error(
+    counter: &mut u64,
+    path: &str,
+    output_name: &str,
+    is_evdi: bool,
+    err: &str,
+) {
+    *counter = counter.saturating_add(1);
+    let first = *counter == 1;
+    let periodic = *counter % 60 == 0;
+    if first {
+        tracing::error!(
+            target: "kara_gate::render_errors",
+            "first {path} failure on {output_name} (is_evdi={is_evdi}): {err}",
+        );
+    } else if periodic {
+        tracing::error!(
+            target: "kara_gate::render_errors",
+            "{path} failure #{count} on {output_name} (is_evdi={is_evdi}): {err}",
+            count = *counter,
+        );
     }
 }
 
