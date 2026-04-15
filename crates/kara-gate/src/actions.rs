@@ -74,7 +74,7 @@ impl Gate {
     }
 
     /// Spawn a raw command string via sh -c (supports pipes, redirects, etc.)
-    fn spawn_raw(&self, cmd: &str) {
+    pub(crate) fn spawn_raw(&self, cmd: &str) {
         if cmd.is_empty() {
             return;
         }
@@ -260,15 +260,25 @@ impl Gate {
             return;
         }
 
-        // Autostart on first toggle
+        // Autostart on first toggle. A scratchpad can declare multiple
+        // `autostart` entries — we seed `autostart_remaining` with the
+        // full list and spawn only the first one. The rest are
+        // spawned sequentially as each prior window maps (see the
+        // capture path in state.rs::map_new_toplevel). Serial spawning
+        // is what guarantees declaration order; spawning all N up
+        // front lets process startup races scramble the order.
         if !self.scratchpads[sp_idx].started {
             self.scratchpads[sp_idx].started = true;
-            if let Some(cmd) = self.config.scratchpads.get(sp_idx)
-                .and_then(|sc| sc.autostart.clone())
-            {
-                // Mark pending capture so the spawned window goes to this scratchpad
-                self.scratchpads[sp_idx].pending_capture = true;
-                self.spawn_raw(&cmd);
+            let cmds: Vec<String> = self
+                .config
+                .scratchpads
+                .get(sp_idx)
+                .map(|sc| sc.autostart.clone())
+                .unwrap_or_default();
+            if !cmds.is_empty() {
+                self.scratchpads[sp_idx].autostart_remaining = cmds;
+                let first = self.scratchpads[sp_idx].autostart_remaining[0].clone();
+                self.spawn_raw(&first);
             }
         }
 

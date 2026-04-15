@@ -38,19 +38,19 @@ bar {
     enabled true
     position top
     height 24
-    modules flat
+    pill false
+    module_rounded 8
 
     modules {
         left workspaces
         center title
-        right volume
+        right volume large
         right clock "%a %d %b %H:%M"
     }
 }
 
 scratchpad "main" {
-    width_pct 94
-    height_pct 94
+    gap_px 30
     dim_alpha 96
     autostart "kitty -e htop"
     capture app_id "kitty"
@@ -122,20 +122,22 @@ binds {
     assert!(config.bar.enabled);
     assert_eq!(config.bar.position, BarPosition::Top);
     assert_eq!(config.bar.height, 24);
-    assert_eq!(config.bar.module_style, BarModuleStyle::Flat);
+    assert!(!config.bar.pill);
+    assert_eq!(config.bar.module_rounded, 8);
     assert_eq!(config.bar.modules.len(), 4);
     assert_eq!(config.bar.modules[0].section, BarSection::Left);
     assert_eq!(config.bar.modules[0].kind, BarModuleKind::Workspaces);
+    assert_eq!(config.bar.modules[2].kind, BarModuleKind::Volume);
+    assert_eq!(config.bar.modules[2].args, vec!["large".to_string()]);
     assert_eq!(config.bar.modules[3].kind, BarModuleKind::Clock);
-    assert_eq!(config.bar.modules[3].arg.as_deref(), Some("%a %d %b %H:%M"));
+    assert_eq!(config.bar.modules[3].args, vec!["%a %d %b %H:%M".to_string()]);
 
     // Scratchpad
     assert_eq!(config.scratchpads.len(), 1);
     assert_eq!(config.scratchpads[0].name, "main");
-    assert_eq!(config.scratchpads[0].width_pct, 94);
-    assert_eq!(config.scratchpads[0].height_pct, 94);
+    assert_eq!(config.scratchpads[0].gap_px, 30);
     assert_eq!(config.scratchpads[0].dim_alpha, 96);
-    assert_eq!(config.scratchpads[0].autostart.as_deref(), Some("kitty -e htop"));
+    assert_eq!(config.scratchpads[0].autostart, vec!["kitty -e htop".to_string()]);
     assert_eq!(config.scratchpads[0].captures, vec!["kitty"]);
 
     // Rules

@@ -122,8 +122,19 @@ pub struct ScratchpadState {
     pub hiding: bool, // out-animation in progress, waiting to fully hide
     pub started: bool,
     pub output_idx: usize,
-    /// When true, the next new window is captured into this scratchpad (autostart capture).
-    pub pending_capture: bool,
+    /// Serialized autostart queue. On toggle-show we clone the config's
+    /// `autostart` Vec into this field and spawn ONLY the front entry;
+    /// each subsequent entry is spawned after the previous one has
+    /// actually mapped via the capture path in `map_new_toplevel`. This
+    /// guarantees deterministic ordering — window N always arrives
+    /// before N+1 is even spawned, so the scratchpad picks them up in
+    /// the exact order the user declared in the config, regardless of
+    /// which process happens to finish startup first.
+    ///
+    /// Shape: the front entry is "currently spawned, awaiting map".
+    /// After a capture, the front is popped and (if non-empty) the new
+    /// front is spawned. Empty = done.
+    pub autostart_remaining: Vec<String>,
 }
 
 /// Per-output state for multi-monitor support.
@@ -326,7 +337,7 @@ impl Gate {
                     hiding: false,
                     started: false,
                     output_idx: 0,
-                    pending_capture: false,
+                    autostart_remaining: Vec::new(),
                 }
             }).collect();
 
@@ -785,10 +796,16 @@ impl Gate {
             .map(|o| o.workarea)
             .unwrap_or_else(|| Rectangle::new((0, 0).into(), (800, 600).into()));
 
-        let sp_w = (workarea.size.w as f32 * sc.width_pct as f32 / 100.0) as i32;
-        let sp_h = (workarea.size.h as f32 * sc.height_pct as f32 / 100.0) as i32;
-        let sp_x = workarea.loc.x + (workarea.size.w - sp_w) / 2;
-        let sp_y = workarea.loc.y + (workarea.size.h - sp_h) / 2;
+        // Scratchpad area = workarea shrunk by gap_px on every side.
+        // Clamped so a silly gap_px value on a small monitor can't
+        // produce a zero-or-negative rect.
+        let pad = sc
+            .gap_px
+            .clamp(0, (workarea.size.w.min(workarea.size.h) / 2 - 1).max(0));
+        let sp_w = (workarea.size.w - pad * 2).max(1);
+        let sp_h = (workarea.size.h - pad * 2).max(1);
+        let sp_x = workarea.loc.x + pad;
+        let sp_y = workarea.loc.y + pad;
 
         // Expand rect by gap so layout_workspace's outer gap inset brings it back to intended size
         let gap = self.scratchpads[sp_idx].workspace.gap_px;
@@ -1141,15 +1158,37 @@ impl Gate {
             }
         }
 
-        // Autostart capture: next window goes to the waiting scratchpad
-        if let Some(sp_idx) = self.scratchpads.iter().position(|sp| sp.pending_capture) {
-            self.scratchpads[sp_idx].pending_capture = false;
-            tracing::debug!("autostart capture for scratchpad '{}'",
-                self.config.scratchpads.get(sp_idx).map(|s| s.name.as_str()).unwrap_or("?"));
+        // Autostart capture: the scratchpad with a non-empty
+        // `autostart_remaining` is currently waiting on the next
+        // window. Pop the front entry (the command we previously
+        // spawned) and, if there's another entry queued, spawn it
+        // now so the next window arrives serially. Serial spawning
+        // is what gives us deterministic ordering — if we spawned
+        // all N commands up-front, process startup races would
+        // scramble them.
+        if let Some(sp_idx) = self
+            .scratchpads
+            .iter()
+            .position(|sp| !sp.autostart_remaining.is_empty())
+        {
+            // Remove the one we were waiting for.
+            self.scratchpads[sp_idx].autostart_remaining.remove(0);
+            let next_cmd = self.scratchpads[sp_idx].autostart_remaining.first().cloned();
+            tracing::debug!(
+                "autostart capture ({} remaining) for scratchpad '{}'",
+                self.scratchpads[sp_idx].autostart_remaining.len(),
+                self.config.scratchpads.get(sp_idx).map(|s| s.name.as_str()).unwrap_or("?"),
+            );
             self.scratchpads[sp_idx].workspace.add_client(window);
             if self.scratchpads[sp_idx].visible {
                 self.apply_scratchpad_layout(sp_idx);
                 self.apply_focus();
+            }
+            // Kick off the next one now that the previous window has
+            // actually mapped. Delayed spawn is intentional — see the
+            // comment on `autostart_remaining`.
+            if let Some(cmd) = next_cmd {
+                self.spawn_raw(&cmd);
             }
             return;
         }

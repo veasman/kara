@@ -25,9 +25,9 @@ pub struct ModuleContext<'a> {
     pub is_focused_monitor: bool,
 }
 
-pub fn build_module_text(kind: &BarModuleKind, arg: Option<&str>, ctx: &ModuleContext) -> ModuleContent {
+pub fn build_module_text(kind: &BarModuleKind, args: &[String], ctx: &ModuleContext) -> ModuleContent {
     match kind {
-        BarModuleKind::Clock => build_clock(arg, ctx),
+        BarModuleKind::Clock => build_clock(args, ctx),
         BarModuleKind::Volume => build_volume(ctx),
         BarModuleKind::Network => build_network(ctx),
         BarModuleKind::Battery => build_battery(ctx),
@@ -40,7 +40,7 @@ pub fn build_module_text(kind: &BarModuleKind, arg: Option<&str>, ctx: &ModuleCo
         BarModuleKind::Sync => build_sync(ctx),
         BarModuleKind::Weather => build_weather(ctx),
         BarModuleKind::Status => build_status(ctx),
-        BarModuleKind::Custom => build_custom(arg, ctx),
+        BarModuleKind::Custom => build_custom(args, ctx),
         BarModuleKind::Script(name) => build_script(name, ctx),
         // Workspaces is handled specially in the renderer, not as text
         BarModuleKind::Workspaces => ModuleContent {
@@ -50,8 +50,8 @@ pub fn build_module_text(kind: &BarModuleKind, arg: Option<&str>, ctx: &ModuleCo
     }
 }
 
-fn build_clock(arg: Option<&str>, ctx: &ModuleContext) -> ModuleContent {
-    let fmt = arg.unwrap_or("%a %b %d \u{2022} %H:%M"); // bullet separator
+fn build_clock(args: &[String], ctx: &ModuleContext) -> ModuleContent {
+    let fmt = args.first().map(String::as_str).unwrap_or("%a %b %d \u{2022} %H:%M"); // bullet separator
     let now = chrono::Local::now();
     let text = now.format(fmt).to_string();
     let display = if ctx.icons {
@@ -322,9 +322,9 @@ fn build_status(ctx: &ModuleContext) -> ModuleContent {
     ModuleContent { text: String::new(), color: ctx.theme.text }
 }
 
-fn build_custom(arg: Option<&str>, ctx: &ModuleContext) -> ModuleContent {
-    let cmd = match arg {
-        Some(c) if !c.is_empty() => c,
+fn build_custom(args: &[String], ctx: &ModuleContext) -> ModuleContent {
+    let cmd = match args.first() {
+        Some(c) if !c.is_empty() => c.as_str(),
         _ => return ModuleContent { text: String::new(), color: ctx.theme.text },
     };
 

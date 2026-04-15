@@ -365,11 +365,6 @@ fn parse_bar_line(tokens: &[String], bar: &mut Bar, ctx: &ParseContext) {
                 bar.enabled = b;
             }
         }
-        "background" => {
-            if let Some(b) = parse_bool(val) {
-                bar.background = b;
-            }
-        }
         "position" => match val {
             "top" => bar.position = BarPosition::Top,
             "bottom" => bar.position = BarPosition::Bottom,
@@ -380,16 +375,89 @@ fn parse_bar_line(tokens: &[String], bar: &mut Bar, ctx: &ParseContext) {
                 bar.height = v;
             }
         }
-        "module_radius" => {
-            if let Ok(v) = val.parse() {
-                bar.module_radius = v;
+
+        // ── Bar-level appearance ─────────────────────────────────
+        "background" => {
+            if let Some(b) = parse_bool(val) {
+                bar.background = b;
             }
         }
-        "modules" => match val {
-            "flat" => bar.module_style = BarModuleStyle::Flat,
-            "pill" | "pills" => bar.module_style = BarModuleStyle::Pill,
-            _ => ctx.warn(&format!("invalid bar module style '{val}'")),
-        },
+        "background_color" => {
+            if let Some(c) = parse_color(val) {
+                bar.background_color = Some(c);
+            } else {
+                ctx.warn(&format!("invalid bar background_color '{val}'"));
+            }
+        }
+        "background_alpha" => {
+            if let Ok(v) = val.parse::<u16>() {
+                bar.background_alpha = v.min(255) as u8;
+            }
+        }
+        "rounded" => {
+            if let Ok(v) = val.parse() {
+                bar.rounded = v;
+            }
+        }
+        "border_px" => {
+            if let Ok(v) = val.parse() {
+                bar.border_px = v;
+            }
+        }
+        "border_color" => {
+            if let Some(c) = parse_color(val) {
+                bar.border_color = Some(c);
+            } else {
+                ctx.warn(&format!("invalid bar border_color '{val}'"));
+            }
+        }
+        "blur" => {
+            if let Some(b) = parse_bool(val) {
+                bar.blur = b;
+            }
+        }
+
+        // ── Module-level appearance (shared) ─────────────────────
+        "pill" => {
+            if let Some(b) = parse_bool(val) {
+                bar.pill = b;
+            }
+        }
+        "module_background" => {
+            if let Some(c) = parse_color(val) {
+                bar.module_background = Some(c);
+            } else {
+                ctx.warn(&format!("invalid bar module_background '{val}'"));
+            }
+        }
+        "module_alpha" => {
+            if let Ok(v) = val.parse::<u16>() {
+                bar.module_alpha = v.min(255) as u8;
+            }
+        }
+        "module_rounded" => {
+            if let Ok(v) = val.parse() {
+                bar.module_rounded = v;
+            }
+        }
+        "module_border_px" => {
+            if let Ok(v) = val.parse() {
+                bar.module_border_px = v;
+            }
+        }
+        "module_border_color" => {
+            if let Some(c) = parse_color(val) {
+                bar.module_border_color = Some(c);
+            } else {
+                ctx.warn(&format!("invalid bar module_border_color '{val}'"));
+            }
+        }
+        "module_blur" => {
+            if let Some(b) = parse_bool(val) {
+                bar.module_blur = b;
+            }
+        }
+
         "icons" => {
             if let Some(b) = parse_bool(val) {
                 bar.icons = b;
@@ -439,25 +507,18 @@ fn parse_bar_line(tokens: &[String], bar: &mut Bar, ctx: &ParseContext) {
                 "bar field '{key}' was renamed in the config rehash — see example/kara-gate.conf"
             ));
         }
-        "volume_bar_enabled" => {
-            if let Some(b) = parse_bool(val) {
-                bar.volume_bar_enabled = b;
-            }
+        "module_radius" => {
+            ctx.warn("bar: 'module_radius' renamed to 'module_rounded'");
         }
-        "volume_bar_width" => {
-            if let Ok(v) = val.parse() {
-                bar.volume_bar_width = v;
-            }
+        "modules" => {
+            ctx.warn(
+                "bar: 'modules flat|pill' replaced by 'pill true|false' — set `pill true` for pill mode",
+            );
         }
-        "volume_bar_height" => {
-            if let Ok(v) = val.parse() {
-                bar.volume_bar_height = v;
-            }
-        }
-        "volume_bar_radius" => {
-            if let Ok(v) = val.parse() {
-                bar.volume_bar_radius = v;
-            }
+        "volume_bar_enabled" | "volume_bar_width" | "volume_bar_height" | "volume_bar_radius" => {
+            ctx.warn(&format!(
+                "bar: '{key}' was removed — put bar_enabled / bar_width / bar_height / bar_radius inline on the volume module instead",
+            ));
         }
         _ => ctx.warn(&format!("unknown bar key '{key}'")),
     }
@@ -514,9 +575,12 @@ fn parse_bar_modules_line(tokens: &[String], bar: &mut Bar, ctx: &ParseContext) 
         }
     };
 
-    let arg = tokens.get(2).cloned();
+    // Everything after `<section> <module-name>` is collected in order
+    // as positional inline config. Each module decides what its args
+    // mean — see module docs in the example config.
+    let args: Vec<String> = tokens[2..].to_vec();
 
-    bar.modules.push(BarModule { section, kind, arg });
+    bar.modules.push(BarModule { section, kind, args });
 }
 
 fn parse_scratchpad_line(tokens: &[String], scratch: &mut ScratchpadConfig, ctx: &ParseContext) {
@@ -527,15 +591,15 @@ fn parse_scratchpad_line(tokens: &[String], scratch: &mut ScratchpadConfig, ctx:
     let val = &tokens[1];
 
     match key {
-        "width_pct" => {
+        "gap_px" => {
             if let Ok(v) = val.parse() {
-                scratch.width_pct = v;
+                scratch.gap_px = v;
             }
         }
-        "height_pct" => {
-            if let Ok(v) = val.parse() {
-                scratch.height_pct = v;
-            }
+        "width_pct" | "height_pct" => {
+            ctx.warn(&format!(
+                "scratchpad: '{key}' was removed — use 'gap_px N' for a single pixel inset from the workarea edge"
+            ));
         }
         "dim_alpha" => {
             if let Ok(v) = val.parse() {
@@ -544,7 +608,7 @@ fn parse_scratchpad_line(tokens: &[String], scratch: &mut ScratchpadConfig, ctx:
         }
         "blur" => scratch.blur = parse_bool(val).unwrap_or(false),
         "overlay" => scratch.overlay = Some(val.clone()),
-        "autostart" => scratch.autostart = Some(val.clone()),
+        "autostart" => scratch.autostart.push(val.clone()),
         "capture" => {
             if tokens.len() >= 3 && val == "app_id" {
                 scratch.captures.push(tokens[2].clone());
@@ -940,16 +1004,15 @@ fn sanitize(config: &mut Config) {
     b.module_gap = b.module_gap.max(0);
     b.module_padding_x = b.module_padding_x.max(0);
     b.module_padding_y = b.module_padding_y.max(0);
-    b.module_radius = b.module_radius.max(0);
     b.edge_padding_x = b.edge_padding_x.max(0);
     b.edge_padding_y = b.edge_padding_y.max(0);
-    b.volume_bar_width = b.volume_bar_width.max(0);
-    b.volume_bar_height = b.volume_bar_height.max(0);
-    b.volume_bar_radius = b.volume_bar_radius.max(0);
+    b.rounded = b.rounded.max(0);
+    b.border_px = b.border_px.max(0);
+    b.module_rounded = b.module_rounded.max(0);
+    b.module_border_px = b.module_border_px.max(0);
 
     for s in &mut config.scratchpads {
-        s.width_pct = s.width_pct.clamp(40, 100);
-        s.height_pct = s.height_pct.clamp(40, 100);
+        s.gap_px = s.gap_px.max(0);
         s.dim_alpha = s.dim_alpha.clamp(0, 255);
     }
 }

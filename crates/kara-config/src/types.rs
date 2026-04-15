@@ -133,12 +133,6 @@ pub enum BarPosition {
     Bottom,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BarModuleStyle {
-    Flat,
-    Pill,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BarModuleKind {
     Workspaces,
@@ -166,33 +160,76 @@ pub enum BarSection {
     Right,
 }
 
+/// A single bar module with its positional inline arguments.
+///
+/// Everything after `<section> <module-name>` on a module declaration
+/// line is collected, in order, into `args`. Different modules consume
+/// different args — see each module's docs in the example config.
+///
+/// Examples:
+///   `right clock "%H:%M"`        → args=["%H:%M"]
+///   `right volume med`           → args=["med"]
+///   `right custom "uptime -p"`   → args=["uptime -p"]
+///   `left workspaces`            → args=[]
 #[derive(Debug, Clone)]
 pub struct BarModule {
     pub section: BarSection,
     pub kind: BarModuleKind,
-    pub arg: Option<String>,
+    pub args: Vec<String>,
 }
 
-/// Bar configuration. One concept per field. See the example config for the
-/// old → new name mapping if you're migrating.
+/// Bar configuration. The bar and its modules are two separate concerns with
+/// parallel appearance knobs:
 ///
 /// Spatial model, from the outside in:
-///   bar (full width, `height` tall, flat background)
+///   bar  (full width × `height`, its own rounded/bordered/transparent/blurred surface)
 ///     → `edge_padding_x/y` inset
 ///       → row of modules separated by `module_gap`
-///         → each module (pill or flat) has its own
-///           `module_padding_x/y` inside and `module_radius` corners
+///         → each module has `module_padding_x/y` inside and, when `pill`
+///           is true, its own rounded/bordered/transparent/blurred background
 ///
-/// The bar itself never has rounded corners — rounding is a module-level
-/// concern.
+/// The pill toggle is global — all modules render pill-style or none do.
+/// Per-module color and anything else small lives inline on the module
+/// declaration in the `modules { }` block.
 #[derive(Debug, Clone)]
 pub struct Bar {
     pub enabled: bool,
-    pub background: bool,
     pub position: BarPosition,
     pub height: i32,
 
-    pub module_style: BarModuleStyle,
+    // ── Bar-level appearance ──────────────────────────────────────────
+    /// Draw the bar's own background fill (rounded/bordered/transparent/
+    /// blurred according to the fields below). `false` means no bar
+    /// background at all — modules float over whatever is behind.
+    pub background: bool,
+    /// Explicit background color. `None` → fall back to the active theme's
+    /// surface color.
+    pub background_color: Option<u32>,
+    /// 0-255 opacity for the bar background. 255 = fully opaque.
+    pub background_alpha: u8,
+    /// Corner radius of the bar surface in pixels. 0 = square corners.
+    pub rounded: i32,
+    /// Border thickness around the bar surface in pixels.
+    pub border_px: i32,
+    /// Border color. `None` → theme border.
+    pub border_color: Option<u32>,
+    /// Blur the content behind the bar surface. Parsed and stored but not
+    /// yet rendered — requires GL shader support (deferred).
+    pub blur: bool,
+
+    // ── Module-level appearance (shared by all modules) ──────────────
+    /// If true, every module renders with its own background fill
+    /// (rounded/bordered/transparent/blurred according to module_*).
+    /// If false, modules are text-only and module_* appearance fields
+    /// are ignored.
+    pub pill: bool,
+    pub module_background: Option<u32>,
+    pub module_alpha: u8,
+    pub module_rounded: i32,
+    pub module_border_px: i32,
+    pub module_border_color: Option<u32>,
+    pub module_blur: bool,
+
     pub icons: bool,
     pub colors: bool,
     pub minimal: bool,
@@ -207,14 +244,6 @@ pub struct Bar {
     pub module_padding_x: i32,
     /// Vertical padding inside a pill module background. Pill mode only.
     pub module_padding_y: i32,
-    /// Corner radius of pill module backgrounds. Applies only to modules,
-    /// never to the bar itself. 0 = square corners.
-    pub module_radius: i32,
-
-    pub volume_bar_enabled: bool,
-    pub volume_bar_width: i32,
-    pub volume_bar_height: i32,
-    pub volume_bar_radius: i32,
 
     pub modules: Vec<BarModule>,
 }
@@ -223,10 +252,25 @@ impl Default for Bar {
     fn default() -> Self {
         Self {
             enabled: true,
-            background: true,
             position: BarPosition::Top,
             height: 24,
-            module_style: BarModuleStyle::Flat,
+
+            background: true,
+            background_color: None,
+            background_alpha: 255,
+            rounded: 0,
+            border_px: 0,
+            border_color: None,
+            blur: false,
+
+            pill: false,
+            module_background: None,
+            module_alpha: 255,
+            module_rounded: 8,
+            module_border_px: 0,
+            module_border_color: None,
+            module_blur: false,
+
             icons: true,
             colors: true,
             minimal: false,
@@ -235,11 +279,6 @@ impl Default for Bar {
             module_gap: 18,
             module_padding_x: 12,
             module_padding_y: 6,
-            module_radius: 8,
-            volume_bar_enabled: true,
-            volume_bar_width: 46,
-            volume_bar_height: 6,
-            volume_bar_radius: 10,
             modules: Vec::new(),
         }
     }
@@ -250,12 +289,20 @@ impl Default for Bar {
 #[derive(Debug, Clone)]
 pub struct ScratchpadConfig {
     pub name: String,
-    pub width_pct: i32,
-    pub height_pct: i32,
+    /// Inset from the workarea edge on all four sides in pixels. The
+    /// scratchpad area is `workarea` shrunk by `gap_px` on every side.
+    /// Replaces the old percentage-based `width_pct` / `height_pct`
+    /// knobs so scratchpad size is consistent across differently-sized
+    /// monitors without math.
+    pub gap_px: i32,
     pub dim_alpha: i32,
     pub blur: bool,
     pub overlay: Option<String>,
-    pub autostart: Option<String>,
+    /// Commands to spawn the first time the scratchpad is toggled
+    /// visible (and again after it goes empty via auto-hide). Each
+    /// entry spawns a separate process and each resulting window is
+    /// captured into the scratchpad in declaration order.
+    pub autostart: Vec<String>,
     pub captures: Vec<String>, // app_id patterns
 }
 
@@ -263,12 +310,11 @@ impl ScratchpadConfig {
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
-            width_pct: 92,
-            height_pct: 92,
+            gap_px: 30,
             dim_alpha: 48,
             blur: false,
             overlay: None,
-            autostart: None,
+            autostart: Vec::new(),
             captures: Vec::new(),
         }
     }

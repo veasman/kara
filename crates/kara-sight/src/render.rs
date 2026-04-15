@@ -3,11 +3,23 @@
 /// Renders background, left/center/right sections, pill backgrounds,
 /// workspace dots, volume bar, and text via kara-ui.
 
-use tiny_skia::Pixmap;
+use tiny_skia::{Color, Pixmap};
 
-use kara_config::{Bar as BarConfig, BarModuleKind, BarModule, BarModuleStyle, BarSection, Theme};
+use kara_config::{Bar as BarConfig, BarModuleKind, BarModule, BarSection, Theme};
 use kara_ui::canvas::{color_from_u32, fill_circle, fill_rounded_rect, stroke_rounded_rect};
 use kara_ui::TextRenderer;
+
+/// Build a tiny-skia `Color` from a 0xRRGGBB u32 plus an explicit 0-255 alpha.
+/// Used for bar/module backgrounds, borders, and pill fills so the new
+/// transparency knobs in the bar schema actually take effect.
+fn rgba(c: u32, alpha: u8) -> Color {
+    Color::from_rgba8(
+        ((c >> 16) & 0xFF) as u8,
+        ((c >> 8) & 0xFF) as u8,
+        (c & 0xFF) as u8,
+        alpha,
+    )
+}
 
 use crate::status::StatusCache;
 use crate::text::{self, ModuleContext};
@@ -48,14 +60,32 @@ impl BarRenderer {
 
         let mut pixmap = Pixmap::new(width, height)?;
 
-        // Draw background. Bar background is ALWAYS flat — corner rounding
-        // is a module-level concern now, controlled by `module_radius` and
-        // applied per-pill inside `draw_module`.
+        // Draw the bar surface (if enabled). The bar and its modules are
+        // two separate concerns now: the bar has its own
+        // rounded/bordered/transparent background, and each module
+        // (optionally) has its own when `pill` is set. See the bar config
+        // docs in kara-config for the spatial model.
         if bar_config.background {
+            let bg = bar_config.background_color.unwrap_or(theme.bg);
+            let bg_alpha = bar_config.background_alpha;
+            let radius = bar_config.rounded.max(0) as f32;
             fill_rounded_rect(
                 &mut pixmap, 0.0, 0.0, width as f32, height as f32,
-                0.0, color_from_u32(theme.bg),
+                radius, rgba(bg, bg_alpha),
             );
+            if bar_config.border_px > 0 {
+                let bc = bar_config.border_color.unwrap_or(theme.border);
+                stroke_rounded_rect(
+                    &mut pixmap,
+                    0.5, 0.5, width as f32 - 1.0, height as f32 - 1.0,
+                    (radius - 0.5).max(0.0),
+                    rgba(bc, 255),
+                    bar_config.border_px as f32,
+                );
+            }
+            // Note: `bar_config.blur` is parsed and stored but not yet
+            // rendered — implementing real blur needs GL shader support
+            // in the compositor renderer. Tracked under backlog "blur".
         }
 
         // Build module context
@@ -76,7 +106,7 @@ impl BarRenderer {
         let (left, center, right) = split_modules(&bar_config.modules);
 
         // Measure all modules
-        let uses_pills = bar_config.module_style == BarModuleStyle::Pill;
+        let uses_pills = bar_config.pill;
         let pill_pad = if uses_pills { bar_config.module_padding_x.max(0) as u32 } else { 0 };
         let item_gap = bar_config.module_gap.max(0) as u32;
         let content_margin = bar_config.edge_padding_x.max(0) as u32;
@@ -142,23 +172,26 @@ impl BarRenderer {
         &mut self,
         module: &BarModule,
         ctx: &ModuleContext,
-        bar_config: &BarConfig,
+        _bar_config: &BarConfig,
         _ws_ctx: &WorkspaceContext,
     ) -> u32 {
         if module.kind == BarModuleKind::Workspaces {
             return self.measure_workspaces(ctx);
         }
 
-        let content = text::build_module_text(&module.kind, module.arg.as_deref(), ctx);
+        let content = text::build_module_text(&module.kind, &module.args, ctx);
         if content.text.is_empty() {
             return 0;
         }
 
         let mut w = self.text.measure(&content.text);
 
-        // Volume bar addition
-        if module.kind == BarModuleKind::Volume && bar_config.volume_bar_enabled {
-            w += 8 + bar_config.volume_bar_width.max(0) as u32;
+        // Volume module may carry an inline bar graph. Its size preset
+        // comes from the first positional arg (`small|med|large|none`).
+        if module.kind == BarModuleKind::Volume {
+            if let Some(size) = volume_bar_size(module) {
+                w += 8 + size.width;
+            }
         }
 
         w
@@ -203,10 +236,21 @@ impl BarRenderer {
         let bar_height = bar_config.height;
         let pill_pad = if uses_pills { bar_config.module_padding_x.max(0) } else { 0 };
 
-        // Draw pill background (symmetric vertical inset)
+        // Draw pill background behind this module, if pill mode is on.
+        // Pill fill, border, and rounding come from the shared
+        // module_* knobs on the bar config; the per-module `options`
+        // map only carries *content* overrides (color, volume bar
+        // dimensions, clock format, etc.), not appearance overrides.
         if uses_pills {
-            let radius = bar_config.module_radius.max(0) as f32;
-            draw_pill(pixmap, x as f32, content_y as f32, width as f32, content_h as f32, radius, theme);
+            draw_pill(
+                pixmap,
+                x as f32,
+                content_y as f32,
+                width as f32,
+                content_h as f32,
+                bar_config,
+                theme,
+            );
         }
 
         let text_x = x + pill_pad;
@@ -225,7 +269,7 @@ impl BarRenderer {
             return;
         }
 
-        let content = text::build_module_text(&module.kind, module.arg.as_deref(), ctx);
+        let content = text::build_module_text(&module.kind, &module.args, ctx);
         if content.text.is_empty() {
             return;
         }
@@ -234,19 +278,22 @@ impl BarRenderer {
         let text_y = self.text.center_y_offset(center_y);
         self.text.draw(pixmap, &content.text, text_x as f32, text_y, content.color);
 
-        // Volume bar
-        if module.kind == BarModuleKind::Volume && bar_config.volume_bar_enabled {
-            let text_w = self.text.measure(&content.text) as i32;
-            let bar_x = text_x + text_w + 8;
-            let bar_w = bar_config.volume_bar_width.max(0);
-            let bar_h = bar_config.volume_bar_height.max(0);
-            let bar_y = center_y - bar_h as f32 / 2.0;
-            let bar_r = bar_config.volume_bar_radius.max(0) as f32;
-            draw_volume_bar(
-                pixmap,
-                bar_x as f32, bar_y, bar_w as f32, bar_h as f32, bar_r,
-                &ctx.status.volume, theme,
-            );
+        // Volume bar — size preset comes from the module's first
+        // positional arg (see `volume_bar_size`). `none` disables.
+        if module.kind == BarModuleKind::Volume {
+            if let Some(size) = volume_bar_size(module) {
+                let text_w = self.text.measure(&content.text) as i32;
+                let bar_x = text_x + text_w + 8;
+                let bar_w = size.width as i32;
+                let bar_h = size.height as i32;
+                let bar_y = center_y - bar_h as f32 / 2.0;
+                let bar_r = size.radius as f32;
+                draw_volume_bar(
+                    pixmap,
+                    bar_x as f32, bar_y, bar_w as f32, bar_h as f32, bar_r,
+                    &ctx.status.volume, theme,
+                );
+            }
         }
     }
 
@@ -317,16 +364,73 @@ pub struct WorkspaceContext {
 
 // ── Bar-specific drawing ────────────────────────────────────────────
 
-fn draw_pill(pixmap: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, radius: f32, theme: &Theme) {
+fn draw_pill(
+    pixmap: &mut Pixmap,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    bar_config: &BarConfig,
+    theme: &Theme,
+) {
     if w <= 0.0 || h <= 0.0 {
         return;
     }
 
-    fill_rounded_rect(pixmap, x, y, w, h, radius, color_from_u32(theme.surface));
-    stroke_rounded_rect(
-        pixmap, x + 0.5, y + 0.5, w - 1.0, h - 1.0,
-        (radius - 0.5).max(0.0), color_from_u32(theme.border), 1.0,
-    );
+    let fill = bar_config.module_background.unwrap_or(theme.surface);
+    let radius = bar_config.module_rounded.max(0) as f32;
+    fill_rounded_rect(pixmap, x, y, w, h, radius, rgba(fill, bar_config.module_alpha));
+
+    if bar_config.module_border_px > 0 {
+        let border = bar_config.module_border_color.unwrap_or(theme.border);
+        stroke_rounded_rect(
+            pixmap,
+            x + 0.5,
+            y + 0.5,
+            w - 1.0,
+            h - 1.0,
+            (radius - 0.5).max(0.0),
+            rgba(border, 255),
+            bar_config.module_border_px as f32,
+        );
+    }
+    // Note: `bar_config.module_blur` is parsed but not yet rendered —
+    // blur needs GL shader support in the compositor.
+}
+
+// ── Inline module config helpers ────────────────────────────────────
+//
+// Volume is the only built-in module with per-module positional args
+// right now. Its first arg picks a size preset for the inline bar
+// graph: `small | med | large | none`. `none` disables the graph; any
+// other value falls back to `med`.
+
+#[derive(Debug, Clone, Copy)]
+struct VolumeBarSize {
+    width: u32,
+    height: u32,
+    radius: u32,
+}
+
+impl VolumeBarSize {
+    const SMALL: Self = Self { width: 32, height: 4, radius: 2 };
+    const MED: Self = Self { width: 46, height: 6, radius: 3 };
+    const LARGE: Self = Self { width: 64, height: 8, radius: 4 };
+}
+
+/// Resolve a volume module's inline bar size preset.
+///
+/// Returns `None` when the module's first arg is `none` — meaning no
+/// bar graph is rendered. Any other value (or no arg at all) picks a
+/// size preset, defaulting to `med`.
+fn volume_bar_size(module: &BarModule) -> Option<VolumeBarSize> {
+    match module.args.first().map(String::as_str) {
+        Some("none") => None,
+        Some("small") => Some(VolumeBarSize::SMALL),
+        Some("large") => Some(VolumeBarSize::LARGE),
+        Some("med") | Some("medium") | None => Some(VolumeBarSize::MED),
+        Some(_) => Some(VolumeBarSize::MED),
+    }
 }
 
 fn draw_volume_bar(
