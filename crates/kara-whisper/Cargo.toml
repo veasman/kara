@@ -18,3 +18,4 @@ wayland-client = "0.31"
 tiny-skia = { workspace = true }
 zbus = { version = "4", features = ["blocking"] }
 dirs = "6"
+serde = { workspace = true }

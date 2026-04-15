@@ -1383,6 +1383,7 @@ name = "kara-beautify"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "image",
  "kara-color",
@@ -1500,6 +1501,7 @@ dependencies = [
  "dirs",
  "kara-ipc",
  "kara-ui",
+ "serde",
  "smithay-client-toolkit",
  "tiny-skia",
  "wayland-client",

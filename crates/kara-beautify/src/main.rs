@@ -1,11 +1,15 @@
 mod state;
 mod wallpaper;
 mod config;
+mod daemon;
 mod doctor;
 mod apply;
 mod desktop;
 mod floorp_profile;
+mod history;
 mod ini_patch;
+mod ipc;
+mod popover;
 mod reload;
 mod wallpaper_agent;
 
@@ -104,6 +108,35 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Start the long-lived beautify daemon. Accepts IPC requests on
+    /// $XDG_RUNTIME_DIR/kara-beautify.sock. The daemon is additive —
+    /// the CLI works without it, but hot-path operations (variant
+    /// toggle, picker navigation) are much faster when it's running.
+    Daemon,
+
+    /// Cycle to the next variant of the current theme. Tries the
+    /// daemon IPC first; falls back to a direct CLI apply if the
+    /// daemon isn't running. This is what `mod+Shift+t` binds to.
+    Toggle {
+        #[arg(long, default_value = "next")]
+        direction: ToggleDirection,
+    },
+
+    /// Undo the most recent theme apply using the history ring buffer.
+    /// Requires the daemon to be running (history state machine is
+    /// daemon-side).
+    Undo,
+
+    /// Redo an undone apply. Requires the daemon to be running.
+    Redo,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+enum ToggleDirection {
+    #[default]
+    Next,
+    Prev,
 }
 
 #[derive(Debug, Args)]
@@ -203,6 +236,105 @@ fn main() -> Result<()> {
             mode,
             json,
         } => derive_image_command(&repo_root, &paths, &image, &name, mode, json),
+        Commands::Daemon => daemon::run(repo_root.clone(), paths.clone()),
+        Commands::Toggle { direction } => toggle_command(&repo_root, &paths, direction),
+        Commands::Undo => undo_command(),
+        Commands::Redo => redo_command(),
+    }
+}
+
+// ─── Toggle / Undo / Redo — daemon-first with fallback ─────────────
+
+fn toggle_command(
+    repo_root: &Path,
+    paths: &KaraPaths,
+    direction: ToggleDirection,
+) -> Result<()> {
+    let dir = match direction {
+        ToggleDirection::Next => ipc::Direction::Next,
+        ToggleDirection::Prev => ipc::Direction::Prev,
+    };
+
+    // Try the daemon first — zero cold-start cost.
+    if let Some(resp) = ipc::try_request(&ipc::Request::CycleVariant { direction: dir }) {
+        match resp {
+            ipc::Response::OkWithMessage { message } => {
+                println!("{message}");
+                return Ok(());
+            }
+            ipc::Response::Error { message } => anyhow::bail!("{message}"),
+            other => anyhow::bail!("unexpected daemon response: {other:?}"),
+        }
+    }
+
+    // Fallback: do the cycle ourselves via direct CLI path. Slower
+    // (cold clap + filesystem walk) but no dependency on the daemon.
+    toggle_fallback(repo_root, paths, dir)
+}
+
+fn toggle_fallback(
+    repo_root: &Path,
+    paths: &KaraPaths,
+    direction: ipc::Direction,
+) -> Result<()> {
+    use crate::state::runtime::read_current_theme as rct;
+    use crate::state::runtime::read_current_variant as rcv;
+    use kara_theme::ThemeSpec;
+
+    let current_theme = rct(paths)?
+        .context("no current theme — run `kara-beautify apply <theme>` first")?;
+    let current_variant = rcv(paths)?;
+
+    let theme_dir = paths
+        .find_theme(&current_theme, Some(repo_root))
+        .with_context(|| format!("theme '{current_theme}' not found"))?;
+    let spec = ThemeSpec::load_from_file(&theme_dir.join("theme.toml"))?;
+
+    if spec.variants.is_empty() {
+        anyhow::bail!("theme '{current_theme}' has no variants to cycle");
+    }
+
+    let variants: Vec<&String> = spec.variants.keys().collect();
+    let cur_idx = current_variant
+        .as_deref()
+        .and_then(|v| variants.iter().position(|k| k.as_str() == v))
+        .unwrap_or(0);
+    let next_idx = match direction {
+        ipc::Direction::Next => (cur_idx + 1) % variants.len(),
+        ipc::Direction::Prev => (cur_idx + variants.len() - 1) % variants.len(),
+    };
+    let next = variants[next_idx].clone();
+
+    apply_command(repo_root, paths, &current_theme, Some(&next), false, false)?;
+    println!("{current_theme}: {next}");
+    Ok(())
+}
+
+fn undo_command() -> Result<()> {
+    let resp = ipc::try_request(&ipc::Request::Undo).context(
+        "undo requires the beautify daemon to be running (start it with `kara-beautify daemon`)",
+    )?;
+    match resp {
+        ipc::Response::OkWithMessage { message } => {
+            println!("{message}");
+            Ok(())
+        }
+        ipc::Response::Error { message } => anyhow::bail!("{message}"),
+        other => anyhow::bail!("unexpected daemon response: {other:?}"),
+    }
+}
+
+fn redo_command() -> Result<()> {
+    let resp = ipc::try_request(&ipc::Request::Redo).context(
+        "redo requires the beautify daemon to be running (start it with `kara-beautify daemon`)",
+    )?;
+    match resp {
+        ipc::Response::OkWithMessage { message } => {
+            println!("{message}");
+            Ok(())
+        }
+        ipc::Response::Error { message } => anyhow::bail!("{message}"),
+        other => anyhow::bail!("unexpected daemon response: {other:?}"),
     }
 }
 

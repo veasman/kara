@@ -1,5 +1,6 @@
 mod dbus;
 mod notification;
+mod popover_ipc;
 mod ui;
 
 use std::sync::mpsc;
@@ -29,6 +30,7 @@ use wayland_client::{
 
 use crate::dbus::DbusEvent;
 use crate::notification::{NotificationQueue, Urgency};
+use crate::popover_ipc::PopoverEvent;
 use crate::ui::NotificationUI;
 
 fn default_theme() -> kara_ipc::ThemeColors {
@@ -59,6 +61,7 @@ struct Whisper {
     queue: NotificationQueue,
     ui: NotificationUI,
     dbus_rx: mpsc::Receiver<DbusEvent>,
+    popover_rx: mpsc::Receiver<PopoverEvent>,
     surface_visible: bool,
 }
 
@@ -272,6 +275,12 @@ fn main() {
     let (dbus_tx, dbus_rx) = mpsc::channel();
     let _dbus_handle = dbus::spawn_dbus(dbus_tx);
 
+    // Start popover socket listener. Best-effort — if the socket
+    // fails to bind, popovers silently degrade but notifications
+    // keep working.
+    let (popover_tx, popover_rx) = mpsc::channel();
+    let _popover_handle = popover_ipc::spawn(popover_tx);
+
     // Connect to Wayland
     let wayland_display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
     let conn = match Connection::connect_to_env() {
@@ -327,6 +336,7 @@ fn main() {
         queue: NotificationQueue::new(),
         ui: NotificationUI::new(theme),
         dbus_rx,
+        popover_rx,
         surface_visible: false,
     };
 
@@ -375,6 +385,31 @@ fn main() {
                 DbusEvent::Close { id } => {
                     whisper.queue.remove(id);
                     changed = true;
+                }
+            }
+        }
+
+        // Process popover events from kara-beautify (and anything
+        // else that talks to $XDG_RUNTIME_DIR/kara-whisper-popover.sock).
+        // Reuses the notification queue with a short expire timeout —
+        // dedicated popover rendering (center-anchored, bigger text)
+        // can replace this later; for v1 they surface as top-right
+        // cards same as D-Bus notifications.
+        while let Ok(event) = whisper.popover_rx.try_recv() {
+            match event {
+                PopoverEvent::Show { text, duration_ms } => {
+                    whisper.queue.add(
+                        "kara".to_string(),
+                        text,
+                        String::new(),
+                        Urgency::Low,
+                        duration_ms as i32,
+                    );
+                    changed = true;
+                }
+                PopoverEvent::Hide => {
+                    // No-op for v1 — popovers auto-expire via the
+                    // normal tick() path.
                 }
             }
         }
