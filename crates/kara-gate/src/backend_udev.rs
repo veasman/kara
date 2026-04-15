@@ -1599,9 +1599,13 @@ fn render_frame(
     // damage tracker runs landscape-only and never touches the broken
     // rotated-render path.
     if instance.two_pass.is_some() {
-        if let Err(phase) =
-            run_two_pass(&mut renderer, instance, &mut elements, primary_node)
-        {
+        if let Err(phase) = run_two_pass(
+            &mut renderer,
+            instance,
+            &mut elements,
+            primary_node,
+            &output_name,
+        ) {
             log_rate_limited_error(
                 &mut instance.render_errors,
                 phase,
@@ -1706,6 +1710,7 @@ fn run_two_pass<'a>(
     instance: &mut OutputInstance,
     elements: &mut Vec<DrmRenderElement<'a>>,
     _primary_node: DrmNode,
+    output_name: &str,
 ) -> Result<(), &'static str> {
     use smithay::backend::renderer::element::Kind;
     use smithay::backend::renderer::element::texture::{
@@ -1730,35 +1735,51 @@ fn run_two_pass<'a>(
     {
         let mut target = renderer
             .bind(&mut ts.dmabuf)
-            .map_err(|_| "two_pass_bind")?;
+            .map_err(|e| {
+                tracing::error!(
+                    target: "kara_gate::two_pass",
+                    "bind failed output={} err={:?}", output_name, e,
+                );
+                "two_pass_bind"
+            })?;
         {
             let mut frame = renderer
                 .render(&mut target, portrait_size, Transform::Normal)
-                .map_err(|_| "two_pass_render_start")?;
+                .map_err(|e| {
+                    tracing::error!(
+                        target: "kara_gate::two_pass",
+                        "render start failed output={} err={:?}", output_name, e,
+                    );
+                    "two_pass_render_start"
+                })?;
             frame
                 .clear(
                     Color32F::from([0.05, 0.05, 0.05, 1.0]),
                     &[portrait_rect],
                 )
-                .map_err(|_| "two_pass_clear")?;
+                .map_err(|e| {
+                    tracing::error!(
+                        target: "kara_gate::two_pass",
+                        "clear failed output={} err={:?}", output_name, e,
+                    );
+                    "two_pass_clear"
+                })?;
             // The element vec is ordered front-to-back (index 0 =
             // topmost). Iterate in reverse so later elements paint on
-            // top of earlier ones.
+            // top of earlier ones. Individual element draw failures are
+            // silently skipped — one bad surface shouldn't blank the
+            // whole rotated output.
             for elem in elements.iter().rev() {
                 let geo = elem.geometry(scale_one);
                 let src = elem.src();
-                if let Err(_e) = RenderElement::<KaraRenderer<'_>>::draw(
+                let _ = RenderElement::<KaraRenderer<'_>>::draw(
                     elem,
                     &mut frame,
                     src,
                     geo,
                     &[Rectangle::from_size(geo.size)],
                     &[],
-                ) {
-                    // Individual element failures shouldn't abort the whole
-                    // frame — log once via the rate limiter at the outer
-                    // call site and keep going on the rest of the elements.
-                }
+                );
             }
             // Drop frame before target to satisfy the RAII order.
             let _ = frame.finish();
@@ -1769,13 +1790,26 @@ fn run_two_pass<'a>(
     // ── Phase B: build a single rotated blit element ──
     let multi_tex = renderer
         .import_dmabuf(&ts.dmabuf, None)
-        .map_err(|_| "two_pass_import")?;
+        .map_err(|e| {
+            tracing::error!(
+                target: "kara_gate::two_pass",
+                "import_dmabuf failed output={} err={:?}", output_name, e,
+            );
+            "two_pass_import"
+        })?;
 
+    // `TextureBuffer::from_texture`'s `transform` arg is the **source**
+    // transform of the texture content (wl_buffer semantics) — smithay
+    // inverts it during render to map sample space → destination space.
+    // We captured the content in Transform::Normal and want it to appear
+    // rotated by `rotation` in the landscape scanout, so we hand smithay
+    // the inverse. Passing `rotation` directly produces an upside-down
+    // image (180° off).
     let buffer = TextureBuffer::from_texture(
         &*renderer,
         multi_tex,
         1,
-        rotation,
+        rotation.invert(),
         None,
     );
 
@@ -1918,7 +1952,7 @@ fn capture_screenshot<'a>(
 /// When `false`, rotation falls back to the smithay-native path (see
 /// [`ROTATION_SMITHAY_NATIVE`]) or to the kill-switch "render landscape
 /// sideways" fallback.
-const ROTATION_TWO_PASS: bool = false;
+const ROTATION_TWO_PASS: bool = true;
 
 /// When `true`, configured rotation uses smithay's built-in rotated
 /// render path (setting the Output transform and letting damage tracker
