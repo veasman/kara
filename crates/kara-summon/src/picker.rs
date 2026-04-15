@@ -61,32 +61,40 @@ use wayland_client::{
     Connection, QueueHandle,
 };
 
-use crate::beautify_ipc::{self, Request, Response, ThemeEntry, VariantEntry};
+use crate::beautify_ipc::{self, Request, Response, ThemeEntry, VariantEntry, WallpaperEntry};
 
-const WIDTH: u32 = 560;
-const HEIGHT: u32 = 280;
+const WIDTH: u32 = 640;
+const HEIGHT: u32 = 360;
 const PADDING: i32 = 18;
-const SECTION_LABEL_WIDTH: i32 = 80;
+const SECTION_LABEL_WIDTH: i32 = 90;
 const CHIP_HEIGHT: i32 = 32;
 const CHIP_GAP: i32 = 8;
 const BORDER_RADIUS: f32 = 12.0;
 
-/// Which horizontal section of the picker has keyboard focus.
+/// Which section of the picker has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
     Theme,
     Variant,
+    Wallpaper,
 }
 
 impl Focus {
+    /// j / ↓ / Tab — advance to the next row.
     fn next(self) -> Self {
         match self {
             Focus::Theme => Focus::Variant,
-            Focus::Variant => Focus::Theme,
+            Focus::Variant => Focus::Wallpaper,
+            Focus::Wallpaper => Focus::Theme,
         }
     }
+    /// k / ↑ / Shift+Tab — previous row.
     fn prev(self) -> Self {
-        self.next()
+        match self {
+            Focus::Theme => Focus::Wallpaper,
+            Focus::Variant => Focus::Theme,
+            Focus::Wallpaper => Focus::Variant,
+        }
     }
 }
 
@@ -96,6 +104,11 @@ struct ThemeGroup {
     entry: ThemeEntry,
     variants: Option<Vec<VariantEntry>>,
     default_variant: Option<String>,
+    /// Wallpaper pool for this theme. Currently shared across
+    /// all variants of a theme (the manifest doesn't support
+    /// per-variant wallpaper overrides yet). Lazy-loaded on
+    /// first theme focus.
+    wallpapers: Option<Vec<WallpaperEntry>>,
 }
 
 pub fn run(theme: ThemeColors) {
@@ -135,22 +148,25 @@ pub fn run(theme: ThemeColors) {
     };
 
     // Build groups and pre-fetch the currently-active theme's
-    // variants so the picker opens with both sections populated.
+    // variants + wallpapers so the picker opens with every
+    // section populated.
     let mut groups: Vec<ThemeGroup> = themes
         .into_iter()
         .map(|entry| ThemeGroup {
             entry,
             variants: None,
             default_variant: None,
+            wallpapers: None,
         })
         .collect();
 
-    // Find which group is the current theme and pre-fetch its variants.
+    // Find which group is the current theme and pre-fetch its variants + wallpapers.
     let initial_theme_idx = current_theme
         .as_deref()
         .and_then(|name| groups.iter().position(|g| g.entry.name == name))
         .unwrap_or(0);
     fetch_variants_for(&mut groups, initial_theme_idx);
+    fetch_wallpapers_for(&mut groups, initial_theme_idx);
 
     let initial_variant_idx = if let Some(ref vs) = groups[initial_theme_idx].variants {
         current_variant
@@ -160,6 +176,12 @@ pub fn run(theme: ThemeColors) {
     } else {
         0
     };
+
+    // Initial wallpaper selection — for now just start at the
+    // first entry. A future improvement could read the
+    // current_wallpaper state file and position the selection
+    // accordingly so the picker opens on the active wallpaper.
+    let initial_wallpaper_idx = 0;
 
     let conn = match Connection::connect_to_env() {
         Ok(c) => c,
@@ -205,6 +227,7 @@ pub fn run(theme: ThemeColors) {
         groups,
         theme_idx: initial_theme_idx,
         variant_idx: initial_variant_idx,
+        wallpaper_idx: initial_wallpaper_idx,
         focus: Focus::Theme,
         ctrl_held: false,
 
@@ -256,6 +279,30 @@ fn fetch_variants_for(groups: &mut [ThemeGroup], idx: usize) {
     }
 }
 
+/// Fetch a theme's wallpaper pool via IPC and cache it in the group.
+/// No-op if wallpapers are already loaded. Same lazy-load pattern
+/// as fetch_variants_for — the wallpaper row only populates for
+/// the theme the user is currently focusing.
+fn fetch_wallpapers_for(groups: &mut [ThemeGroup], idx: usize) {
+    let Some(group) = groups.get_mut(idx) else {
+        return;
+    };
+    if group.wallpapers.is_some() {
+        return;
+    }
+    match beautify_ipc::try_request(&Request::ListWallpapers {
+        theme: group.entry.name.clone(),
+        variant: None,
+    }) {
+        Some(Response::Wallpapers { entries, .. }) => {
+            group.wallpapers = Some(entries);
+        }
+        _ => {
+            group.wallpapers = Some(Vec::new());
+        }
+    }
+}
+
 struct Picker {
     registry_state: RegistryState,
     seat_state: SeatState,
@@ -276,6 +323,7 @@ struct Picker {
     groups: Vec<ThemeGroup>,
     theme_idx: usize,
     variant_idx: usize,
+    wallpaper_idx: usize,
     focus: Focus,
     ctrl_held: bool,
 
@@ -290,6 +338,13 @@ impl Picker {
             .unwrap_or(&[])
     }
 
+    fn active_wallpapers(&self) -> &[WallpaperEntry] {
+        self.groups
+            .get(self.theme_idx)
+            .and_then(|g| g.wallpapers.as_deref())
+            .unwrap_or(&[])
+    }
+
     fn move_selection(&mut self, delta: isize) {
         let changed = match self.focus {
             Focus::Theme => {
@@ -300,7 +355,9 @@ impl Picker {
                     if new_idx != self.theme_idx {
                         self.theme_idx = new_idx;
                         fetch_variants_for(&mut self.groups, self.theme_idx);
+                        fetch_wallpapers_for(&mut self.groups, self.theme_idx);
                         self.variant_idx = 0;
+                        self.wallpaper_idx = 0;
                         true
                     } else {
                         false
@@ -321,6 +378,20 @@ impl Picker {
                     }
                 }
             }
+            Focus::Wallpaper => {
+                let n = self.active_wallpapers().len();
+                if n == 0 {
+                    false
+                } else {
+                    let new_idx = wrap(self.wallpaper_idx as isize + delta, n);
+                    if new_idx != self.wallpaper_idx {
+                        self.wallpaper_idx = new_idx;
+                        true
+                    } else {
+                        false
+                    }
+                }
+            }
         };
 
         if changed {
@@ -329,9 +400,9 @@ impl Picker {
     }
 
     /// Fire an ApplyPreview IPC request for the currently-selected
-    /// (theme, variant) pair. Best-effort; if the daemon isn't
-    /// reachable the picker still lets the user navigate (but no
-    /// live feedback on the desktop).
+    /// (theme, variant, wallpaper) triple. Best-effort; if the
+    /// daemon isn't reachable the picker still lets the user
+    /// navigate (but no live feedback on the desktop).
     fn fire_preview(&mut self) {
         let Some(group) = self.groups.get(self.theme_idx) else {
             return;
@@ -342,11 +413,16 @@ impl Picker {
             .as_ref()
             .and_then(|vs| vs.get(self.variant_idx))
             .map(|v| v.name.clone());
+        let wallpaper_path = group
+            .wallpapers
+            .as_ref()
+            .and_then(|ws| ws.get(self.wallpaper_idx))
+            .map(|w| w.path.clone());
 
         let _ = beautify_ipc::try_request(&Request::ApplyPreview {
             theme: Some(theme_name),
             variant: variant_name,
-            wallpaper: None,
+            wallpaper: wallpaper_path,
         });
     }
 
@@ -443,6 +519,56 @@ impl Picker {
                 variant_selected,
                 variant_focused,
                 variant_row_y,
+            );
+        }
+
+        // Separator before wallpaper row
+        let sep2_y = variant_row_y + CHIP_HEIGHT + PADDING;
+        fill_rounded_rect(
+            &mut pixmap,
+            PADDING as f32,
+            sep2_y as f32,
+            (w as i32 - PADDING * 2) as f32,
+            1.0,
+            0.0,
+            color_from_u32(t.border),
+        );
+
+        // WALLPAPER row — text chips of filenames for now. Thumbnail
+        // previews (actual image bitmaps decoded from the file into
+        // an SHM buffer) are a B9b.1 follow-up once this layout is
+        // proven to feel right.
+        let wallpaper_row_y = sep2_y + PADDING;
+        self.draw_section_label(&mut pixmap, "WALLPAPER", wallpaper_row_y);
+
+        let wallpaper_names: Vec<String> = self
+            .active_wallpapers()
+            .iter()
+            .map(|w| w.file_name.clone())
+            .collect();
+        if wallpaper_names.is_empty() {
+            let label_x = PADDING + SECTION_LABEL_WIDTH;
+            let label_y = self
+                .text
+                .center_y_offset(wallpaper_row_y as f32 + CHIP_HEIGHT as f32 / 2.0);
+            self.text.draw(
+                &mut pixmap,
+                "(no wallpapers — drop files in themes/<name>/wallpapers/)",
+                label_x as f32,
+                label_y,
+                t.text_muted,
+            );
+        } else {
+            let wallpaper_refs: Vec<&str> =
+                wallpaper_names.iter().map(|s| s.as_str()).collect();
+            let wallpaper_focused = self.focus == Focus::Wallpaper;
+            let wallpaper_selected = self.wallpaper_idx;
+            self.draw_chip_row(
+                &mut pixmap,
+                &wallpaper_refs,
+                wallpaper_selected,
+                wallpaper_focused,
+                wallpaper_row_y,
             );
         }
 

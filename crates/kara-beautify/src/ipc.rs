@@ -35,6 +35,17 @@ pub enum Request {
     ListVariants {
         theme: String,
     },
+    /// Enumerate wallpapers available for a specific (theme, variant)
+    /// pair. Scans the theme's `wallpapers/` directory and returns
+    /// each supported image file. The `variant` is passed so a
+    /// future per-variant wallpaper override in the manifest can
+    /// be honored — today all variants of a theme share the same
+    /// wallpaper pool.
+    ListWallpapers {
+        theme: String,
+        #[serde(default)]
+        variant: Option<String>,
+    },
     GetHistory,
 
     // ─── Commits ───────────────────────────────────────────────────
@@ -105,9 +116,28 @@ pub enum Response {
         default_variant: Option<String>,
         variants: Vec<VariantEntry>,
     },
+    Wallpapers {
+        theme: String,
+        variant: Option<String>,
+        entries: Vec<WallpaperEntry>,
+    },
     History {
         entries: Vec<HistoryEntry>,
     },
+}
+
+/// A single wallpaper entry for the carousel. `path` is absolute so
+/// clients can pass it straight into `ApplyPreview { wallpaper: ... }`.
+/// `is_animated` is reserved for D2 (GIF) / D3 (video) support —
+/// today it's always false since only static images are supported,
+/// but the field is in the IPC schema now so clients can plumb it
+/// through the picker's carousel without a protocol bump later.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WallpaperEntry {
+    pub path: PathBuf,
+    pub file_name: String,
+    #[serde(default)]
+    pub is_animated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

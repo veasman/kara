@@ -29,7 +29,7 @@ use crate::config::BeautifyConfig;
 use crate::history::{History, HistoryEntry};
 use crate::ipc::{
     Direction, HistoryEntry as IpcHistoryEntry, Request, Response, ThemeEntry, VariantEntry,
-    socket_path,
+    WallpaperEntry, socket_path,
 };
 use crate::state::paths::KaraPaths;
 use crate::state::runtime::{
@@ -119,6 +119,9 @@ fn dispatch(req: &Request, state: &Mutex<DaemonState>) -> Result<Response> {
         Request::GetState => handle_get_state(&s),
         Request::ListThemes => handle_list_themes(&s),
         Request::ListVariants { theme } => handle_list_variants(&s, theme),
+        Request::ListWallpapers { theme, variant } => {
+            handle_list_wallpapers(&s, theme, variant.as_deref())
+        }
         Request::GetHistory => handle_get_history(&s),
 
         Request::SetTheme {
@@ -217,6 +220,80 @@ fn handle_list_variants(s: &DaemonState, theme_name: &str) -> Result<Response> {
         theme: spec.meta.name,
         default_variant: spec.meta.default_variant,
         variants,
+    })
+}
+
+fn handle_list_wallpapers(
+    s: &DaemonState,
+    theme_name: &str,
+    variant: Option<&str>,
+) -> Result<Response> {
+    // Resolve the theme and read its wallpapers directory. Per-variant
+    // wallpaper overrides in the manifest aren't supported yet — every
+    // variant of a theme gets the same pool. The variant parameter is
+    // carried through the request so future schema additions won't
+    // break the IPC shape.
+    let theme_dir = s
+        .paths
+        .find_theme(theme_name, Some(&s.repo_root))
+        .with_context(|| format!("theme '{theme_name}' not found"))?;
+
+    let wallpapers_dir = theme_dir.join("wallpapers");
+    let mut entries: Vec<WallpaperEntry> = Vec::new();
+
+    if wallpapers_dir.is_dir() {
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        for entry in fs::read_dir(&wallpapers_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let file_name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if file_name.starts_with('.') {
+                continue;
+            }
+            let ext = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_default();
+            let supported = matches!(
+                ext.as_str(),
+                "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" | "tif" | "tiff" | "avif"
+            );
+            if supported {
+                files.push(path);
+            }
+        }
+        files.sort();
+
+        for path in files {
+            let file_name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
+            let is_animated = matches!(
+                path.extension().and_then(|s| s.to_str()),
+                Some("gif")
+            );
+            entries.push(WallpaperEntry {
+                path,
+                file_name,
+                is_animated,
+            });
+        }
+    }
+
+    Ok(Response::Wallpapers {
+        theme: theme_name.to_string(),
+        variant: variant.map(|s| s.to_string()),
+        entries,
     })
 }
 
@@ -407,7 +484,7 @@ fn handle_apply_preview(
     s: &mut DaemonState,
     theme: Option<&str>,
     variant: Option<&str>,
-    _wallpaper: Option<&std::path::Path>,
+    wallpaper: Option<&std::path::Path>,
 ) -> Result<Response> {
     // Resolve the target — preview needs at least one of theme or
     // variant. Picker always passes both on navigation so we don't
@@ -416,9 +493,7 @@ fn handle_apply_preview(
     // would look like a no-op to the user.
     let target_theme = theme
         .map(|s| s.to_string())
-        .or_else(|| {
-            read_current_theme(&s.paths).ok().flatten()
-        })
+        .or_else(|| read_current_theme(&s.paths).ok().flatten())
         .context("ApplyPreview with no theme and no current theme in state")?;
 
     // If no snapshot exists yet, capture the pre-preview state so
@@ -431,6 +506,17 @@ fn handle_apply_preview(
         }
     }
 
+    // If the picker passed an explicit wallpaper, stage it into
+    // the theme-wallpaper state file BEFORE the apply runs — the
+    // apply path's `selected_wallpaper()` reads from there as its
+    // highest-priority source, so this overrides whatever the
+    // manifest says for the theme's default wallpaper.
+    if let Some(w) = wallpaper {
+        if w.is_file() {
+            crate::state::runtime::write_theme_wallpaper(&s.paths, &target_theme, w)?;
+        }
+    }
+
     // Apply the target without recording in history — preview
     // navigation shouldn't pollute the undo/redo stack.
     apply_state(s, &target_theme, variant)?;
@@ -438,9 +524,7 @@ fn handle_apply_preview(
     Ok(Response::OkWithMessage {
         message: format!(
             "preview: {target_theme}{}",
-            variant
-                .map(|v| format!(":{v}"))
-                .unwrap_or_default()
+            variant.map(|v| format!(":{v}")).unwrap_or_default()
         ),
     })
 }

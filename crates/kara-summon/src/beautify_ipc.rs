@@ -30,6 +30,11 @@ pub enum Request {
     ListVariants {
         theme: String,
     },
+    ListWallpapers {
+        theme: String,
+        #[serde(default)]
+        variant: Option<String>,
+    },
     #[allow(dead_code)]
     GetHistory,
     SetTheme {
@@ -89,10 +94,23 @@ pub enum Response {
         default_variant: Option<String>,
         variants: Vec<VariantEntry>,
     },
+    Wallpapers {
+        theme: String,
+        variant: Option<String>,
+        entries: Vec<WallpaperEntry>,
+    },
     #[allow(dead_code)]
     History {
         entries: Vec<HistoryEntry>,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WallpaperEntry {
+    pub path: PathBuf,
+    pub file_name: String,
+    #[serde(default)]
+    pub is_animated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
