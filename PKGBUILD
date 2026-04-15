@@ -12,7 +12,16 @@ depends=(
 	'libinput'
 	'seatd'
 	'fontconfig'
+	# kara wraps the session in `dbus-run-session` via /usr/bin/kara
+	# so a user session D-Bus is always present even on OpenRC/runit.
 	'dbus'
+	# kara ships /usr/share/xdg-desktop-portal/kara-portals.conf routing
+	# the Settings interface through the GTK backend, which is what
+	# delivers live color-scheme updates to Firefox / GTK apps on
+	# kara-beautify theme switch. Without this the portal has no impl
+	# for the kara desktop and live dark/light flip silently no-ops.
+	'xdg-desktop-portal'
+	'xdg-desktop-portal-gtk'
 )
 makedepends=(
 	'base-devel'
@@ -27,8 +36,18 @@ optdepends=(
 	'wl-clipboard: screenshot clipboard copy'
 	'foot: default terminal'
 	'bibata-cursor-theme: default cursor theme'
+	'gruvbox-plus-icon-theme: example icon theme for the default theme'
+	'nord-nvim: hand-tuned Nord palette for kara.nvim plugin dispatch'
+	'gruvbox-nvim: hand-tuned Gruvbox palette for kara.nvim plugin dispatch'
 )
-provides=('kara' 'kara-gate' 'kara-summon' 'kara-glimpse' 'kara-whisper')
+provides=(
+	'kara'
+	'kara-gate'
+	'kara-summon'
+	'kara-glimpse'
+	'kara-whisper'
+	'kara-beautify'
+)
 conflicts=('kara' 'kara-gate')
 source=("git+https://github.com/veasman/kara.git")
 sha256sums=('SKIP')
