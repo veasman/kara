@@ -38,14 +38,20 @@ pub fn layout_workspace(
         LayoutKind::Monocle => layout_monocle_indexed(ws, &tiled_indices, area, border_px, focused_idx),
     };
 
-    // Layout floating windows — centered in the work area
+    // Layout floating windows — honor client-requested size, centered in the work area.
+    // Clamp to 95% of the workarea to keep a visible margin; fall back to 640x480 if the
+    // client has not yet committed a geometry (pre-first-buffer).
+    let max_w = (area.size.w as f32 * 0.95) as i32;
+    let max_h = (area.size.h as f32 * 0.95) as i32;
     for (i, client) in ws.clients.iter().enumerate() {
         if !ws.is_floating(i) {
             continue;
         }
-        // Default floating size: 60% of area
-        let fw = (area.size.w as f32 * 0.6) as i32;
-        let fh = (area.size.h as f32 * 0.6) as i32;
+        let requested = client.geometry().size;
+        let rw = if requested.w > 1 { requested.w } else { 640 };
+        let rh = if requested.h > 1 { requested.h } else { 480 };
+        let fw = rw.min(max_w).max(1);
+        let fh = rh.min(max_h).max(1);
         let fx = area.loc.x + (area.size.w - fw) / 2;
         let fy = area.loc.y + (area.size.h - fh) / 2;
 
