@@ -1,6 +1,8 @@
 use crate::notification::{Notification, Urgency};
 use kara_ipc::ThemeColors;
-use kara_ui::canvas::{color_from_u32, fill_rounded_rect, stroke_rounded_rect};
+use kara_ui::canvas::{
+    color_from_u32, fill_rounded_rect, fill_rounded_rect_with_pattern, stroke_rounded_rect,
+};
 use kara_ui::text::TextRenderer;
 use tiny_skia::Pixmap;
 
@@ -52,19 +54,72 @@ impl NotificationUI {
         let height = Self::total_height(notifications.len());
         let mut pixmap = Pixmap::new(CARD_WIDTH, height)?;
 
+        // Load the theme's window border tile once per render. When
+        // present, every notification card draws the same tiled
+        // pattern around its chrome that kara-gate draws on real
+        // windows — whisper feels like a member of the family.
+        let border_tile = self
+            .theme
+            .border_tile_path
+            .as_deref()
+            .and_then(|p| Pixmap::load_png(p).ok());
+        let theme_border_px = self.theme.border_px.unwrap_or(0).max(0) as f32;
+        let theme_border_radius = self
+            .theme
+            .border_radius
+            .map(|r| r as f32)
+            .unwrap_or(BORDER_RADIUS);
+
         for (i, notif) in notifications.iter().enumerate() {
             let y_off = (i as u32 * (CARD_HEIGHT + GAP)) as f32;
 
-            // Card background
-            fill_rounded_rect(
-                &mut pixmap,
-                0.0,
-                y_off,
-                CARD_WIDTH as f32,
-                CARD_HEIGHT as f32,
-                BORDER_RADIUS,
-                color_from_u32(self.theme.surface),
-            );
+            // Theme-driven border chrome — draw the outer tiled
+            // border first, then the inner card surface on top.
+            // Falls back to a plain surface fill when the theme has
+            // no tile set.
+            if let (Some(tile_pm), bw) = (&border_tile, theme_border_px) {
+                if bw > 0.0 {
+                    fill_rounded_rect_with_pattern(
+                        &mut pixmap,
+                        -bw,
+                        y_off - bw,
+                        CARD_WIDTH as f32 + bw * 2.0,
+                        CARD_HEIGHT as f32 + bw * 2.0,
+                        theme_border_radius + bw,
+                        tile_pm,
+                    );
+                    // Inner card fills on top of the tiled border.
+                    fill_rounded_rect(
+                        &mut pixmap,
+                        0.0,
+                        y_off,
+                        CARD_WIDTH as f32,
+                        CARD_HEIGHT as f32,
+                        theme_border_radius,
+                        color_from_u32(self.theme.surface),
+                    );
+                } else {
+                    fill_rounded_rect(
+                        &mut pixmap,
+                        0.0,
+                        y_off,
+                        CARD_WIDTH as f32,
+                        CARD_HEIGHT as f32,
+                        theme_border_radius,
+                        color_from_u32(self.theme.surface),
+                    );
+                }
+            } else {
+                fill_rounded_rect(
+                    &mut pixmap,
+                    0.0,
+                    y_off,
+                    CARD_WIDTH as f32,
+                    CARD_HEIGHT as f32,
+                    BORDER_RADIUS,
+                    color_from_u32(self.theme.surface),
+                );
+            }
 
             // Critical: accent border
             if notif.urgency == Urgency::Critical {

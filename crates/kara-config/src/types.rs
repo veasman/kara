@@ -254,6 +254,18 @@ pub struct Bar {
     pub icons: bool,
     pub colors: bool,
     pub minimal: bool,
+    /// Theme-driven suppression of center-section modules. Set by
+    /// kara-beautify via a generated `bar { hide_center = true }`
+    /// key when the active theme asks for it. User modules remain
+    /// in the config; kara-sight just skips them at render time.
+    pub hide_center: bool,
+    /// Absolute path to a pre-rasterized PNG tile used as the fill
+    /// for each pill module background. Written by kara-beautify
+    /// from `bar.module_background_svg`. kara-sight decodes it once
+    /// per config reload and uses a tiny-skia `Pattern { Repeat }`
+    /// shader in place of the solid `module_background` color.
+    /// `None` = solid-color pill fill.
+    pub module_bg_tile: Option<std::path::PathBuf>,
 
     /// Inset from bar left/right edge to first/last module.
     pub edge_padding_x: i32,
@@ -295,6 +307,8 @@ impl Default for Bar {
             icons: true,
             colors: true,
             minimal: false,
+            hide_center: false,
+            module_bg_tile: None,
             edge_padding_x: 14,
             edge_padding_y: 2,
             module_gap: 18,

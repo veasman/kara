@@ -29,12 +29,16 @@ use crate::text::{self, ModuleContext};
 /// Persistent state for the bar renderer.
 pub struct BarRenderer {
     text: TextRenderer,
+    /// Cached decoded module background tile. Re-decoded lazily
+    /// when `render()` sees `bar_config.module_bg_tile` change.
+    module_bg_tile: Option<(std::path::PathBuf, Pixmap)>,
 }
 
 impl BarRenderer {
     pub fn new(font_family: &str, font_size: f32) -> Self {
         Self {
             text: TextRenderer::new_with_font(font_family, font_size),
+            module_bg_tile: None,
         }
     }
 
@@ -42,6 +46,30 @@ impl BarRenderer {
     pub fn set_font(&mut self, font_family: &str, font_size: f32) {
         self.text.set_font_family(font_family);
         self.text.set_font_size(font_size);
+    }
+
+    /// Ensure the cached module background tile reflects the current
+    /// config path. Decodes the PNG via tiny-skia on first use (or
+    /// path change) and stores it in `self.module_bg_tile`. Decode
+    /// failures log once and fall back to solid-color pill fills.
+    fn refresh_module_bg_tile(&mut self, bar_config: &BarConfig) {
+        let want = bar_config.module_bg_tile.as_ref();
+        let have = self.module_bg_tile.as_ref().map(|(p, _)| p.as_path());
+        match (want, have) {
+            (None, None) => {}
+            (None, Some(_)) => self.module_bg_tile = None,
+            (Some(w), Some(h)) if w.as_path() == h => {}
+            (Some(w), _) => match Pixmap::load_png(w) {
+                Ok(pm) => self.module_bg_tile = Some((w.clone(), pm)),
+                Err(e) => {
+                    eprintln!(
+                        "kara-sight: failed to decode module_bg_tile {}: {e}",
+                        w.display()
+                    );
+                    self.module_bg_tile = None;
+                }
+            },
+        }
     }
 
     /// Render the bar to a new Pixmap.
@@ -57,6 +85,15 @@ impl BarRenderer {
         if width == 0 || height == 0 {
             return None;
         }
+
+        self.refresh_module_bg_tile(bar_config);
+        // Clone the cached tile once per frame so later calls into
+        // `&mut self` (measure / draw text) don't conflict with the
+        // `&self` borrow the tile reference would hold across the
+        // render loop. The tile is small (typically 48×48 RGBA ≈
+        // 9 KB) so the clone is cheap.
+        let module_tile: Option<Pixmap> =
+            self.module_bg_tile.as_ref().map(|(_, pm)| pm.clone());
 
         let mut pixmap = Pixmap::new(width, height)?;
 
@@ -148,6 +185,7 @@ impl BarRenderer {
                     content_h as f32,
                     bar_config,
                     theme,
+                    module_tile.as_ref(),
                 );
             }
             let mut mx = left_x + pill_pad as i32;
@@ -179,6 +217,7 @@ impl BarRenderer {
                     content_h as f32,
                     bar_config,
                     theme,
+                    module_tile.as_ref(),
                 );
             }
             let mut mx = right_x + pill_pad as i32;
@@ -196,8 +235,12 @@ impl BarRenderer {
             right_x -= item_gap as i32;
         }
 
-        // Layout CENTER section (centered, if it fits)
-        if !center_groups.is_empty() {
+        // Layout CENTER section (centered, if it fits).
+        // Theme-level `bar { hide_center = true }` suppresses the entire
+        // center row even if the user's config declares center modules.
+        // Lets fantasy / moonlight drop the title chrome without the
+        // user having to comment center modules out of their base config.
+        if !center_groups.is_empty() && !bar_config.hide_center {
             let group_widths: Vec<u32> =
                 center_groups.iter().map(|g| measure_group(self, g)).collect();
             let total_center_w: u32 = group_widths.iter().sum::<u32>()
@@ -221,6 +264,7 @@ impl BarRenderer {
                             content_h as f32,
                             bar_config,
                             theme,
+                            module_tile.as_ref(),
                         );
                     }
                     let mut mx = cx + pill_pad as i32;
@@ -433,14 +477,24 @@ fn draw_pill(
     h: f32,
     bar_config: &BarConfig,
     theme: &Theme,
+    tile: Option<&Pixmap>,
 ) {
     if w <= 0.0 || h <= 0.0 {
         return;
     }
 
-    let fill = bar_config.module_background.unwrap_or(theme.surface);
     let radius = bar_config.module_rounded.max(0) as f32;
-    fill_rounded_rect(pixmap, x, y, w, h, radius, rgba(fill, bar_config.module_alpha));
+
+    if let Some(tile_pm) = tile {
+        // Tileable SVG background — fill the rounded rect with a
+        // repeating pattern sourced from the pre-rasterized tile.
+        // Falls back to solid color if the path is somehow empty.
+        use kara_ui::canvas::fill_rounded_rect_with_pattern;
+        fill_rounded_rect_with_pattern(pixmap, x, y, w, h, radius, tile_pm);
+    } else {
+        let fill = bar_config.module_background.unwrap_or(theme.surface);
+        fill_rounded_rect(pixmap, x, y, w, h, radius, rgba(fill, bar_config.module_alpha));
+    }
 
     if bar_config.module_border_px > 0 {
         let border = bar_config.module_border_color.unwrap_or(theme.border);

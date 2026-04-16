@@ -42,6 +42,9 @@ fn default_theme() -> kara_ipc::ThemeColors {
         accent: 0x6bacac,
         accent_soft: 0x458588,
         border: 0x353535,
+        border_px: None,
+        border_radius: None,
+        border_tile_path: None,
     }
 }
 

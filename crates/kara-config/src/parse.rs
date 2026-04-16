@@ -485,6 +485,18 @@ fn parse_bar_line(tokens: &[String], bar: &mut Bar, ctx: &ParseContext) {
                 bar.minimal = true;
             }
         }
+        "hide_center" => {
+            if let Some(b) = parse_bool(val) {
+                bar.hide_center = b;
+            }
+        }
+        "module_bg_tile" => {
+            if val.is_empty() {
+                bar.module_bg_tile = None;
+            } else {
+                bar.module_bg_tile = Some(std::path::PathBuf::from(val));
+            }
+        }
         "edge_padding_x" => {
             if let Ok(v) = val.parse() {
                 bar.edge_padding_x = v;

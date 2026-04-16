@@ -62,6 +62,42 @@ pub fn fill_rounded_rect(pixmap: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, r:
     }
 }
 
+/// Fill a rounded rectangle with a repeating pattern sourced from
+/// another pixmap. Used by kara-sight for pill module backgrounds
+/// that tile an SVG-rasterized border pattern, and could be used
+/// anywhere a tileable texture replaces a solid fill. The tile
+/// pattern origin is anchored to the filled rectangle's top-left.
+pub fn fill_rounded_rect_with_pattern(
+    pixmap: &mut Pixmap,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    r: f32,
+    tile: &Pixmap,
+) {
+    let pattern_transform = Transform::from_translate(x, y);
+    let shader = tiny_skia::Pattern::new(
+        tile.as_ref(),
+        tiny_skia::SpreadMode::Repeat,
+        tiny_skia::FilterQuality::Nearest,
+        1.0,
+        pattern_transform,
+    );
+    let paint = Paint {
+        shader,
+        anti_alias: r > 0.0,
+        ..Default::default()
+    };
+    if r > 0.0 {
+        if let Some(path) = rounded_rect_path(x, y, w, h, r) {
+            pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+        }
+    } else if let Some(rect) = Rect::from_xywh(x, y, w, h) {
+        pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+    }
+}
+
 /// Stroke a rounded rectangle border on a pixmap.
 pub fn stroke_rounded_rect(pixmap: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, r: f32, color: Color, width: f32) {
     let mut paint = Paint::default();

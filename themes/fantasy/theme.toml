@@ -58,12 +58,13 @@ mono_family = "FiraCode Nerd Font"
 mono_size = 13
 
 [cursor]
-# Rage-Gothic pairs with the gothic castle aesthetic. AUR:
-# rage-gothic-cursor-theme installs both `Rage-Gothic` and
-# `Rage-Gothic-Light` under /usr/share/icons. The dark variant
-# matches the fantasy blood palette. Night-Diamond-Red and
-# Bibata-Modern-Classic are fine alternates.
-theme = "Rage-Gothic"
+# Night-Diamond-Red — crimson, high-contrast, matches the blood
+# palette. AUR: night-diamond-cursor-theme installs both -Red and
+# -Blue variants. Swapped back from Rage-Gothic because the Rage
+# art reads as cold blue rather than the warm crimson we want for
+# the gothic look. Alternates: Bibata-Modern-Classic (neutral
+# pointer), Rage-Gothic (if you prefer the blue look).
+theme = "Night-Diamond-Red"
 size = 24
 
 # ─── Reserved structured slots (no renderer consumes these yet) ────
@@ -107,6 +108,7 @@ background = false
 background_alpha = 0
 height = 36
 pill = true
+hide_center = true
 edge_padding_x = 18
 edge_padding_y = 6
 module_gap = 14

@@ -48,16 +48,21 @@ impl TextRenderer {
 
     /// Compute the y offset needed so that text is vertically centered at `center_y`.
     /// Returns the y value to pass to `draw()`.
+    ///
+    /// cosmic-text's `y` parameter is the top of the line area. With
+    /// typical Western font metrics (ascent ≈ 0.8 × font_size,
+    /// cap_height ≈ 0.7 × font_size), the visual center of uppercase
+    /// glyphs sits at `y + ascent - cap_height/2` = `y + 0.45 × fs`.
+    /// To land that at `center_y`: `y = center_y - 0.45 × fs`.
+    ///
+    /// The earlier constant of `+0.3` pushed the buffer top BELOW the
+    /// visual center line, making glyphs render too low inside pills
+    /// with generous `module_padding_y` and showing as uneven vertical
+    /// spacing around the text. Flipped to `-0.35` which lands cleanly
+    /// on cap-height center for FiraCode / the default monospace
+    /// fallback at bar font sizes (11-14 px).
     pub fn center_y_offset(&self, center_y: f32) -> f32 {
-        // cosmic-text's y parameter is the top of the line area.
-        // Glyphs render at approximately: gy = y + glyph.y - placement.top
-        // For typical fonts: glyph.y=0, placement.top≈ascent≈font_size*0.8
-        // Glyph visual center ≈ y - ascent + glyph_h/2 ≈ y - font_size*0.3
-        // To center: y - font_size*0.3 = center_y → y = center_y + font_size*0.3
-        // Using a more precise approximation based on typical font metrics:
-        // ascent ≈ 0.8 * font_size, glyph_height ≈ font_size
-        // center_offset = ascent - glyph_height/2 = 0.8*fs - 0.5*fs = 0.3*fs
-        center_y + self.font_size * 0.3
+        center_y - self.font_size * 0.35
     }
 
     /// Measure the pixel width of a text string.

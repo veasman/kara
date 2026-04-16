@@ -446,6 +446,14 @@ pub struct BarStyleSpec {
     /// Corner radius of each module pill.
     #[serde(default)]
     pub module_rounded: Option<u16>,
+    /// When `true`, kara-sight skips rendering any center-section
+    /// modules even if the user's config declares them. Lets themes
+    /// like fantasy/moonlight suppress the center title without the
+    /// user having to comment modules out of their base config.
+    /// Default theme leaves it unset so the user's modules render
+    /// as configured.
+    #[serde(default)]
+    pub hide_center: Option<bool>,
     #[serde(default)]
     pub font_family: Option<String>,
     #[serde(default)]

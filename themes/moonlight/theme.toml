@@ -72,6 +72,7 @@ color_unfocused = "$bg2"
 color_urgent = "$warning"
 
 [bar]
+hide_center = true
 font_family = "FiraCode Nerd Font"
 font_size = 11
 

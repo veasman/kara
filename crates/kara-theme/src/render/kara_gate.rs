@@ -169,6 +169,12 @@ theme {{
         if let Some(v) = bar.module_rounded {
             lines.push(format!("    module_rounded   {v}"));
         }
+        if let Some(v) = bar.hide_center {
+            lines.push(format!("    hide_center      {v}"));
+        }
+        if let Some(tile) = ctx.bar_module_bg_tile_path {
+            lines.push(format!("    module_bg_tile   {}", tile.display()));
+        }
         if let Some(ref s) = bar.module_bg {
             lines.push(format!("    module_background 0x{}", theme.resolve_palette_ref(s)));
         }

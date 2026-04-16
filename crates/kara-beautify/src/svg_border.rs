@@ -73,7 +73,15 @@ pub fn rasterize_theme_tiles(
     // module_bg, module_outline to this list.
     if let Some(wb) = theme.window_border.as_ref() {
         if let Some(spec) = wb.svg_tile.as_ref() {
-            match rasterize_one(spec, theme_dir, output_dir, theme_slug(theme), "window_border") {
+            let tint = resolve_tint(spec, theme);
+            match rasterize_one_with_tint(
+                spec,
+                theme_dir,
+                output_dir,
+                theme_slug(theme),
+                "window_border",
+                tint,
+            ) {
                 Ok(tile) => set.tiles.push(tile),
                 Err(err) => {
                     eprintln!(
@@ -85,8 +93,9 @@ pub fn rasterize_theme_tiles(
         }
     }
 
-    // Reserved bar slots (schema-only today). When kara-sight picks
-    // them up we can flip this on without a schema migration.
+    // Reserved bar slots (kara-sight picks these up in the same
+    // session as window borders). Each honors its own tint slot
+    // independently.
     if let Some(bar) = theme.bar.as_ref() {
         for (slot, spec) in [
             ("bar_bg", bar.background_svg.as_ref()),
@@ -95,7 +104,15 @@ pub fn rasterize_theme_tiles(
             ("bar_module_outline", bar.module_outline_svg.as_ref()),
         ] {
             let Some(spec) = spec else { continue };
-            match rasterize_one(spec, theme_dir, output_dir, theme_slug(theme), slot) {
+            let tint = resolve_tint(spec, theme);
+            match rasterize_one_with_tint(
+                spec,
+                theme_dir,
+                output_dir,
+                theme_slug(theme),
+                slot,
+                tint,
+            ) {
                 Ok(tile) => set.tiles.push(tile),
                 Err(err) => {
                     eprintln!(
@@ -110,6 +127,21 @@ pub fn rasterize_theme_tiles(
     Ok(set)
 }
 
+/// Resolve the tile's `tint_from_palette` reference into an RGB
+/// triple. Returns `None` when the spec doesn't request a tint.
+fn resolve_tint(spec: &SvgTileSpec, theme: &ResolvedTheme) -> Option<(u8, u8, u8)> {
+    let key = spec.tint_from_palette.as_deref()?;
+    // resolve_palette_ref returns `rrggbb` without a leading `#`.
+    let hex = theme.resolve_palette_ref(key);
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some((r, g, b))
+}
+
 /// `theme.name` is `"fantasy"` or `"fantasy:blood"` — collapse it to a
 /// filesystem-safe slug used in the generated PNG filenames. We keep
 /// the variant in the slug so swapping variants doesn't clobber the
@@ -118,12 +150,13 @@ fn theme_slug(theme: &ResolvedTheme) -> String {
     theme.name.replace([':', '/', '\\', ' '], "_")
 }
 
-fn rasterize_one(
+fn rasterize_one_with_tint(
     spec: &SvgTileSpec,
     theme_dir: &Path,
     output_dir: &Path,
     theme_slug: String,
     slot: &'static str,
+    tint: Option<(u8, u8, u8)>,
 ) -> Result<RasterizedTile> {
     // Resolve the SVG path relative to the theme's directory. Absolute
     // paths are left alone so power users can share SVG assets across
@@ -177,6 +210,14 @@ fn rasterize_one(
         }
     }
 
+    // Apply palette tint if the spec requested one. Per-pixel RGB
+    // multiply by the tint color so the hand-drawn art picks up the
+    // variant accent. Alpha is untouched so shape / anti-alias stay
+    // intact.
+    if let Some((tr, tg, tb)) = tint {
+        apply_tint(&mut pixmap, tr, tg, tb);
+    }
+
     let out_path = output_dir.join(format!("{theme_slug}-{slot}.png"));
     pixmap
         .save_png(&out_path)
@@ -188,6 +229,25 @@ fn rasterize_one(
         width: target_w,
         height: target_h,
     })
+}
+
+/// Tint a rasterized pixmap by multiplying each pixel's RGB channels
+/// with the tint color (treated as 0..1 per channel). Preserves alpha
+/// so shape / anti-aliasing stays intact. Used to re-color a single
+/// hand-drawn SVG tile per theme variant — one artwork file, multiple
+/// palette flavors (blood / venom / wraith) without duplicating art.
+fn apply_tint(pixmap: &mut tiny_skia::Pixmap, tr: u8, tg: u8, tb: u8) {
+    let rf = tr as f32 / 255.0;
+    let gf = tg as f32 / 255.0;
+    let bf = tb as f32 / 255.0;
+    for pixel in pixmap.pixels_mut() {
+        // Pre-multiplied channels — multiply each by the tint factor.
+        let r = (pixel.red() as f32 * rf).round().clamp(0.0, 255.0) as u8;
+        let g = (pixel.green() as f32 * gf).round().clamp(0.0, 255.0) as u8;
+        let b = (pixel.blue() as f32 * bf).round().clamp(0.0, 255.0) as u8;
+        *pixel = tiny_skia::PremultipliedColorU8::from_rgba(r, g, b, pixel.alpha())
+            .unwrap();
+    }
 }
 
 /// Multiply every pixel's alpha by `op`. Used when the theme spec

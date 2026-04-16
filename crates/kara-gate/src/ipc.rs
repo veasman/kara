@@ -154,6 +154,7 @@ impl Gate {
 
             Request::GetTheme => {
                 let t = &self.config.theme;
+                let g = &self.config.general;
                 Response::Theme {
                     colors: ThemeColors {
                         bg: t.bg,
@@ -163,6 +164,17 @@ impl Gate {
                         accent: t.accent,
                         accent_soft: t.accent_soft,
                         border: t.border,
+                        // Surface the theme-driven window-border
+                        // decoration so kara-glimpse / kara-whisper
+                        // can draw the same chrome as real kara-gate
+                        // windows. `border_tile` is only set when
+                        // the active theme rasterized an SVG tile.
+                        border_px: Some(g.border_px.max(0) as u16),
+                        border_radius: Some(g.border_radius.max(0) as u16),
+                        border_tile_path: g
+                            .border_tile
+                            .as_ref()
+                            .map(|p| p.to_string_lossy().into_owned()),
                     },
                 }
             }

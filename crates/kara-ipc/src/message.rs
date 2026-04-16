@@ -103,4 +103,22 @@ pub struct ThemeColors {
     pub accent: u32,
     pub accent_soft: u32,
     pub border: u32,
+
+    // ── Window decoration (optional) ───────────────────────────────
+    /// Theme-driven border width in pixels. `None` → consumers use
+    /// their own default (typically 2px).
+    #[serde(default)]
+    pub border_px: Option<u16>,
+    /// Corner radius for theme-driven borders. `None` → consumers
+    /// use their own default (typically 0).
+    #[serde(default)]
+    pub border_radius: Option<u16>,
+    /// Absolute path to a pre-rasterized PNG tile used as the border
+    /// pattern fill. Written by kara-beautify when the active theme
+    /// declares `window_border.svg_tile`. Consumers that honor this
+    /// (kara-gate border, kara-glimpse selection, kara-whisper
+    /// notification chrome) tile the PNG instead of using a solid
+    /// color. `None` → solid-color borders.
+    #[serde(default)]
+    pub border_tile_path: Option<String>,
 }
