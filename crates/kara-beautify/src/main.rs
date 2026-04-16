@@ -11,6 +11,7 @@ mod ini_patch;
 mod ipc;
 mod popover;
 mod reload;
+mod svg_border;
 mod wallpaper_agent;
 
 use std::fs;

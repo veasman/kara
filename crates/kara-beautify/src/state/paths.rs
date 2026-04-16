@@ -158,6 +158,13 @@ impl KaraPaths {
         self.kara_state_dir().join("generated")
     }
 
+    /// Directory for rasterized SVG border / bar tile PNGs. Populated
+    /// by `kara-beautify apply` from `window_border.svg_tile` etc., and
+    /// read by kara-gate as solid-color border pattern fills.
+    pub fn generated_borders_dir(&self) -> PathBuf {
+        self.generated_dir().join("borders")
+    }
+
     pub fn themes_state_dir(&self) -> PathBuf {
         self.kara_state_dir().join("themes")
     }

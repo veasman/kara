@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  kara — fantasy theme — gothic window border tile.
+
+  Repeats across the window border rect as a stained-stone /
+  wrought-iron pattern. Designed to evoke the gothic-castle feel of
+  dark-fantasy cover art: pointed arches, thorny crests, deep crimson
+  accents against a near-black iron base.
+
+  Tile is 48x48 and intentionally symmetric so it repeats cleanly in
+  both directions. Edit the colors below to rebalance — a theme apply
+  re-rasterizes automatically.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+
+  <!-- Iron base: near-black with a faint warm tint -->
+  <rect width="48" height="48" fill="#14080a"/>
+
+  <!-- Frame edge: one pixel inner bevel to separate adjacent tiles -->
+  <rect x="0.5" y="0.5" width="47" height="47" fill="none"
+        stroke="#2a1012" stroke-width="1"/>
+
+  <!-- Gothic arch crest (pointed, centered) -->
+  <path d="M24 6
+           L36 20
+           L36 40
+           L12 40
+           L12 20 Z"
+        fill="#4a1218"
+        stroke="#6a1a20"
+        stroke-width="0.8"/>
+
+  <!-- Inner arch — recessed detail, darker -->
+  <path d="M24 12
+           L31 22
+           L31 36
+           L17 36
+           L17 22 Z"
+        fill="#1e0608"
+        stroke="#3a0f12"
+        stroke-width="0.6"/>
+
+  <!-- Pointed arch interior -->
+  <path d="M24 16
+           L28 23
+           L28 33
+           L20 33
+           L20 23 Z"
+        fill="#0a0305"/>
+
+  <!-- Thorny triangles pointing inward from each corner -->
+  <path d="M0 0 L9 3 L3 9 Z"     fill="#5a1820" opacity="0.85"/>
+  <path d="M48 0 L39 3 L45 9 Z"  fill="#5a1820" opacity="0.85"/>
+  <path d="M0 48 L9 45 L3 39 Z"  fill="#5a1820" opacity="0.85"/>
+  <path d="M48 48 L39 45 L45 39 Z" fill="#5a1820" opacity="0.85"/>
+
+  <!-- Curved thorn hooks on edge midpoints — evoke iron filigree -->
+  <path d="M24 1 Q26 4 24 7 Q22 4 24 1 Z" fill="#6a1a22"/>
+  <path d="M24 41 Q26 44 24 47 Q22 44 24 41 Z" fill="#6a1a22"/>
+  <path d="M1 24 Q4 26 7 24 Q4 22 1 24 Z" fill="#6a1a22"/>
+  <path d="M41 24 Q44 26 47 24 Q44 22 41 24 Z" fill="#6a1a22"/>
+
+  <!-- Central blood gem — the only bright point in the tile -->
+  <circle cx="24" cy="26" r="1.8" fill="#b02030"/>
+  <circle cx="24" cy="26" r="0.7" fill="#ff4050"/>
+
+  <!-- Subtle crossbar behind the gem, catches light -->
+  <rect x="22" y="24.5" width="4" height="0.6" fill="#6a1a22" opacity="0.7"/>
+
+</svg>

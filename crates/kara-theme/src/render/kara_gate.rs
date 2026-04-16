@@ -1,5 +1,23 @@
 use crate::ResolvedTheme;
 
+/// Optional context passed by kara-beautify into the kara-gate
+/// renderer. Carries the paths of any PNG tiles rasterized from the
+/// theme's SVG slots — window_border.svg_tile today, bar tiles when
+/// kara-sight picks them up. kara-gate reads these paths via its
+/// existing `general { border_tile = "..." }` config key and swaps
+/// the SolidColor pattern for a repeating PNG pattern in the same
+/// tiny-skia render path it uses today.
+///
+/// When `None` is passed, the renderer behaves exactly as before.
+#[derive(Debug, Default, Clone)]
+pub struct KaraGateRenderContext<'a> {
+    /// Absolute filesystem path of the rasterized window-border tile
+    /// PNG, if the theme set `window_border.svg_tile` and the tile
+    /// rasterized successfully. `None` → fall back to solid-color
+    /// border fill.
+    pub window_border_tile_path: Option<&'a std::path::Path>,
+}
+
 fn hex_to_kara(hex: &str) -> String {
     format!("0x{}", hex.trim_start_matches('#'))
 }
@@ -16,6 +34,13 @@ fn hex_to_kara(hex: &str) -> String {
 /// without `[window_border]` stay palette-only, preserving the old
 /// "user owns layout, beautify owns color" behavior.
 pub fn render_kara_gate_theme(theme: &ResolvedTheme) -> String {
+    render_kara_gate_theme_with(theme, &KaraGateRenderContext::default())
+}
+
+pub fn render_kara_gate_theme_with(
+    theme: &ResolvedTheme,
+    ctx: &KaraGateRenderContext<'_>,
+) -> String {
     let c = &theme.semantic;
 
     // `theme.name` is either "<theme>" (single-palette theme) or
@@ -83,10 +108,19 @@ theme {{
             }
             out.push_str("}\n");
         }
-        if wb.svg_tile.is_some() {
-            out.push_str("\n# NOTE: this theme specifies a [window_border.svg_tile] but\n");
-            out.push_str("# the SVG border renderer has not landed yet. Falling back to\n");
-            out.push_str("# the solid-color border above.\n");
+        if let Some(tile) = ctx.window_border_tile_path {
+            // Rasterized PNG path. kara-config's General struct picks
+            // up `border_tile` as an Option<PathBuf> that kara-gate's
+            // border rasterizer tiles across the border rect instead
+            // of the solid color above.
+            out.push('\n');
+            out.push_str("general {\n");
+            out.push_str(&format!("    border_tile   {}\n", tile.display()));
+            out.push_str("}\n");
+        } else if wb.svg_tile.is_some() {
+            out.push_str("\n# NOTE: [window_border.svg_tile] was set but the rasterizer\n");
+            out.push_str("# did not produce a tile path (missing file / parse error).\n");
+            out.push_str("# Falling back to the solid-color border above.\n");
         }
     }
 

@@ -56,6 +56,13 @@ pub struct General {
     pub sync_workspaces: bool,
     pub cursor_theme: Option<String>,
     pub cursor_size: i32,
+    /// Absolute path to a PNG tile used to fill the window border
+    /// area. Written by kara-beautify during theme apply when the
+    /// active theme sets `window_border.svg_tile` (the SVG is
+    /// pre-rasterized to this PNG). kara-gate's border rasterizer
+    /// swaps its SolidColor shader for a repeating Pattern sourced
+    /// from this PNG when set. `None` = plain solid-color borders.
+    pub border_tile: Option<std::path::PathBuf>,
 }
 
 impl Default for General {
@@ -70,6 +77,7 @@ impl Default for General {
             sync_workspaces: true,
             cursor_theme: None,
             cursor_size: 24,
+            border_tile: None,
         }
     }
 }

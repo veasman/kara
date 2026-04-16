@@ -293,6 +293,13 @@ pub struct Gate {
     // Cached border pixmap data per rect: (rgba_bytes, width, height)
     pub border_cache: Vec<(Vec<u8>, u32, u32)>,
     pub scratchpad_border_cache: Vec<(Vec<u8>, u32, u32)>,
+    /// Cached PNG → tiny-skia Pixmap for the active theme's window
+    /// border tile (from `general.border_tile` in kara-gate.conf,
+    /// written by kara-beautify from `window_border.svg_tile`).
+    /// Tuple is (source path, decoded pixmap) so a config reload with
+    /// a different path triggers a re-decode. `None` = no tile active,
+    /// fall back to solid-color border fill.
+    pub border_tile_pixmap: Option<(std::path::PathBuf, tiny_skia::Pixmap)>,
     pub border_offsets: Vec<(f64, f64)>,
     pub scratchpad_border_offsets: Vec<(f64, f64)>,
 
@@ -443,6 +450,7 @@ impl Gate {
             scratchpad_layout_dirty: false,
             border_cache: Vec::new(),
             scratchpad_border_cache: Vec::new(),
+            border_tile_pixmap: None,
             scratchpad_border_offsets: Vec::new(),
             border_offsets: Vec::new(),
             animations: crate::animation::AnimationManager::new(),

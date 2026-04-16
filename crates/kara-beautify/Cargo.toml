@@ -17,6 +17,16 @@ kara-ipc = { path = "../kara-ipc" }
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "tiff"] }
+# SVG rasterization for window_border.svg_tile / bar.*_svg theme slots.
+# kara-beautify rasterizes SVG tiles at apply time into PNGs that
+# kara-gate loads via its existing image path — so the compositor
+# itself stays free of resvg/usvg deps.
+resvg = { version = "0.44", default-features = false }
+usvg  = { version = "0.44", default-features = false, features = ["text"] }
+# tiny-skia version MUST match what resvg 0.44 links against internally
+# (0.11) — pinning to 0.12 creates two separate copies in the dep graph
+# and the pixmap types don't unify.
+tiny-skia = "0.11"
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = "0.8"

@@ -58,11 +58,12 @@ mono_family = "FiraCode Nerd Font"
 mono_size = 13
 
 [cursor]
-# Night Diamond pairs with the fantasy palette. AUR:
-# night-diamond-cursor-theme installs both `Night-Diamond-Red` and
-# `Night-Diamond-Blue` under /usr/share/icons. Red fits the canonical
-# `blood` variant; swap to Blue for a cooler fantasy feel.
-theme = "Night-Diamond-Red"
+# Rage-Gothic pairs with the gothic castle aesthetic. AUR:
+# rage-gothic-cursor-theme installs both `Rage-Gothic` and
+# `Rage-Gothic-Light` under /usr/share/icons. The dark variant
+# matches the fantasy blood palette. Night-Diamond-Red and
+# Bibata-Modern-Classic are fine alternates.
+theme = "Rage-Gothic"
 size = 24
 
 # ─── Reserved structured slots (no renderer consumes these yet) ────
@@ -72,11 +73,24 @@ size = 24
 # coexist with these structured blocks.
 
 [window_border]
-width = 4
+width = 6
 radius = 0
 color_focused = "$accent"
 color_unfocused = "$bg2"
 color_urgent = "$danger"
+
+# Gothic stained-stone repeating tile. kara-beautify rasterizes
+# this on apply into a PNG that kara-gate tiles across the border
+# rect in place of the solid-color fill above. Width of 6px gives
+# the pattern enough real estate to read.
+[window_border.svg_tile]
+path = "borders/gothic-tile.svg"
+tile_width = 48
+tile_height = 48
+edge_mode = "repeat"
+opacity = 1.0
+tint_from_palette = "$accent"
+
 [window_border.svg_overlay]
 path = "borders/fantasy-rune-corner.svg"
 anchor = "corner"

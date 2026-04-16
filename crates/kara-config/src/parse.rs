@@ -289,6 +289,16 @@ fn parse_general_line(tokens: &[String], general: &mut General, ctx: &ParseConte
                 general.cursor_size = v.max(1);
             }
         }
+        "border_tile" => {
+            // Absolute path to a pre-rasterized PNG tile used to
+            // fill the window border area. Written by kara-beautify
+            // from window_border.svg_tile. Empty value clears it.
+            if val.is_empty() {
+                general.border_tile = None;
+            } else {
+                general.border_tile = Some(std::path::PathBuf::from(val));
+            }
+        }
         _ => ctx.warn(&format!("unknown general key '{key}'")),
     }
 }

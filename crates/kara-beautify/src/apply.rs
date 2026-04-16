@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use kara_theme::resolve_theme;
+use kara_theme::render::kara_gate::{KaraGateRenderContext, render_kara_gate_theme_with};
 use kara_theme::render::{
     floorp::render_floorp_user_js,
     foot::{foot_color_pairs, foot_color_section, render_foot_theme},
     fzf::render_fzf_theme, gtk::gtk_settings_pairs, kitty::render_kitty_theme,
     nvim::render_nvim_theme, session::render_session_theme, tmux::render_tmux_theme,
-    kara_gate::render_kara_gate_theme,
 };
 use kara_theme::ThemeSpec;
 
@@ -97,7 +97,25 @@ pub fn apply_theme_file(
 
     let mut reload_plan = ReloadPlan::default();
 
-    let kara_gate = render_kara_gate_theme(&resolved);
+    // Rasterize any SVG tile slots declared on the theme into PNGs
+    // that kara-gate's border renderer will tile across its existing
+    // solid-color pattern pipeline. A rasterization failure on any
+    // slot is logged (stderr) and the affected slot is simply omitted
+    // from the tile set — kara-gate falls back to the solid fill.
+    let theme_dir = theme_file
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let borders_out = paths.generated_borders_dir();
+    let tile_set = crate::svg_border::rasterize_theme_tiles(&resolved, &theme_dir, &borders_out)
+        .unwrap_or_default();
+    let kara_gate_ctx = KaraGateRenderContext {
+        window_border_tile_path: tile_set
+            .lookup("window_border")
+            .map(|t| t.path.as_path()),
+    };
+
+    let kara_gate = render_kara_gate_theme_with(&resolved, &kara_gate_ctx);
     let kitty = render_kitty_theme(&resolved);
     let foot_preview = render_foot_theme(&resolved);
     let foot_section = foot_color_section(&resolved);

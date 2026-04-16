@@ -88,6 +88,59 @@ pub fn render_bar(
     )]
 }
 
+/// Ensure `state.border_tile_pixmap` reflects the current
+/// `config.general.border_tile` path. Re-decodes the PNG when the
+/// path changes (or is set for the first time), clears the cache
+/// when the path is cleared. Called before every border rasterize
+/// pass so a theme apply is picked up on the next frame.
+fn refresh_border_tile_cache(state: &mut Gate) {
+    let want = state.config.general.border_tile.as_ref();
+    let have = state.border_tile_pixmap.as_ref().map(|(p, _)| p.as_path());
+    match (want, have) {
+        (None, None) => {}
+        (None, Some(_)) => {
+            state.border_tile_pixmap = None;
+        }
+        (Some(want_path), Some(have_path)) if want_path == have_path => {}
+        (Some(want_path), _) => {
+            state.border_tile_pixmap = load_border_tile_pixmap(want_path)
+                .map(|pm| (want_path.clone(), pm));
+            // Force a re-rasterize so the new pattern shows on the
+            // next frame even if layout hasn't otherwise changed.
+            state.layout_dirty = true;
+            state.scratchpad_layout_dirty = true;
+        }
+    }
+}
+
+/// Load a PNG into a tiny_skia Pixmap for use as a border tile
+/// pattern. Returns `None` on any failure (missing file, decode
+/// error) — kara-gate falls back to solid-color border rendering.
+pub fn load_border_tile_pixmap(path: &std::path::Path) -> Option<tiny_skia::Pixmap> {
+    let img = match image::open(path) {
+        Ok(i) => i.to_rgba8(),
+        Err(e) => {
+            tracing::warn!("border_tile: failed to decode {}: {e}", path.display());
+            return None;
+        }
+    };
+    let (w, h) = (img.width(), img.height());
+    let mut pixmap = tiny_skia::Pixmap::new(w, h)?;
+    // Copy the image bytes in. tiny-skia wants premultiplied RGBA;
+    // `image` gives straight RGBA. Premultiply per pixel.
+    let dst = pixmap.data_mut();
+    for (i, px) in img.pixels().enumerate() {
+        let [r, g, b, a] = px.0;
+        let af = a as f32 / 255.0;
+        let base = i * 4;
+        dst[base]     = (r as f32 * af).round() as u8;
+        dst[base + 1] = (g as f32 * af).round() as u8;
+        dst[base + 2] = (b as f32 * af).round() as u8;
+        dst[base + 3] = a;
+    }
+    Some(pixmap)
+}
+
 /// Rasterize a set of border pixmaps (CPU-side) — only when dirty.
 fn rasterize_border_set(
     rects: &[(smithay::utils::Rectangle<i32, smithay::utils::Logical>, bool)],
@@ -97,6 +150,7 @@ fn rasterize_border_set(
     radius: f32,
     accent: u32,
     border_color: u32,
+    tile: Option<&tiny_skia::Pixmap>,
 ) {
     if !dirty {
         return;
@@ -121,10 +175,30 @@ fn rasterize_border_set(
             }
         };
 
-        let paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::from_rgba8(r, g, b, 255)),
-            anti_alias: radius > 0.0,
-            ..Default::default()
+        // Pick a shader: repeating PNG pattern if the active theme
+        // has a rasterized border tile, else solid color. Focused
+        // windows still use the accent path unless tiling overrides
+        // it — with tiles, focused vs unfocused is encoded in the
+        // pattern art itself, not the fill color, so both states
+        // use the same tile today.
+        let paint = if let Some(tile_pm) = tile {
+            tiny_skia::Paint {
+                shader: tiny_skia::Pattern::new(
+                    tile_pm.as_ref(),
+                    tiny_skia::SpreadMode::Repeat,
+                    tiny_skia::FilterQuality::Nearest,
+                    1.0,
+                    tiny_skia::Transform::identity(),
+                ),
+                anti_alias: radius > 0.0,
+                ..Default::default()
+            }
+        } else {
+            tiny_skia::Paint {
+                shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::from_rgba8(r, g, b, 255)),
+                anti_alias: radius > 0.0,
+                ..Default::default()
+            }
         };
 
         if let Some(path) = rounded_rect_path(0.0, 0.0, w as f32, h as f32, radius) {
@@ -319,10 +393,13 @@ pub fn build_custom_elements(
 
     // Workspace borders (behind the bar, in front of the wallpaper).
     if !has_fullscreen {
+        refresh_border_tile_cache(state);
+        let tile = state.border_tile_pixmap.as_ref().map(|(_, pm)| pm);
         rasterize_border_set(
             &state.border_rects, &mut state.border_cache, state.layout_dirty,
             state.config.general.border_px, state.config.general.border_radius as f32,
             state.config.theme.accent, state.config.theme.border,
+            tile,
         );
         state.layout_dirty = false;
         elements.extend(render_border_set(
@@ -386,11 +463,14 @@ pub fn build_scratchpad_borders(
         .map(|o| o.fullscreen_window.is_some())
         .unwrap_or(false);
     if !has_fullscreen {
+        refresh_border_tile_cache(state);
+        let tile = state.border_tile_pixmap.as_ref().map(|(_, pm)| pm);
         rasterize_border_set(
             &state.scratchpad_border_rects, &mut state.scratchpad_border_cache,
             state.scratchpad_layout_dirty,
             state.config.general.border_px, state.config.general.border_radius as f32,
             state.config.theme.accent, state.config.theme.border,
+            tile,
         );
         state.scratchpad_layout_dirty = false;
         // Scratchpad borders — window_base_positions has scratchpad windows after regular ones
