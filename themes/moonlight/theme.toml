@@ -47,9 +47,9 @@ transparency = 0.92
 blur = false
 
 [fonts]
-ui_family = "ProFont IIx Nerd Font"
+ui_family = "FiraCode Nerd Font"
 ui_size = 12
-mono_family = "ProFont IIx Nerd Font"
+mono_family = "FiraCode Nerd Font"
 mono_size = 14
 
 [cursor]
@@ -83,7 +83,7 @@ module_gap = 12
 module_padding_x = 14
 module_padding_y = 10
 module_rounded = 0
-font_family = "ProFont IIx Nerd Font"
+font_family = "FiraCode Nerd Font"
 font_size = 14
 
 [animations]

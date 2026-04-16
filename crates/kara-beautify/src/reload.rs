@@ -106,20 +106,6 @@ pub fn reload_foot(osc_payload: &str) {
     }
 
     tracing_log(&format!("reload_foot: OSC broadcast reached {written} pts"));
-
-    // Restart foot --server so newly spawned footclient instances pick
-    // up the updated [main] font + [colors-*] section from foot.ini.
-    // Existing terminals already got their colors via the OSC broadcast
-    // above, but foot caches font + palette at server startup. Without
-    // a restart, new terminals launch with the OLD theme's colors/font
-    // while existing ones show the new theme — confusing.
-    //
-    // The restart is a clean kill + re-launch. Attached footclient
-    // windows survive if the server is recent enough (foot ≥1.18
-    // re-adopts orphaned clients on restart via the same socket).
-    // Older foot versions will close existing clients — the user
-    // accepted this trade-off in favor of consistent live theming.
-    run_shell("pkill -x foot; sleep 0.1; foot --server &");
 }
 
 fn tracing_log(msg: &str) {

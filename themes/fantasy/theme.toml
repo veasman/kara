@@ -52,9 +52,9 @@ transparency = 0.92
 blur = false
 
 [fonts]
-ui_family = "3270 Nerd Font"
+ui_family = "FiraCode Nerd Font"
 ui_size = 12
-mono_family = "3270 Nerd Font"
+mono_family = "FiraCode Nerd Font"
 mono_size = 14
 
 [cursor]
