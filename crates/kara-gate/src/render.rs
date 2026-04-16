@@ -391,6 +391,16 @@ pub fn build_custom_elements(
         elements.extend(render_bar(state, renderer, output_idx));
     }
 
+    // Bar blur backdrop — semi-transparent bar over a blurred crop
+    // of the wallpaper. CPU-side box blur on the bar-sized region.
+    // Sits behind the bar but above the wallpaper, so the bar's
+    // background_alpha creates the frosted glass look.
+    if !has_fullscreen && state.config.bar.enabled && state.config.bar.blur {
+        if let Some(blurred) = render_bar_blur(state, renderer, output_idx) {
+            elements.push(blurred);
+        }
+    }
+
     // Workspace borders (behind the bar, in front of the wallpaper).
     if !has_fullscreen {
         refresh_border_tile_cache(state);
@@ -441,6 +451,165 @@ pub fn build_custom_elements(
     }
 
     elements
+}
+
+/// CPU-side bar blur — crop the wallpaper to the bar rect, apply
+/// iterated box blur, upload as a TextureRenderElement at the bar
+/// position. Sits behind the bar surface (which has background_alpha
+/// < 255), creating a frosted glass effect without any GL shaders.
+///
+/// The blurred pixmap is cached in `state.bar_blur_cache` and only
+/// re-rasterized when the bar geometry or wallpaper changes (bar_dirty).
+fn render_bar_blur(
+    state: &mut Gate,
+    renderer: &mut KaraRenderer<'_>,
+    output_idx: usize,
+) -> Option<TextureRenderElement<KaraTexture>> {
+    let output_state = state.outputs.get(output_idx)?;
+    let (out_w, out_h) = output_state.size;
+    let bar_h = state.config.bar.height;
+    let bar_y = match state.config.bar.position {
+        kara_config::BarPosition::Top => 0,
+        kara_config::BarPosition::Bottom => out_h - bar_h,
+    };
+
+    // Re-rasterize on bar_dirty (includes first frame).
+    if state.bar_blur_cache.is_none() || state.bar_dirty {
+        let wp = state.wallpaper.as_ref()?;
+        let (rgba, src_w, src_h) = wp.current_rgba()?;
+
+        // Compute the crop rect on the source image that corresponds
+        // to the bar's screen position. Uses the same center-crop
+        // logic as the main wallpaper renderer.
+        let crop = center_crop_src_rect(src_w, src_h, out_w, out_h);
+
+        // Map bar screen rect → source image rect.
+        let bar_src_y = crop.loc.y + (bar_y as f64 * crop.size.h / out_h as f64);
+        let bar_src_h = (bar_h as f64 * crop.size.h / out_h as f64).ceil() as u32;
+        let bar_src_x = crop.loc.x;
+        let bar_src_w = crop.size.w.ceil() as u32;
+        let bar_src_y = bar_src_y.floor() as u32;
+
+        // Extract the bar-region pixels from the wallpaper RGBA.
+        let bw = bar_src_w.min(src_w) as usize;
+        let bh = bar_src_h.min(src_h - bar_src_y) as usize;
+        if bw == 0 || bh == 0 {
+            return None;
+        }
+        let mut buf: Vec<u8> = Vec::with_capacity(bw * bh * 4);
+        for row in 0..bh {
+            let y = (bar_src_y as usize + row).min(src_h as usize - 1);
+            let start = (y * src_w as usize + bar_src_x as usize) * 4;
+            let end = start + bw * 4;
+            if end <= rgba.len() {
+                buf.extend_from_slice(&rgba[start..end]);
+            }
+        }
+
+        // Iterated box blur (3 passes ≈ Gaussian approximation).
+        for _ in 0..3 {
+            box_blur_rgba(&mut buf, bw, bh);
+        }
+
+        // Scale to output bar dimensions.
+        let mut pixmap = tiny_skia::Pixmap::new(out_w as u32, bar_h as u32)?;
+        // Simple nearest-neighbor scale from bw×bh → out_w×bar_h.
+        let sx = bw as f64 / out_w as f64;
+        let sy = bh as f64 / bar_h as f64;
+        let dst = pixmap.data_mut();
+        for dy in 0..bar_h as usize {
+            for dx in 0..out_w as usize {
+                let src_px = ((dy as f64 * sy) as usize).min(bh - 1);
+                let src_qx = ((dx as f64 * sx) as usize).min(bw - 1);
+                let si = (src_px * bw + src_qx) * 4;
+                let di = (dy * out_w as usize + dx) * 4;
+                if si + 3 < buf.len() && di + 3 < dst.len() {
+                    dst[di] = buf[si];
+                    dst[di + 1] = buf[si + 1];
+                    dst[di + 2] = buf[si + 2];
+                    dst[di + 3] = buf[si + 3];
+                }
+            }
+        }
+
+        state.bar_blur_cache = Some((pixmap.data().to_vec(), out_w as u32, bar_h as u32));
+    }
+
+    let (data, w, h) = state.bar_blur_cache.as_ref()?;
+    let texture_buffer = TextureBuffer::from_memory(
+        renderer,
+        data,
+        Fourcc::Abgr8888,
+        Size::from((*w as i32, *h as i32)),
+        false,
+        1,
+        Transform::Normal,
+        None,
+    )
+    .ok()?;
+
+    Some(TextureRenderElement::from_texture_buffer(
+        Point::from((0.0, bar_y as f64)),
+        &texture_buffer,
+        None,
+        None,
+        None,
+        Kind::Unspecified,
+    ))
+}
+
+/// Single-pass horizontal box blur on RGBA buffer.
+fn box_blur_rgba(buf: &mut [u8], w: usize, h: usize) {
+    let radius = 5usize;
+    let diam = radius * 2 + 1;
+    let mut tmp = vec![0u8; buf.len()];
+
+    // Horizontal pass → tmp
+    for y in 0..h {
+        let row = y * w * 4;
+        for x in 0..w {
+            let mut r = 0u32;
+            let mut g = 0u32;
+            let mut b = 0u32;
+            let mut a = 0u32;
+            for dx in 0..diam {
+                let sx = (x + dx).saturating_sub(radius).min(w - 1);
+                let i = row + sx * 4;
+                r += buf[i] as u32;
+                g += buf[i + 1] as u32;
+                b += buf[i + 2] as u32;
+                a += buf[i + 3] as u32;
+            }
+            let i = row + x * 4;
+            tmp[i] = (r / diam as u32) as u8;
+            tmp[i + 1] = (g / diam as u32) as u8;
+            tmp[i + 2] = (b / diam as u32) as u8;
+            tmp[i + 3] = (a / diam as u32) as u8;
+        }
+    }
+
+    // Vertical pass → buf
+    for x in 0..w {
+        for y in 0..h {
+            let mut r = 0u32;
+            let mut g = 0u32;
+            let mut b = 0u32;
+            let mut a = 0u32;
+            for dy in 0..diam {
+                let sy = (y + dy).saturating_sub(radius).min(h - 1);
+                let i = (sy * w + x) * 4;
+                r += tmp[i] as u32;
+                g += tmp[i + 1] as u32;
+                b += tmp[i + 2] as u32;
+                a += tmp[i + 3] as u32;
+            }
+            let i = (y * w + x) * 4;
+            buf[i] = (r / diam as u32) as u8;
+            buf[i + 1] = (g / diam as u32) as u8;
+            buf[i + 2] = (b / diam as u32) as u8;
+            buf[i + 3] = (a / diam as u32) as u8;
+        }
+    }
 }
 
 /// Build dim overlay for visible scratchpads. Renders BEHIND space windows.

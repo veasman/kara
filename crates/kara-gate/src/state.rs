@@ -300,6 +300,10 @@ pub struct Gate {
     /// a different path triggers a re-decode. `None` = no tile active,
     /// fall back to solid-color border fill.
     pub border_tile_pixmap: Option<(std::path::PathBuf, tiny_skia::Pixmap)>,
+    /// Cached CPU-side blurred wallpaper crop for bar blur. Re-
+    /// rasterized on bar_dirty. `None` when bar blur is disabled or
+    /// no wallpaper is loaded.
+    pub bar_blur_cache: Option<(Vec<u8>, u32, u32)>,
     pub border_offsets: Vec<(f64, f64)>,
     pub scratchpad_border_offsets: Vec<(f64, f64)>,
 
@@ -451,6 +455,7 @@ impl Gate {
             border_cache: Vec::new(),
             scratchpad_border_cache: Vec::new(),
             border_tile_pixmap: None,
+            bar_blur_cache: None,
             scratchpad_border_offsets: Vec::new(),
             border_offsets: Vec::new(),
             animations: crate::animation::AnimationManager::new(),

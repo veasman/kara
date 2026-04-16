@@ -209,6 +209,18 @@ impl Wallpaper {
         })
     }
 
+    /// Borrow the current frame's raw premultiplied RGBA pixel data.
+    /// Used by the bar blur path to sample the bar-region pixels
+    /// without a GPU readback.
+    pub fn current_rgba(&self) -> Option<(&[u8], u32, u32)> {
+        match &self.kind {
+            WallpaperKind::Frames { frames, current, .. } => {
+                frames.get(*current).map(|f| (f.rgba.as_slice(), self.width, self.height))
+            }
+            WallpaperKind::Video { .. } => None,
+        }
+    }
+
     /// Source image dimensions in pixels. Used by the render path
     /// to compute an aspect-preserving center-crop when the
     /// wallpaper and the output don't share the same aspect ratio.
