@@ -1558,6 +1558,11 @@ fn render_frame(
     // when a tiling layout is in use.
     let mut workspace_elements: Vec<WaylandSurfaceRenderElement<KaraRenderer<'_>>> = Vec::new();
     let mut floating_elements: Vec<WaylandSurfaceRenderElement<KaraRenderer<'_>>> = Vec::new();
+    // Focused floating window's elements go here temporarily so we
+    // can append them AFTER all other floats. Front-to-back order
+    // means "first = topmost" — the focused float must be first in
+    // the floating_elements vec to draw on top of unfocused ones.
+    let mut focused_float_elements: Vec<WaylandSurfaceRenderElement<KaraRenderer<'_>>> = Vec::new();
     let mut scratchpad_elements: Vec<WaylandSurfaceRenderElement<KaraRenderer<'_>>> = Vec::new();
     let space_windows: Vec<_> = state.space.elements().cloned().collect();
     for window in space_windows {
@@ -1620,7 +1625,23 @@ fn render_frame(
         if is_scratchpad {
             scratchpad_elements.extend(win_elements);
         } else if is_floating {
-            floating_elements.extend(win_elements);
+            // Check if this is the focused window — it needs to
+            // render ON TOP of all other floats. We collect focused
+            // float elements separately and prepend them to the vec
+            // (front-to-back = first is topmost).
+            let is_focused = state.seat.get_keyboard()
+                .and_then(|kb| kb.current_focus())
+                .map(|focus_surface| {
+                    window.toplevel()
+                        .map(|t| *t.wl_surface() == focus_surface)
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+            if is_focused {
+                focused_float_elements.extend(win_elements);
+            } else {
+                floating_elements.extend(win_elements);
+            }
         } else {
             workspace_elements.extend(win_elements);
         }
@@ -1690,8 +1711,12 @@ fn render_frame(
     // Floating windows — above tiled workspace windows so they stay
     // visible in tiling mode, below sp_dim so scratchpad mode dims them
     // along with the rest of the workspace backdrop.
-    let floating_len_saved = floating_elements.len();
-    elements.extend(floating_elements.into_iter().map(DrmRenderElement::Surface));
+    // Focused float first (= topmost in front-to-back ordering),
+    // then unfocused floats behind it.
+    let mut all_floats = focused_float_elements;
+    all_floats.extend(floating_elements);
+    let floating_len_saved = all_floats.len();
+    elements.extend(all_floats.into_iter().map(DrmRenderElement::Surface));
 
     // Workspace windows — drawn below the dim so they get dimmed.
     let workspace_len_saved = workspace_elements.len();
