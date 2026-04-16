@@ -115,6 +115,7 @@ fn main() {
             .border_tile_path
             .as_deref()
             .and_then(|p| tiny_skia::Pixmap::load_png(p).ok()),
+        overlay_pixmap: None,
         theme,
         windows,
         selection: SelectionState::new(0, 0),
@@ -285,6 +286,10 @@ struct Glimpse {
     /// Cached decoded border tile pixmap — loaded once at init from
     /// `theme.border_tile_path`, not per-frame.
     border_tile_cache: Option<tiny_skia::Pixmap>,
+    /// Pre-allocated overlay pixmap — reused every frame to avoid
+    /// the cost of allocating + zeroing a full-screen RGBA buffer
+    /// on every hover move.
+    overlay_pixmap: Option<tiny_skia::Pixmap>,
 }
 
 impl Glimpse {
@@ -294,17 +299,30 @@ impl Glimpse {
         }
 
         let highlight = self.selection.highlight_rect();
-        let pixmap = match overlay::render_overlay(
+
+        // Lazily allocate (or re-allocate on resize) the overlay pixmap.
+        let need_alloc = self
+            .overlay_pixmap
+            .as_ref()
+            .map(|pm| pm.width() != self.width || pm.height() != self.height)
+            .unwrap_or(true);
+        if need_alloc {
+            self.overlay_pixmap = tiny_skia::Pixmap::new(self.width, self.height);
+        }
+        let pixmap = match self.overlay_pixmap.as_mut() {
+            Some(pm) => pm,
+            None => return,
+        };
+        if !overlay::render_overlay(
+            pixmap,
             self.width,
             self.height,
             highlight,
             &self.theme,
             self.border_tile_cache.as_ref(),
-        )
-        {
-            Some(p) => p,
-            None => return,
-        };
+        ) {
+            return;
+        }
 
         let stride = self.width as i32 * 4;
         let (buffer, canvas) = self

@@ -2,14 +2,23 @@ use kara_ipc::ThemeColors;
 use kara_ui::canvas::{color_from_u32, fill_rounded_rect_with_pattern, stroke_rounded_rect};
 use tiny_skia::Pixmap;
 
+/// Render the overlay into a caller-owned pixmap. Avoids per-frame
+/// allocation — the caller pre-allocates once and hands in a &mut ref.
+/// Returns `false` if the pixmap dimensions are zero.
 pub fn render_overlay(
+    pixmap: &mut Pixmap,
     width: u32,
     height: u32,
     highlight: (i32, i32, i32, i32),
     theme: &ThemeColors,
     tile_cache: Option<&Pixmap>,
-) -> Option<Pixmap> {
-    let mut pixmap = Pixmap::new(width, height)?;
+) -> bool {
+    if width == 0 || height == 0 {
+        return false;
+    }
+    // Fast clear — memset 0 then fill dim. Much cheaper than
+    // allocating a fresh pixmap every frame.
+    pixmap.data_mut().fill(0);
 
     // Fill with semi-transparent dark overlay
     let dim = tiny_skia::Color::from_rgba8(0, 0, 0, 128);
@@ -37,7 +46,7 @@ pub fn render_overlay(
         let ow = hw as f32 + border_px * 2.0;
         let oh = hh as f32 + border_px * 2.0;
         fill_rounded_rect_with_pattern(
-            &mut pixmap,
+            pixmap,
             ox,
             oy,
             ow,
@@ -47,7 +56,7 @@ pub fn render_overlay(
         );
     } else {
         stroke_rounded_rect(
-            &mut pixmap,
+            pixmap,
             hx as f32,
             hy as f32,
             hw as f32,
@@ -77,34 +86,42 @@ pub fn render_overlay(
     // Multiple concentric strokes with decreasing alpha simulate
     // a soft radiance that reads against the dark dim overlay
     // without the harshness of a single bright stroke.
-    let accent = theme.accent;
-    let ar = ((accent >> 16) & 0xFF) as u8;
-    let ag = ((accent >> 8) & 0xFF) as u8;
-    let ab = (accent & 0xFF) as u8;
-    let glow_steps: &[(f32, u8)] = &[
-        (4.0, 40),   // outer soft haze
-        (3.0, 70),   // mid glow
-        (2.0, 110),  // inner glow
-        (1.0, 180),  // core
+    // Dark glow effect using accent_soft (the theme's muted accent
+    // variant). Multiple concentric strokes with increasing opacity
+    // from outside in. Wider outer strokes + more layers = softer,
+    // more visible glow. The glow sits outside the transparent
+    // cutout (on the dim overlay side) so it acts as a clear
+    // separator without being harsh.
+    let glow_color = theme.accent_soft;
+    let gr = ((glow_color >> 16) & 0xFF) as u8;
+    let gg = ((glow_color >> 8) & 0xFF) as u8;
+    let gb = (glow_color & 0xFF) as u8;
+    let glow_steps: &[(f32, f32, u8)] = &[
+        // (inset from highlight edge, stroke width, alpha)
+        (6.0, 3.0, 25),   // outermost haze
+        (4.0, 2.5, 50),   // outer glow
+        (2.5, 2.0, 80),   // mid glow
+        (1.0, 1.5, 130),  // inner glow
+        (0.0, 1.0, 200),  // core edge
     ];
-    for &(inset, alpha) in glow_steps {
+    for &(inset, sw, alpha) in glow_steps {
         let gx = hx as f32 + inset;
         let gy = hy as f32 + inset;
         let gw = hw as f32 - inset * 2.0;
         let gh = hh as f32 - inset * 2.0;
         if gw > 0.0 && gh > 0.0 {
             stroke_rounded_rect(
-                &mut pixmap,
+                pixmap,
                 gx,
                 gy,
                 gw,
                 gh,
                 (radius - inset).max(0.0),
-                tiny_skia::Color::from_rgba8(ar, ag, ab, alpha),
-                1.5,
+                tiny_skia::Color::from_rgba8(gr, gg, gb, alpha),
+                sw,
             );
         }
     }
 
-    Some(pixmap)
+    true
 }

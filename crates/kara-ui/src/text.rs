@@ -57,6 +57,14 @@ impl TextRenderer {
     /// The visual center of that span relative to the line top is
     /// `ascent - (ascent + descent) / 2 = (ascent - descent) / 2`.
     /// To place that at `center_y`: `y = center_y - (ascent - descent) / 2`.
+    /// Compute the y draw-offset so that text renders vertically
+    /// centered at `center_y`. Shapes a reference string ("Hg" —
+    /// has both ascenders and descenders), rasterizes glyph
+    /// placements to find the actual pixel top and bottom, then
+    /// computes the offset that centers that bbox at `center_y`.
+    ///
+    /// This is font-agnostic: no hardcoded constants, no assumed
+    /// metrics. Any font at any size produces correct centering.
     pub fn center_y_offset(&mut self, center_y: f32) -> f32 {
         let metrics = Metrics::new(self.font_size, self.line_height);
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
@@ -68,14 +76,32 @@ impl TextRenderer {
         buffer.set_text(&mut self.font_system, "Hg", &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
-        if let Some(run) = buffer.layout_runs().next() {
-            // line_top = y offset to top of the line area (usually 0
-            // for a single-line buffer). line_height = full vertical
-            // extent of the line including leading. The visual center
-            // of the line area is at line_top + line_height / 2.
-            // Setting y so that visual center lands at center_y:
-            let visual_center = run.line_top + run.line_height / 2.0;
-            center_y - visual_center
+        // Walk every glyph image to find the actual pixel bbox
+        // relative to draw-y = 0. `gy` is the top of each glyph
+        // image; `gy + h` is the bottom.
+        let mut min_gy = i32::MAX;
+        let mut max_gy_bottom = i32::MIN;
+        for run in buffer.layout_runs() {
+            for glyph in run.glyphs.iter() {
+                let physical = glyph.physical((0.0, 0.0), 1.0);
+                if let Some(image) = self.swash_cache.get_image(
+                    &mut self.font_system,
+                    physical.cache_key,
+                ) {
+                    if image.placement.height == 0 {
+                        continue;
+                    }
+                    let gy = physical.y - image.placement.top;
+                    let gy_bottom = gy + image.placement.height as i32;
+                    min_gy = min_gy.min(gy);
+                    max_gy_bottom = max_gy_bottom.max(gy_bottom);
+                }
+            }
+        }
+
+        if min_gy < max_gy_bottom {
+            let glyph_center = (min_gy + max_gy_bottom) as f32 / 2.0;
+            center_y - glyph_center
         } else {
             center_y - self.font_size / 2.0
         }
