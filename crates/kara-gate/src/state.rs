@@ -396,10 +396,11 @@ impl Gate {
         // pushes a fresh Vec<Workspace> of length WORKSPACE_COUNT.
         let workspaces: Vec<Vec<Workspace>> = Vec::new();
 
-        let bar_renderer = kara_sight::BarRenderer::new(
-            &config.general.font,
-            config.general.font_size,
-        );
+        let bar_font = config.bar.font.as_deref()
+            .unwrap_or(&config.general.font);
+        let bar_font_size = config.bar.font_size
+            .unwrap_or(config.general.font_size);
+        let bar_renderer = kara_sight::BarRenderer::new(bar_font, bar_font_size);
         let status_cache = kara_sight::StatusCache::new();
 
         tracing::info!(
@@ -503,12 +504,14 @@ impl Gate {
             }
         }
 
-        // Update bar font + clear blur cache so the next frame
-        // re-captures from the (potentially new) wallpaper.
-        self.bar_renderer.set_font(
-            &self.config.general.font,
-            self.config.general.font_size,
-        );
+        // Update bar font — prefer bar-specific override, fall back
+        // to general. Clear blur cache so the next frame re-captures
+        // from the (potentially new) wallpaper.
+        let bar_font = self.config.bar.font.as_deref()
+            .unwrap_or(&self.config.general.font);
+        let bar_font_size = self.config.bar.font_size
+            .unwrap_or(self.config.general.font_size);
+        self.bar_renderer.set_font(bar_font, bar_font_size);
         self.bar_blur_cache = None;
 
         // Recompute workarea for bar height changes

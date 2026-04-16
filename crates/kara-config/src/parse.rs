@@ -490,6 +490,12 @@ fn parse_bar_line(tokens: &[String], bar: &mut Bar, ctx: &ParseContext) {
                 bar.hide_center = b;
             }
         }
+        "font" | "font_family" => bar.font = Some(val.to_string()),
+        "font_size" => {
+            if let Ok(v) = val.parse::<f32>() {
+                bar.font_size = Some(v);
+            }
+        }
         "module_bg_tile" => {
             if val.is_empty() {
                 bar.module_bg_tile = None;

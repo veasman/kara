@@ -251,6 +251,13 @@ pub struct Bar {
     pub module_border_color: Option<u32>,
     pub module_blur: bool,
 
+    /// Bar-specific font override. When set, the bar renders with
+    /// this font instead of general.font. Written by kara-beautify
+    /// from the theme's `[bar] font_family` field.
+    pub font: Option<String>,
+    /// Bar-specific font size override.
+    pub font_size: Option<f32>,
+
     pub icons: bool,
     pub colors: bool,
     pub minimal: bool,
@@ -304,6 +311,8 @@ impl Default for Bar {
             module_border_color: None,
             module_blur: false,
 
+            font: None,
+            font_size: None,
             icons: true,
             colors: true,
             minimal: false,
