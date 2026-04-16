@@ -97,9 +97,35 @@ anchor = "corner"
 opacity = 1.0
 tint_from_palette = "$accent"
 
+# Fantasy's bar: no background fill so pill modules float over
+# whatever is behind (wallpaper / windows). Generous height + padding
+# so the gothic pill shape reads without feeling cramped. Pill mode
+# gives each module its own rounded surface that the future
+# module_background_svg renderer will tile the gothic pattern into.
 [bar]
+background = false
+background_alpha = 0
+height = 36
+pill = true
+edge_padding_x = 18
+edge_padding_y = 6
+module_gap = 14
+module_padding_x = 16
+module_padding_y = 8
+module_rounded = 10
 font_family = "FiraCode Nerd Font"
-font_size = 11
+font_size = 12
+
+# Reserved — once kara-sight wires module SVG surfaces, this slot
+# will get rasterized alongside window_border.svg_tile and each pill
+# will tile the same gothic pattern used on window borders.
+[bar.module_background_svg]
+path = "borders/gothic-tile.svg"
+tile_width = 48
+tile_height = 48
+edge_mode = "repeat"
+opacity = 1.0
+
 [bar.svg_overlay]
 path = "bar/fantasy-banner.svg"
 mode = "background"

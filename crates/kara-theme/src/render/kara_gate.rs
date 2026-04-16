@@ -16,6 +16,11 @@ pub struct KaraGateRenderContext<'a> {
     /// rasterized successfully. `None` → fall back to solid-color
     /// border fill.
     pub window_border_tile_path: Option<&'a std::path::Path>,
+    /// Absolute path of the rasterized bar-module-background tile
+    /// PNG. Reserved — kara-sight's module renderer will read this
+    /// when the bar module cleanup lands; today the rasterizer
+    /// produces the file on disk so future sessions plug straight in.
+    pub bar_module_bg_tile_path: Option<&'a std::path::Path>,
 }
 
 fn hex_to_kara(hex: &str) -> String {
@@ -123,6 +128,80 @@ theme {{
             out.push_str("# Falling back to the solid-color border above.\n");
         }
     }
+
+    // Theme-driven bar geometry + appearance. Emits a single bar { }
+    // block carrying every non-None field from theme.bar. kara-config's
+    // multi-block merge means this block overrides only the specific
+    // keys the theme cares about; the user's base bar { modules { } }
+    // stays untouched.
+    if let Some(bar) = theme.bar.as_ref() {
+        let mut lines: Vec<String> = Vec::new();
+        if let Some(v) = bar.background {
+            lines.push(format!("    background       {v}"));
+        }
+        if let Some(ref s) = bar.background_color {
+            lines.push(format!("    background_color 0x{}", theme.resolve_palette_ref(s)));
+        }
+        if let Some(v) = bar.background_alpha {
+            lines.push(format!("    background_alpha {v}"));
+        }
+        if let Some(v) = bar.height {
+            lines.push(format!("    height           {v}"));
+        }
+        if let Some(v) = bar.pill {
+            lines.push(format!("    pill             {v}"));
+        }
+        if let Some(v) = bar.edge_padding_x {
+            lines.push(format!("    edge_padding_x   {v}"));
+        }
+        if let Some(v) = bar.edge_padding_y {
+            lines.push(format!("    edge_padding_y   {v}"));
+        }
+        if let Some(v) = bar.module_gap {
+            lines.push(format!("    module_gap       {v}"));
+        }
+        if let Some(v) = bar.module_padding_x {
+            lines.push(format!("    module_padding_x {v}"));
+        }
+        if let Some(v) = bar.module_padding_y {
+            lines.push(format!("    module_padding_y {v}"));
+        }
+        if let Some(v) = bar.module_rounded {
+            lines.push(format!("    module_rounded   {v}"));
+        }
+        if let Some(ref s) = bar.module_bg {
+            lines.push(format!("    module_background 0x{}", theme.resolve_palette_ref(s)));
+        }
+        if let Some(ref s) = bar.module_outline_color {
+            lines.push(format!(
+                "    module_border_color 0x{}",
+                theme.resolve_palette_ref(s)
+            ));
+        }
+        if !lines.is_empty() {
+            out.push('\n');
+            out.push_str("bar {\n");
+            for line in &lines {
+                out.push_str(line);
+                out.push('\n');
+            }
+            out.push_str("}\n");
+        }
+    }
+
+    // Cursor theme + size override. Lets mod+shift+t flip the cursor
+    // live: kara-beautify rewrites this include, SIGHUPs kara-gate,
+    // reload_config reparses the include, load_cursor_theme flushes
+    // the named cache, and the next render frame uses the new theme.
+    // Without this block, kara-gate would read only the user's
+    // static cursor_theme from the base config — kara-beautify's
+    // gsettings / xcursor / xsetroot writes would only reach GTK
+    // apps, never the compositor.
+    out.push('\n');
+    out.push_str("general {\n");
+    out.push_str(&format!("    cursor_theme  {}\n", theme.cursor.theme));
+    out.push_str(&format!("    cursor_size   {}\n", theme.cursor.size));
+    out.push_str("}\n");
 
     out
 }

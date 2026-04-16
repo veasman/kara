@@ -184,6 +184,19 @@ pub struct BarModule {
     pub section: BarSection,
     pub kind: BarModuleKind,
     pub args: Vec<String>,
+    /// Optional group id. Modules in the same section that share a
+    /// group id render as one continuous pill — no inter-module gap,
+    /// shared background fill / svg tile / outline. Declared inline
+    /// with `group:<name>` anywhere after the section + kind.
+    ///
+    /// Example:
+    ///   left monitor group:left
+    ///   left workspaces group:left
+    ///   right clock
+    ///
+    /// The two `group:left` modules render as one pill on the left;
+    /// clock is its own standalone pill on the right.
+    pub group: Option<String>,
 }
 
 /// Bar configuration. The bar and its modules are two separate concerns with

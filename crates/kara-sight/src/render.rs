@@ -105,6 +105,14 @@ impl BarRenderer {
         // Separate modules by section
         let (left, center, right) = split_modules(&bar_config.modules);
 
+        // Group adjacent modules in each section by `group:<name>` id.
+        // A group renders as one continuous pill containing every
+        // module's content separated by `module_gap`. Standalone
+        // modules (group = None) are each their own group.
+        let left_groups = group_adjacent(&left);
+        let center_groups = group_adjacent(&center);
+        let right_groups = group_adjacent(&right);
+
         // Measure all modules
         let uses_pills = bar_config.pill;
         let pill_pad = if uses_pills { bar_config.module_padding_x.max(0) as u32 } else { 0 };
@@ -115,35 +123,85 @@ impl BarRenderer {
         let content_y = bar_config.edge_padding_y.max(0);
         let content_h = (height as i32 - content_y * 2).max(1);
 
+        // Measure a whole group's total outer width: sum of member
+        // content widths + (n-1) intra-group gaps + 2*pill_pad. One
+        // pill spans the entire group.
+        let measure_group = |renderer: &mut Self, g: &[&BarModule]| -> u32 {
+            let content_w: u32 = g
+                .iter()
+                .map(|m| renderer.measure_module(m, &mod_ctx, bar_config, ws_ctx))
+                .sum();
+            let intra_gap = (g.len().saturating_sub(1) as u32) * item_gap;
+            content_w + intra_gap + pill_pad * 2
+        };
+
         // Layout LEFT section (left to right)
         let mut left_x = content_margin as i32;
-        for module in &left {
-            let w = self.measure_module(module, &mod_ctx, bar_config, ws_ctx) + pill_pad * 2;
-            self.draw_module(
-                &mut pixmap, module, &mod_ctx, bar_config, theme,
-                left_x, w as i32, uses_pills, ws_ctx, content_y, content_h,
-            );
-            left_x += w as i32 + item_gap as i32;
+        for group in &left_groups {
+            let total_w = measure_group(self, group);
+            if uses_pills {
+                draw_pill(
+                    &mut pixmap,
+                    left_x as f32,
+                    content_y as f32,
+                    total_w as f32,
+                    content_h as f32,
+                    bar_config,
+                    theme,
+                );
+            }
+            let mut mx = left_x + pill_pad as i32;
+            for (i, module) in group.iter().enumerate() {
+                let content_w = self.measure_module(module, &mod_ctx, bar_config, ws_ctx);
+                self.draw_module_content(
+                    &mut pixmap, module, &mod_ctx, bar_config, theme,
+                    mx, content_w as i32, ws_ctx, content_y, content_h,
+                );
+                mx += content_w as i32;
+                if i + 1 < group.len() {
+                    mx += item_gap as i32;
+                }
+            }
+            left_x += total_w as i32 + item_gap as i32;
         }
 
-        // Layout RIGHT section (right to left)
+        // Layout RIGHT section (right to left by group)
         let mut right_x = width as i32 - content_margin as i32;
-        for module in right.iter().rev() {
-            let w = self.measure_module(module, &mod_ctx, bar_config, ws_ctx) + pill_pad * 2;
-            right_x -= w as i32;
-            self.draw_module(
-                &mut pixmap, module, &mod_ctx, bar_config, theme,
-                right_x, w as i32, uses_pills, ws_ctx, content_y, content_h,
-            );
+        for group in right_groups.iter().rev() {
+            let total_w = measure_group(self, group);
+            right_x -= total_w as i32;
+            if uses_pills {
+                draw_pill(
+                    &mut pixmap,
+                    right_x as f32,
+                    content_y as f32,
+                    total_w as f32,
+                    content_h as f32,
+                    bar_config,
+                    theme,
+                );
+            }
+            let mut mx = right_x + pill_pad as i32;
+            for (i, module) in group.iter().enumerate() {
+                let content_w = self.measure_module(module, &mod_ctx, bar_config, ws_ctx);
+                self.draw_module_content(
+                    &mut pixmap, module, &mod_ctx, bar_config, theme,
+                    mx, content_w as i32, ws_ctx, content_y, content_h,
+                );
+                mx += content_w as i32;
+                if i + 1 < group.len() {
+                    mx += item_gap as i32;
+                }
+            }
             right_x -= item_gap as i32;
         }
 
         // Layout CENTER section (centered, if it fits)
-        if !center.is_empty() {
-            let total_center_w: u32 = center.iter()
-                .map(|m| self.measure_module(m, &mod_ctx, bar_config, ws_ctx) + pill_pad * 2)
-                .sum::<u32>()
-                + (center.len().saturating_sub(1) as u32) * item_gap;
+        if !center_groups.is_empty() {
+            let group_widths: Vec<u32> =
+                center_groups.iter().map(|g| measure_group(self, g)).collect();
+            let total_center_w: u32 = group_widths.iter().sum::<u32>()
+                + (center_groups.len().saturating_sub(1) as u32) * item_gap;
 
             let safe_left = left_x;
             let safe_right = right_x;
@@ -153,13 +211,32 @@ impl BarRenderer {
                     .max(safe_left)
                     .min(safe_right - total_center_w as i32);
 
-                for module in &center {
-                    let w = self.measure_module(module, &mod_ctx, bar_config, ws_ctx) + pill_pad * 2;
-                    self.draw_module(
-                        &mut pixmap, module, &mod_ctx, bar_config, theme,
-                        cx, w as i32, uses_pills, ws_ctx, content_y, content_h,
-                    );
-                    cx += w as i32 + item_gap as i32;
+                for (group, total_w) in center_groups.iter().zip(group_widths.iter()) {
+                    if uses_pills {
+                        draw_pill(
+                            &mut pixmap,
+                            cx as f32,
+                            content_y as f32,
+                            *total_w as f32,
+                            content_h as f32,
+                            bar_config,
+                            theme,
+                        );
+                    }
+                    let mut mx = cx + pill_pad as i32;
+                    for (i, module) in group.iter().enumerate() {
+                        let content_w =
+                            self.measure_module(module, &mod_ctx, bar_config, ws_ctx);
+                        self.draw_module_content(
+                            &mut pixmap, module, &mod_ctx, bar_config, theme,
+                            mx, content_w as i32, ws_ctx, content_y, content_h,
+                        );
+                        mx += content_w as i32;
+                        if i + 1 < group.len() {
+                            mx += item_gap as i32;
+                        }
+                    }
+                    cx += *total_w as i32 + item_gap as i32;
                 }
             }
         }
@@ -213,9 +290,12 @@ impl BarRenderer {
         }
     }
 
-    /// Draw a single module at position x.
-    /// content_y/content_h define the vertical content area (symmetric inset from bar edges).
-    fn draw_module(
+    /// Draw the content (text, workspaces, volume bar) of a single
+    /// module at position x. The pill background is drawn separately
+    /// by the layout loop — one pill per group, spanning all member
+    /// modules. `x` is the content-left position (already past any
+    /// pill padding inset).
+    fn draw_module_content(
         &mut self,
         pixmap: &mut Pixmap,
         module: &BarModule,
@@ -223,40 +303,21 @@ impl BarRenderer {
         bar_config: &BarConfig,
         theme: &Theme,
         x: i32,
-        width: i32,
-        uses_pills: bool,
+        content_width: i32,
         ws_ctx: &WorkspaceContext,
         content_y: i32,
         content_h: i32,
     ) {
-        if width <= 0 {
+        if content_width <= 0 {
             return;
         }
 
         let bar_height = bar_config.height;
-        let pill_pad = if uses_pills { bar_config.module_padding_x.max(0) } else { 0 };
+        let uses_pills = bar_config.pill;
 
-        // Draw pill background behind this module, if pill mode is on.
-        // Pill fill, border, and rounding come from the shared
-        // module_* knobs on the bar config; the per-module `options`
-        // map only carries *content* overrides (color, volume bar
-        // dimensions, clock format, etc.), not appearance overrides.
-        if uses_pills {
-            draw_pill(
-                pixmap,
-                x as f32,
-                content_y as f32,
-                width as f32,
-                content_h as f32,
-                bar_config,
-                theme,
-            );
-        }
-
-        let text_x = x + pill_pad;
-
-        // Vertical centering: compute the center line for all content
-        // In pill mode, center within the pill; in flat mode, center within full bar
+        // Vertical centering: compute the center line for all content.
+        // In pill mode, center within the pill; in flat mode, center
+        // within full bar.
         let center_y = if uses_pills {
             content_y as f32 + content_h as f32 / 2.0
         } else {
@@ -265,7 +326,7 @@ impl BarRenderer {
 
         // Special: Workspaces
         if module.kind == BarModuleKind::Workspaces {
-            self.draw_workspaces(pixmap, text_x, center_y, ctx, theme, ws_ctx);
+            self.draw_workspaces(pixmap, x, center_y, ctx, theme, ws_ctx);
             return;
         }
 
@@ -276,14 +337,14 @@ impl BarRenderer {
 
         // Draw text — use center_y_offset to vertically center glyphs
         let text_y = self.text.center_y_offset(center_y);
-        self.text.draw(pixmap, &content.text, text_x as f32, text_y, content.color);
+        self.text.draw(pixmap, &content.text, x as f32, text_y, content.color);
 
         // Volume bar — size preset comes from the module's first
         // positional arg (see `volume_bar_size`). `none` disables.
         if module.kind == BarModuleKind::Volume {
             if let Some(size) = volume_bar_size(module) {
                 let text_w = self.text.measure(&content.text) as i32;
-                let bar_x = text_x + text_w + 8;
+                let bar_x = x + text_w + 8;
                 let bar_w = size.width as i32;
                 let bar_h = size.height as i32;
                 let bar_y = center_y - bar_h as f32 / 2.0;
@@ -511,4 +572,36 @@ fn split_modules(modules: &[BarModule]) -> (Vec<&BarModule>, Vec<&BarModule>, Ve
     }
 
     (left, center, right)
+}
+
+/// Collapse adjacent modules that share a `group:<name>` id into one
+/// group. Standalone modules (group = None) are each their own group.
+/// Order is preserved: the returned vec matches the iteration order
+/// of the input.
+///
+/// Example:
+///   `[left monitor group:left, left workspaces group:left, left clock]`
+///   → `[[monitor, workspaces], [clock]]`
+///
+/// Non-adjacent same-named groups are NOT merged — this keeps the
+/// implementation simple and matches user intent (if you wrote the
+/// group membership out of order, you probably wanted separate pills).
+fn group_adjacent<'a>(modules: &[&'a BarModule]) -> Vec<Vec<&'a BarModule>> {
+    let mut result: Vec<Vec<&'a BarModule>> = Vec::new();
+    for m in modules {
+        let extend = match (result.last(), m.group.as_ref()) {
+            (Some(last), Some(name)) => last
+                .last()
+                .and_then(|prev| prev.group.as_ref())
+                .map(|prev_name| prev_name == name)
+                .unwrap_or(false),
+            _ => false,
+        };
+        if extend {
+            result.last_mut().unwrap().push(*m);
+        } else {
+            result.push(vec![*m]);
+        }
+    }
+    result
 }

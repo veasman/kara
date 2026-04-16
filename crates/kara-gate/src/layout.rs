@@ -15,9 +15,19 @@ pub struct ClientGeometry {
 }
 
 /// Calculate geometry for all clients in a workspace.
-/// Floating windows get centered geometry; tiled windows go through tile/monocle.
-/// border_px: the border width in pixels (from config). Each window's rect is inset
-/// by this amount, and border_rect gives the outer area for drawing borders.
+///
+/// Borders render **outside** the window's visible content rect — the
+/// window gets its full requested (floating) or tile-slot (tiled)
+/// size, and the border extends outward. The layout reserves a
+/// `border_px` margin inside the work area for the outer borders of
+/// edge tiles, and grows the inter-tile gap to `max(gap_px, 2*border_px)`
+/// so adjacent tile borders don't overlap. This means a wider border
+/// never eats into window content — it only eats into the workarea
+/// margins and the gap space between tiles.
+///
+/// `border_rect` (when Some) is the outer rectangle drawn by the
+/// border renderer; `rect` is the window content area and equals the
+/// tile slot / floating window size exactly.
 pub fn layout_workspace(
     ws: &Workspace,
     area: Rectangle<i32, Logical>,
@@ -29,20 +39,42 @@ pub fn layout_workspace(
 
     let focused_idx = ws.focused_idx;
 
+    // Reserve an outer margin equal to border_px on every side of the
+    // workarea so edge tiles' outward-extending borders stay inside
+    // the monitor. Effective gap grows to 2*border_px so adjacent
+    // tiles' borders don't overlap at the midpoint.
+    let padded_area = inset_rect(area, border_px);
+    let effective_gap = ws.gap_px.max(border_px * 2);
+
     // Separate tiled and floating
     let tiled_indices = ws.tiled_indices();
 
     // Layout tiled windows
     let mut result = match ws.layout {
-        LayoutKind::Tile => layout_tile_indexed(ws, &tiled_indices, area, border_px, focused_idx),
-        LayoutKind::Monocle => layout_monocle_indexed(ws, &tiled_indices, area, border_px, focused_idx),
+        LayoutKind::Tile => layout_tile_indexed(
+            ws,
+            &tiled_indices,
+            padded_area,
+            effective_gap,
+            border_px,
+            focused_idx,
+        ),
+        LayoutKind::Monocle => layout_monocle_indexed(
+            ws,
+            &tiled_indices,
+            padded_area,
+            effective_gap,
+            border_px,
+            focused_idx,
+        ),
     };
 
     // Layout floating windows — honor client-requested size, centered in the work area.
-    // Clamp to 95% of the workarea to keep a visible margin; fall back to 640x480 if the
-    // client has not yet committed a geometry (pre-first-buffer).
-    let max_w = (area.size.w as f32 * 0.95) as i32;
-    let max_h = (area.size.h as f32 * 0.95) as i32;
+    // Clamp to (padded_area * 0.95) to leave a visible margin; fall back to 640x480 if
+    // the client has not yet committed a geometry (pre-first-buffer). The border
+    // extends outward from the window rect, not into it.
+    let max_w = (padded_area.size.w as f32 * 0.95) as i32;
+    let max_h = (padded_area.size.h as f32 * 0.95) as i32;
     for (i, client) in ws.clients.iter().enumerate() {
         if !ws.is_floating(i) {
             continue;
@@ -52,15 +84,15 @@ pub fn layout_workspace(
         let rh = if requested.h > 1 { requested.h } else { 480 };
         let fw = rw.min(max_w).max(1);
         let fh = rh.min(max_h).max(1);
-        let fx = area.loc.x + (area.size.w - fw) / 2;
-        let fy = area.loc.y + (area.size.h - fh) / 2;
+        let fx = padded_area.loc.x + (padded_area.size.w - fw) / 2;
+        let fy = padded_area.loc.y + (padded_area.size.h - fh) / 2;
 
-        let outer = Rectangle::new((fx, fy).into(), (fw, fh).into());
-        let inner = inset_rect(outer, border_px);
+        let window_rect = Rectangle::new((fx, fy).into(), (fw, fh).into());
+        let outer = outset_rect(window_rect, border_px);
 
         result.push(ClientGeometry {
             window: client.clone(),
-            rect: inner,
+            rect: window_rect,
             border_rect: if border_px > 0 { Some(outer) } else { None },
             visible: true,
             is_focused: focused_idx == Some(i),
@@ -78,14 +110,22 @@ fn inset_rect(r: Rectangle<i32, Logical>, px: i32) -> Rectangle<i32, Logical> {
     )
 }
 
+/// Outset a rectangle by `px` on all sides (the inverse of inset).
+fn outset_rect(r: Rectangle<i32, Logical>, px: i32) -> Rectangle<i32, Logical> {
+    Rectangle::new(
+        (r.loc.x - px, r.loc.y - px).into(),
+        ((r.size.w + px * 2).max(1), (r.size.h + px * 2).max(1)).into(),
+    )
+}
+
 fn layout_tile_indexed(
     ws: &Workspace,
     indices: &[usize],
     area: Rectangle<i32, Logical>,
+    gap: i32,
     border_px: i32,
     focused_idx: Option<usize>,
 ) -> Vec<ClientGeometry> {
-    let gap = ws.gap_px;
     let count = indices.len();
 
     if count == 0 {
@@ -99,12 +139,12 @@ fn layout_tile_indexed(
     );
 
     if count == 1 {
-        let outer = area;
-        let inner = inset_rect(outer, border_px);
+        let tile = area;
+        let border_rect = outset_rect(tile, border_px);
         return vec![ClientGeometry {
             window: ws.clients[indices[0]].clone(),
-            rect: inner,
-            border_rect: if border_px > 0 { Some(outer) } else { None },
+            rect: tile,
+            border_rect: if border_px > 0 { Some(border_rect) } else { None },
             visible: true,
             is_focused: focused_idx == Some(indices[0]),
         }];
@@ -137,7 +177,7 @@ fn layout_tile_indexed(
     };
 
     for (pos, &client_idx) in indices.iter().enumerate() {
-        let outer = if pos < nmaster {
+        let tile = if pos < nmaster {
             let r = Rectangle::new(
                 (area.loc.x, area.loc.y + (master_h_each + gap) * mi).into(),
                 (master_w, master_h_each).into(),
@@ -153,12 +193,12 @@ fn layout_tile_indexed(
             r
         };
 
-        let inner = inset_rect(outer, border_px);
+        let border_rect = outset_rect(tile, border_px);
 
         result.push(ClientGeometry {
             window: ws.clients[client_idx].clone(),
-            rect: inner,
-            border_rect: if border_px > 0 { Some(outer) } else { None },
+            rect: tile,
+            border_rect: if border_px > 0 { Some(border_rect) } else { None },
             visible: true,
             is_focused: focused_idx == Some(client_idx),
         });
@@ -171,10 +211,10 @@ fn layout_monocle_indexed(
     ws: &Workspace,
     indices: &[usize],
     area: Rectangle<i32, Logical>,
+    gap: i32,
     border_px: i32,
     focused_idx: Option<usize>,
 ) -> Vec<ClientGeometry> {
-    let gap = ws.gap_px;
     let area = Rectangle::new(
         (area.loc.x + gap, area.loc.y + gap).into(),
         (area.size.w - gap * 2, area.size.h - gap * 2).into(),
@@ -185,12 +225,12 @@ fn layout_monocle_indexed(
     indices
         .iter()
         .map(|&client_idx| {
-            let outer = area;
-            let inner = inset_rect(outer, border_px);
+            let tile = area;
+            let border_rect = outset_rect(tile, border_px);
             ClientGeometry {
                 window: ws.clients[client_idx].clone(),
-                rect: inner,
-                border_rect: if border_px > 0 { Some(outer) } else { None },
+                rect: tile,
+                border_rect: if border_px > 0 { Some(border_rect) } else { None },
                 visible: client_idx == fi,
                 is_focused: client_idx == fi,
             }

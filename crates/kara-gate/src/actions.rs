@@ -633,6 +633,15 @@ impl Gate {
 
     /// Load cursor theme images into cache for software rendering.
     pub fn load_cursor_theme(&mut self) {
+        // Drop every cached named cursor — the previously loaded
+        // shapes (text, pointer, resize, etc.) come from the old
+        // theme. Without this, swapping cursor themes via kara-beautify
+        // only affects the default arrow until the named cache
+        // naturally churns, which never happens for icons already
+        // observed since startup. kara-gate's wp_cursor_shape_v1
+        // dispatch path repopulates the cache on the next hover.
+        self.named_cursor_cache.clear();
+
         let theme_name = self.config.general.cursor_theme
             .as_deref()
             .unwrap_or("default");

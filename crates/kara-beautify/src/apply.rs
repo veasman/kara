@@ -113,6 +113,9 @@ pub fn apply_theme_file(
         window_border_tile_path: tile_set
             .lookup("window_border")
             .map(|t| t.path.as_path()),
+        bar_module_bg_tile_path: tile_set
+            .lookup("bar_module_bg")
+            .map(|t| t.path.as_path()),
     };
 
     let kara_gate = render_kara_gate_theme_with(&resolved, &kara_gate_ctx);
@@ -220,20 +223,23 @@ pub fn apply_theme_file(
     }
     if c.foot {
         // Patch the active [colors-<mode>] section directly into
-        // foot.ini. Non-color keys in that section (if any) are
-        // preserved by ini_patch. Same pattern as GTK settings.ini.
-        //
-        // Foot's mode dispatch (which section to use) comes from
-        // xdg-desktop-portal's color-scheme at runtime, so we don't
-        // patch anything in [main] — earlier attempts to add
-        // `theme=dark` there broke foot's config parse because
-        // `theme` isn't a valid [main] key.
-        let colors_changed =
+        // foot.ini so a fresh foot server restart picks up the new
+        // theme. Running foot instances get reprogrammed live via the
+        // OSC broadcast below — foot doesn't re-read foot.ini on any
+        // signal, so the file patch only matters for new sessions.
+        let _ =
             patch_ini_section(&paths.foot_config_path(), foot_section, &foot_pairs_ref)?;
         // Human-readable preview for `kara-beautify render foot`
         // and manual inspection. Not on the reload path.
         let _ = write_if_changed(&paths.foot_theme_path(), &foot_preview)?;
-        reload_plan.foot = colors_changed;
+
+        // Build the OSC payload and queue it for broadcast. apply_runtime_reloads
+        // writes this to every pts the current user can open — running foot
+        // (and any xterm-compatible terminal) reprograms fg/bg/cursor/palette
+        // in place. Unlike the file patch, this ALWAYS runs when the foot
+        // consumer is enabled, because OSC sequences are cheap and idempotent.
+        reload_plan.foot = true;
+        reload_plan.foot_osc = kara_theme::render::foot::render_foot_osc_sequences(&resolved);
         reload_plan.foot_dark = matches!(
             resolved.mode,
             kara_theme::UiMode::Dark | kara_theme::UiMode::Auto

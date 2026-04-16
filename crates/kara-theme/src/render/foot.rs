@@ -100,3 +100,41 @@ pub fn render_foot_theme(theme: &ResolvedTheme) -> String {
     }
     out
 }
+
+/// Build an OSC escape sequence string that reprograms every standard
+/// terminal color in place. Foot (and any xterm-compatible terminal)
+/// parses these at runtime — no config reload, no restart, no SIGUSR
+/// round-trip. Writing this string to a running terminal's pts
+/// immediately swaps its colors.
+///
+/// Sequences included:
+///   * OSC 10 — default foreground
+///   * OSC 11 — default background
+///   * OSC 12 — cursor
+///   * OSC 17 — selection background
+///   * OSC 19 — selection foreground
+///   * OSC 4;N — palette entries 0..15 (ANSI)
+///
+/// Each sequence is terminated with ST (`ESC \`), which foot accepts
+/// without the terminal bell side-effect that BEL termination causes
+/// in some shells. Sequences are concatenated into a single write so
+/// the terminal applies the whole theme atomically.
+pub fn render_foot_osc_sequences(theme: &ResolvedTheme) -> String {
+    let c = &theme.semantic;
+    let mut out = String::new();
+    // Helper: OSC N ; <hex> ST. hex is "#rrggbb" — the leading '#' is
+    // accepted by foot and most xterm-compatible parsers.
+    fn osc(out: &mut String, code: u32, val: String) {
+        out.push_str(&format!("\x1b]{code};{val}\x1b\\"));
+    }
+    osc(&mut out, 10, c.fg0.to_hex());         // fg
+    osc(&mut out, 11, c.bg0.to_hex());         // bg
+    osc(&mut out, 12, c.accent.to_hex());      // cursor
+    osc(&mut out, 17, c.selection_bg.to_hex()); // selection bg
+    osc(&mut out, 19, c.selection_fg.to_hex()); // selection fg
+    for (i, color) in theme.ansi.iter().enumerate() {
+        // OSC 4 ; <idx> ; <hex> ST
+        out.push_str(&format!("\x1b]4;{};{}\x1b\\", i, color.to_hex()));
+    }
+    out
+}

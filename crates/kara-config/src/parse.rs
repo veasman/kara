@@ -585,12 +585,26 @@ fn parse_bar_modules_line(tokens: &[String], bar: &mut Bar, ctx: &ParseContext) 
         }
     };
 
-    // Everything after `<section> <module-name>` is collected in order
-    // as positional inline config. Each module decides what its args
-    // mean — see module docs in the example config.
-    let args: Vec<String> = tokens[2..].to_vec();
+    // Everything after `<section> <module-name>` is collected in
+    // order as positional inline config. The special `group:<name>`
+    // token can appear anywhere in the tail — we peel it off into
+    // BarModule.group so sibling modules with the same group render
+    // as one continuous pill.
+    let mut args: Vec<String> = Vec::new();
+    let mut group: Option<String> = None;
+    for tok in &tokens[2..] {
+        if let Some(name) = tok.strip_prefix("group:") {
+            if name.is_empty() {
+                ctx.warn("bar module: empty group name in 'group:'");
+            } else {
+                group = Some(name.to_string());
+            }
+        } else {
+            args.push(tok.clone());
+        }
+    }
 
-    bar.modules.push(BarModule { section, kind, args });
+    bar.modules.push(BarModule { section, kind, args, group });
 }
 
 fn parse_scratchpad_line(tokens: &[String], scratch: &mut ScratchpadConfig, ctx: &ParseContext) {

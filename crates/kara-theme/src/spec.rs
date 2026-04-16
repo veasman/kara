@@ -409,16 +409,47 @@ pub struct WindowBorderSpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BarStyleSpec {
+    /// Whether the bar draws its own background surface. When false,
+    /// modules float over whatever is behind the bar. Maps to
+    /// `bar { background = ... }` in the generated kara-gate include.
+    #[serde(default)]
+    pub background: Option<bool>,
+    /// Solid background color override. String form accepts palette
+    /// refs like `"$bg"` or literal hex `"#1a1a1a"`.
     #[serde(default)]
     pub background_color: Option<String>,
+    /// 0-255 bar background alpha.
+    #[serde(default)]
+    pub background_alpha: Option<u8>,
+    /// Bar height in pixels.
+    #[serde(default)]
+    pub height: Option<u16>,
+    /// When true, every module draws its own background pill with
+    /// `module_*` appearance. Maps to `bar { pill = true }`.
+    #[serde(default)]
+    pub pill: Option<bool>,
+    /// Inset from bar left/right edge to the first/last module.
+    #[serde(default)]
+    pub edge_padding_x: Option<u16>,
+    /// Vertical inset of modules from bar top/bottom.
+    #[serde(default)]
+    pub edge_padding_y: Option<u16>,
+    /// Horizontal gap between adjacent modules.
+    #[serde(default)]
+    pub module_gap: Option<u16>,
+    /// Horizontal padding inside each module pill.
+    #[serde(default)]
+    pub module_padding_x: Option<u16>,
+    /// Vertical padding inside each module pill.
+    #[serde(default)]
+    pub module_padding_y: Option<u16>,
+    /// Corner radius of each module pill.
+    #[serde(default)]
+    pub module_rounded: Option<u16>,
     #[serde(default)]
     pub font_family: Option<String>,
     #[serde(default)]
     pub font_size: Option<u16>,
-    /// `[horizontal, vertical]` padding in px. Parsed as a free-form
-    /// array for forward compatibility.
-    #[serde(default)]
-    pub padding: Option<Vec<u16>>,
     #[serde(default)]
     pub module_fg: Option<String>,
     #[serde(default)]
@@ -434,7 +465,7 @@ pub struct BarStyleSpec {
     #[serde(default)]
     pub svg_overlay: Option<SvgOverlaySpec>,
     /// Tileable SVG that replaces the bar's solid background fill.
-    /// Reserved slot — needs the SVG rasterizer.
+    /// Reserved slot — needs kara-sight module cleanup.
     #[serde(default)]
     pub background_svg: Option<SvgTileSpec>,
     /// Tileable SVG drawn as the bar's outer frame/outline.
