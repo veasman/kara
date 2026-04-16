@@ -521,16 +521,24 @@ impl Picker {
         // borrow on self while the draw helpers take `&mut self`.
         let t = self.theme_colors.clone();
 
-        // Background
-        fill_rounded_rect(
-            &mut pixmap,
-            0.0, 0.0, w as f32, h as f32,
-            BORDER_RADIUS, color_from_u32(t.surface),
-        );
+        // Background — semi-transparent surface with accent border,
+        // matching the bar and notification visual language.
+        {
+            let bg = t.bg;
+            let r = ((bg >> 16) & 0xFF) as u8;
+            let g = ((bg >> 8) & 0xFF) as u8;
+            let b = (bg & 0xFF) as u8;
+            fill_rounded_rect(
+                &mut pixmap,
+                0.0, 0.0, w as f32, h as f32,
+                BORDER_RADIUS,
+                tiny_skia::Color::from_rgba8(r, g, b, 220),
+            );
+        }
         stroke_rounded_rect(
             &mut pixmap,
             0.5, 0.5, w as f32 - 1.0, h as f32 - 1.0,
-            BORDER_RADIUS, color_from_u32(t.border), 1.0,
+            BORDER_RADIUS, color_from_u32(t.accent_soft), 1.5,
         );
 
         // THEME row

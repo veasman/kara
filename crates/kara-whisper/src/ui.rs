@@ -10,8 +10,11 @@ const CARD_WIDTH: u32 = 380;
 const CARD_BASE_HEIGHT: u32 = 90;
 const CARD_ACTION_ROW: u32 = 28;
 const GAP: u32 = 8;
-const PADDING: f32 = 12.0;
-const BORDER_RADIUS: f32 = 8.0;
+const PADDING: f32 = 14.0;
+const CARD_RADIUS: f32 = 10.0;
+/// Card background alpha — semi-transparent so wallpaper bleeds
+/// through if the layer surface composits over it.
+const CARD_ALPHA: u8 = 200;
 
 pub struct NotificationUI {
     text: TextRenderer,
@@ -84,71 +87,62 @@ impl NotificationUI {
             .theme
             .border_radius
             .map(|r| r as f32)
-            .unwrap_or(BORDER_RADIUS);
+            .unwrap_or(CARD_RADIUS);
 
         let mut y_off = 0.0f32;
         for (_i, notif) in notifications.iter().enumerate() {
             let card_h = Self::card_height(notif) as f32;
 
-            // Theme-driven border chrome — draw the outer tiled
-            // border first, then the inner card surface on top.
-            // Falls back to a plain surface fill when the theme has
-            // no tile set.
-            if let (Some(tile_pm), bw) = (&border_tile, theme_border_px) {
-                if bw > 0.0 {
-                    fill_rounded_rect_with_pattern(
-                        &mut pixmap,
-                        -bw,
-                        y_off - bw,
-                        CARD_WIDTH as f32 + bw * 2.0,
-                        card_h + bw * 2.0,
-                        theme_border_radius + bw,
-                        tile_pm,
-                    );
-                    // Inner card fills on top of the tiled border.
-                    fill_rounded_rect(
-                        &mut pixmap,
-                        0.0,
-                        y_off,
-                        CARD_WIDTH as f32,
-                        card_h,
-                        theme_border_radius,
-                        color_from_u32(self.theme.surface),
-                    );
-                } else {
-                    fill_rounded_rect(
-                        &mut pixmap,
-                        0.0,
-                        y_off,
-                        CARD_WIDTH as f32,
-                        card_h,
-                        theme_border_radius,
-                        color_from_u32(self.theme.surface),
-                    );
-                }
-            } else {
-                fill_rounded_rect(
-                    &mut pixmap,
-                    0.0,
-                    y_off,
-                    CARD_WIDTH as f32,
-                    card_h,
-                    BORDER_RADIUS,
-                    color_from_u32(self.theme.surface),
-                );
-            }
+            // Card background — semi-transparent surface fill with
+            // rounded corners. The alpha lets the wallpaper bleed
+            // through subtly, matching the bar's visual language.
+            let bg = self.theme.surface;
+            let bg_r = ((bg >> 16) & 0xFF) as u8;
+            let bg_g = ((bg >> 8) & 0xFF) as u8;
+            let bg_b = (bg & 0xFF) as u8;
+            fill_rounded_rect(
+                &mut pixmap,
+                0.0,
+                y_off,
+                CARD_WIDTH as f32,
+                card_h,
+                CARD_RADIUS,
+                tiny_skia::Color::from_rgba8(bg_r, bg_g, bg_b, CARD_ALPHA),
+            );
 
-            // Critical: accent border
-            if notif.urgency == Urgency::Critical {
+            // Border chrome — tile pattern when available (matches
+            // compositor window borders), accent stroke fallback.
+            // Always drawn so the card has a visible edge.
+            if let Some(tile_pm) = &border_tile {
+                use kara_ui::canvas::stroke_rounded_rect_with_pattern;
+                stroke_rounded_rect_with_pattern(
+                    &mut pixmap,
+                    1.0,
+                    y_off + 1.0,
+                    CARD_WIDTH as f32 - 2.0,
+                    card_h - 2.0,
+                    (CARD_RADIUS - 1.0).max(0.0),
+                    tile_pm,
+                    2.0,
+                );
+            } else {
+                // Accent stroke — gives the card a visible themed edge
+                // even without an SVG tile. Critical uses bright accent;
+                // normal/low use the muted border color.
+                let border_color = if notif.urgency == Urgency::Critical {
+                    self.theme.accent
+                } else {
+                    self.theme.border
+                };
                 stroke_rounded_rect(
                     &mut pixmap,
                     1.0,
                     y_off + 1.0,
                     CARD_WIDTH as f32 - 2.0,
                     card_h - 2.0,
-                    BORDER_RADIUS,
-                    color_from_u32(self.theme.accent),
-                    2.0,
+                    (CARD_RADIUS - 1.0).max(0.0),
+                    color_from_u32(border_color),
+                    1.5,
                 );
             }
 
