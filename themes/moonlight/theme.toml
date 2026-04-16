@@ -53,9 +53,10 @@ mono_family = "FiraCode Nerd Font"
 mono_size = 14
 
 [cursor]
-# Nordzy fits the cool moonlight palette. AUR: nordzy-cursors
-# (also nordzy-hyprcursors for Wayland-native clients).
-theme = "Nordzy-cursors"
+# JYxNeon — neon glow cursor, fits the moonlight/cyber-cool vibe.
+# AUR (local): vxneon-cursor-theme. Installed dir is "JYxNeon"
+# (upstream internal name, not "vxNeon").
+theme = "JYxNeon"
 size = 24
 
 # ─── Reserved structured slots (no renderer consumes these yet) ────

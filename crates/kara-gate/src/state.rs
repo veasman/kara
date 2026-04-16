@@ -1304,21 +1304,60 @@ impl Gate {
         // child dialogs / auxiliary windows, not tileable siblings.
         let should_float = rule_float || has_parent;
 
-        let ws_idx = target_ws.unwrap_or_else(|| self.effective_ws(self.focused_output));
+        // When a child window has a parent, place it on the parent's
+        // output + workspace so it floats over the window that spawned
+        // it. Without this, dialogs and file-pickers land on whatever
+        // output has keyboard focus, which may be a different monitor.
+        let parent_location = if has_parent {
+            window
+                .toplevel()
+                .and_then(|t| t.parent())
+                .and_then(|parent_surface| {
+                    for (out_idx, pool) in self.workspaces.iter().enumerate() {
+                        for (ws_idx, ws) in pool.iter().enumerate() {
+                            for client in &ws.clients {
+                                if client
+                                    .toplevel()
+                                    .map(|t| *t.wl_surface() == parent_surface)
+                                    .unwrap_or(false)
+                                {
+                                    return Some((out_idx, ws_idx));
+                                }
+                            }
+                        }
+                    }
+                    None
+                })
+        } else {
+            None
+        };
+
+        let ws_idx = if let Some((_, ws)) = parent_location {
+            ws
+        } else {
+            target_ws.unwrap_or_else(|| self.effective_ws(self.focused_output))
+        };
+
+        let target_output = if let Some((out, _)) = parent_location {
+            out
+        } else {
+            self.focused_output
+        };
 
         let target_output_name = self
             .outputs
-            .get(self.focused_output)
+            .get(target_output)
             .map(|o| o.output.name())
             .unwrap_or_default();
         tracing::info!(
-            "map {app_id:?} → workspace {} (output {} = {target_output_name}, rule_pinned={})",
+            "map {app_id:?} → workspace {} (output {} = {target_output_name}, rule_pinned={}, parent_routed={})",
             ws_idx + 1,
-            self.focused_output,
+            target_output,
             target_ws.is_some(),
+            parent_location.is_some(),
         );
 
-        self.workspaces[self.focused_output][ws_idx].add_client_floating(window.clone(), should_float);
+        self.workspaces[target_output][ws_idx].add_client_floating(window.clone(), should_float);
 
         self.apply_layout();
         self.apply_focus();
