@@ -14,6 +14,9 @@ pub struct TextRenderer {
     pub font_size: f32,
     pub line_height: f32,
     font_family: String,
+    /// Cached result of center_y_offset for the current font.
+    /// Invalidated when font_size or font_family changes.
+    cached_center_offset: Option<f32>,
 }
 
 impl TextRenderer {
@@ -24,6 +27,7 @@ impl TextRenderer {
             font_size,
             line_height: font_size,
             font_family: String::new(),
+            cached_center_offset: None,
         }
     }
 
@@ -34,16 +38,19 @@ impl TextRenderer {
             font_size,
             line_height: font_size,
             font_family: font_family.to_string(),
+            cached_center_offset: None,
         }
     }
 
     pub fn set_font_size(&mut self, size: f32) {
         self.font_size = size;
         self.line_height = size;
+        self.cached_center_offset = None;
     }
 
     pub fn set_font_family(&mut self, family: &str) {
         self.font_family = family.to_string();
+        self.cached_center_offset = None;
     }
 
     /// Compute the y offset needed so that text is vertically
@@ -66,6 +73,22 @@ impl TextRenderer {
     /// This is font-agnostic: no hardcoded constants, no assumed
     /// metrics. Any font at any size produces correct centering.
     pub fn center_y_offset(&mut self, center_y: f32) -> f32 {
+        // Cache the glyph-bbox offset — it only depends on font
+        // family + size, not on center_y or the specific text. The
+        // expensive shaping + glyph-image walk runs once per font
+        // config change, not once per module per frame.
+        let offset = match self.cached_center_offset {
+            Some(off) => off,
+            None => {
+                let off = self.compute_glyph_center_offset();
+                self.cached_center_offset = Some(off);
+                off
+            }
+        };
+        center_y - offset
+    }
+
+    fn compute_glyph_center_offset(&mut self) -> f32 {
         let metrics = Metrics::new(self.font_size, self.line_height);
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
         let attrs = if self.font_family.is_empty() {
@@ -76,9 +99,6 @@ impl TextRenderer {
         buffer.set_text(&mut self.font_system, "Hg", &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
-        // Walk every glyph image to find the actual pixel bbox
-        // relative to draw-y = 0. `gy` is the top of each glyph
-        // image; `gy + h` is the bottom.
         let mut min_gy = i32::MAX;
         let mut max_gy_bottom = i32::MIN;
         for run in buffer.layout_runs() {
@@ -100,10 +120,9 @@ impl TextRenderer {
         }
 
         if min_gy < max_gy_bottom {
-            let glyph_center = (min_gy + max_gy_bottom) as f32 / 2.0;
-            center_y - glyph_center
+            (min_gy + max_gy_bottom) as f32 / 2.0
         } else {
-            center_y - self.font_size / 2.0
+            self.font_size / 2.0
         }
     }
 
