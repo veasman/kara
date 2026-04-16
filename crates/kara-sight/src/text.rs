@@ -160,9 +160,9 @@ fn build_battery(ctx: &ModuleContext) -> ModuleContent {
     } else if st.full {
         ctx.theme.accent
     } else if st.charging {
-        ctx.theme.accent_soft
+        ctx.theme.accent
     } else if st.percent <= 15 {
-        ctx.theme.accent // using accent for critical (could be a warning color)
+        ctx.theme.accent
     } else {
         ctx.theme.text
     };
@@ -221,7 +221,7 @@ fn build_memory(ctx: &ModuleContext) -> ModuleContent {
     }
 
     let text = if ctx.icons {
-        format!("\u{f233} {}%", st.used_percent) //  ram-banks icon
+        format!("\u{f1c0} {}%", st.used_percent) //  database/memory icon
     } else {
         format!("mem {}%", st.used_percent)
     };
