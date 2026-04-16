@@ -77,7 +77,7 @@ background = true
 background_alpha = 140
 blur = true
 font_family = "ProFont IIx Nerd Font"
-font_size = 14
+font_size = 16
 
 [animations]
 duration_ms_fast = 120

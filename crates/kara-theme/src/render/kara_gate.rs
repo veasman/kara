@@ -169,6 +169,9 @@ theme {{
         if let Some(v) = bar.module_rounded {
             lines.push(format!("    module_rounded   {v}"));
         }
+        if let Some(v) = bar.blur {
+            lines.push(format!("    blur             {v}"));
+        }
         if let Some(v) = bar.hide_center {
             lines.push(format!("    hide_center      {v}"));
         }

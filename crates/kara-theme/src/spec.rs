@@ -446,6 +446,13 @@ pub struct BarStyleSpec {
     /// Corner radius of each module pill.
     #[serde(default)]
     pub module_rounded: Option<u16>,
+    /// Blur the desktop content behind the bar surface. kara-gate
+    /// crops and box-blurs the wallpaper at the bar rect, compositing
+    /// the bar's semi-transparent fill on top for a frosted glass
+    /// look. Only effective when `background = true` and
+    /// `background_alpha < 255`.
+    #[serde(default)]
+    pub blur: Option<bool>,
     /// When `true`, kara-sight skips rendering any center-section
     /// modules even if the user's config declares them. Lets themes
     /// like fantasy/moonlight suppress the center title without the
