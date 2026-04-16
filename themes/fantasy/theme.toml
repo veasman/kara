@@ -111,7 +111,7 @@ module_gap = 14
 module_padding_x = 16
 module_padding_y = 12
 module_rounded = 0
-font_family = "3270 Nerd Font"
+font_family = "3270 Nerd Font Mono"
 font_size = 14
 
 # Reserved — once kara-sight wires module SVG surfaces, this slot
