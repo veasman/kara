@@ -1298,17 +1298,8 @@ impl Gate {
                         || route_lower.contains(&app_lower)
                 })
             {
-                // Keep the route alive briefly for multi-toplevel apps
-                // (Floorp spawns 2-3 windows within seconds). On first
-                // match, reset the route's timestamp to "now" and
-                // shorten effective TTL to 3s. Subsequent windows from
-                // the same app arriving within 3s still match. After
-                // that the route expires and manual spawns (e.g. new
-                // foot terminals via keybind) go to the focused output.
                 let (_, target_out, target_ws, _) =
-                    self.pending_autostart_routes[pos].clone();
-                self.pending_autostart_routes[pos].3 =
-                    std::time::Instant::now() - std::time::Duration::from_secs(27);
+                    self.pending_autostart_routes.remove(pos);
                 if target_out < self.workspaces.len() && target_ws < self.workspaces[target_out].len() {
                     self.workspaces[target_out][target_ws]
                         .add_client_floating(window.clone(), false);
