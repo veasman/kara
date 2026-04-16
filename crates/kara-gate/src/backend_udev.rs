@@ -1558,15 +1558,30 @@ fn render_frame(
     // when a tiling layout is in use.
     let mut workspace_elements: Vec<WaylandSurfaceRenderElement<KaraRenderer<'_>>> = Vec::new();
     let mut floating_elements: Vec<WaylandSurfaceRenderElement<KaraRenderer<'_>>> = Vec::new();
-    // Focused floating window's elements go here temporarily so we
-    // can append them AFTER all other floats. Front-to-back order
-    // means "first = topmost" — the focused float must be first in
-    // the floating_elements vec to draw on top of unfocused ones.
     let mut focused_float_elements: Vec<WaylandSurfaceRenderElement<KaraRenderer<'_>>> = Vec::new();
     let mut scratchpad_elements: Vec<WaylandSurfaceRenderElement<KaraRenderer<'_>>> = Vec::new();
+
+    // Pre-compute window classification once instead of O(n²) per-window
+    // lookup into scratchpads + workspace pools. Window implements Hash+Eq.
+    let mut window_class: std::collections::HashMap<smithay::desktop::Window, (bool, bool)> =
+        std::collections::HashMap::new();
+    for sp in &state.scratchpads {
+        for w in &sp.workspace.clients {
+            window_class.insert(w.clone(), (true, false));
+        }
+    }
+    for out_pool in &state.workspaces {
+        for ws in out_pool {
+            for (idx, w) in ws.clients.iter().enumerate() {
+                if !window_class.contains_key(w) {
+                    window_class.insert(w.clone(), (false, ws.is_floating(idx)));
+                }
+            }
+        }
+    }
+
     let space_windows: Vec<_> = state.space.elements().cloned().collect();
     for window in space_windows {
-        // Skip windows whose bbox doesn't intersect this output.
         let loc = match state.space.element_location(&window) {
             Some(l) => l,
             None => continue,
@@ -1580,29 +1595,10 @@ fn render_frame(
             continue;
         }
 
-        let is_scratchpad = state
-            .scratchpads
-            .iter()
-            .any(|sp| sp.workspace.clients.contains(&window));
-
-        // Find the regular workspace that owns this window so we can
-        // check its floating flag. Only relevant for non-scratchpad
-        // windows — scratchpad windows go into their own bucket
-        // regardless of floating state.
-        let is_floating = if is_scratchpad {
-            false
-        } else {
-            let mut found = false;
-            'find: for out_pool in &state.workspaces {
-                for ws in out_pool {
-                    if let Some(idx) = ws.clients.iter().position(|w| w == &window) {
-                        found = ws.is_floating(idx);
-                        break 'find;
-                    }
-                }
-            }
-            found
-        };
+        let (is_scratchpad, is_floating) = window_class
+            .get(&window)
+            .copied()
+            .unwrap_or((false, false));
 
         // Mirror smithay's Space::render_elements_for_output math:
         // render_location = element_location - window.geometry().loc - output_geo.loc

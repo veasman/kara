@@ -1,3 +1,5 @@
+use smithay::backend::renderer::element::texture::TextureBuffer;
+use crate::backend_udev::KaraTexture;
 use smithay::delegate_compositor;
 use smithay::delegate_data_device;
 use smithay::delegate_layer_shell;
@@ -326,6 +328,14 @@ pub struct Gate {
     /// rasterized while `bar_dirty` was true. Keyed by `output_idx`; the
     /// entire map is cleared whenever `bar_dirty` flips on.
     pub bar_cache: std::collections::HashMap<usize, (Vec<u8>, u32, u32)>,
+    /// Cached GPU TextureBuffers for the bar — avoids re-uploading
+    /// unchanged pixel data every frame. Cleared alongside bar_cache
+    /// when bar_dirty fires.
+    pub bar_texture_cache: std::collections::HashMap<usize, TextureBuffer<KaraTexture>>,
+    /// Cached GPU TextureBuffers for window borders — parallel to
+    /// border_cache. Cleared on layout_dirty.
+    pub border_texture_cache: Vec<Option<TextureBuffer<KaraTexture>>>,
+    pub scratchpad_border_texture_cache: Vec<Option<TextureBuffer<KaraTexture>>>,
 
     /// Lazily-compiled Gaussian shader program for scratchpad backdrop
     /// blur. Compiled on first blur-enabled frame; shared across all
@@ -464,6 +474,9 @@ impl Gate {
             window_base_positions: Vec::new(),
             bar_dirty: true,
             bar_cache: std::collections::HashMap::new(),
+            bar_texture_cache: std::collections::HashMap::new(),
+            border_texture_cache: Vec::new(),
+            scratchpad_border_texture_cache: Vec::new(),
             blur_program: crate::blur::BlurProgram::new(),
             pointer_location: (0.0, 0.0).into(),
             cursor_status: CursorImageStatus::default_named(),

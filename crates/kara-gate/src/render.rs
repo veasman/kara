@@ -30,6 +30,7 @@ pub fn render_bar(
     // Then this output's specific entry is rebuilt below if missing.
     if state.bar_dirty {
         state.bar_cache.clear();
+        state.bar_texture_cache.clear();
         state.bar_dirty = false;
     }
 
@@ -61,26 +62,35 @@ pub fn render_bar(
         }
     };
 
-    let texture_buffer = match TextureBuffer::from_memory(
-        renderer,
-        data,
-        Fourcc::Abgr8888,
-        Size::from((*w as i32, *h as i32)),
-        false,
-        1,
-        Transform::Normal,
-        None,
-    ) {
-        Ok(buf) => buf,
-        Err(e) => {
-            tracing::error!("failed to upload bar texture: {e:?}");
-            return Vec::new();
+    // Reuse cached GPU texture when pixel data hasn't changed.
+    // Only re-upload on bar_dirty (cache was cleared above).
+    if !state.bar_texture_cache.contains_key(&output_idx) {
+        match TextureBuffer::from_memory(
+            renderer,
+            data,
+            Fourcc::Abgr8888,
+            Size::from((*w as i32, *h as i32)),
+            false,
+            1,
+            Transform::Normal,
+            None,
+        ) {
+            Ok(buf) => { state.bar_texture_cache.insert(output_idx, buf); }
+            Err(e) => {
+                tracing::error!("failed to upload bar texture: {e:?}");
+                return Vec::new();
+            }
         }
+    }
+
+    let texture_buffer = match state.bar_texture_cache.get(&output_idx) {
+        Some(tb) => tb,
+        None => return Vec::new(),
     };
 
     vec![TextureRenderElement::from_texture_buffer(
         Point::from((0.0, bar_y)),
-        &texture_buffer,
+        texture_buffer,
         None,
         None,
         None,
@@ -233,6 +243,7 @@ fn rasterize_border_set(
 fn render_border_set(
     rects: &[(smithay::utils::Rectangle<i32, smithay::utils::Logical>, bool)],
     cache: &[(Vec<u8>, u32, u32)],
+    texture_cache: &mut Vec<Option<TextureBuffer<KaraTexture>>>,
     offsets: &[(f64, f64)],
     windows: &[(smithay::desktop::Window, smithay::utils::Point<i32, smithay::utils::Logical>)],
     space: &smithay::desktop::Space<smithay::desktop::Window>,
@@ -243,6 +254,10 @@ fn render_border_set(
     if cache.len() != rects.len() {
         return Vec::new();
     }
+
+    // Ensure texture cache has the right length. Resize preserves
+    // existing entries when border count hasn't changed (same layout).
+    texture_cache.resize_with(cache.len(), || None);
 
     let out = match output {
         Some(o) => o,
@@ -257,12 +272,6 @@ fn render_border_set(
             continue;
         }
 
-        // Border sits just outside the window's *geometry* rect. smithay's
-        // `Space::element_location` returns the geometry top-left, which is
-        // already the correct reference for the visible window — we do NOT
-        // subtract `geo.loc` here (that would offset to the buffer origin and
-        // leave the border stranded in the CSD shadow margin for clients like
-        // Firefox/Floorp that draw their own shadows outside the geometry).
         let border_loc = if let Some((window, _base)) = windows.get(i) {
             if let Some(map_loc) = space.element_location(window) {
                 (map_loc.x - border_px, map_loc.y - border_px)
@@ -273,21 +282,30 @@ fn render_border_set(
             (rect.loc.x, rect.loc.y)
         };
 
-        let texture_buffer = match TextureBuffer::from_memory(
-            renderer,
-            data,
-            Fourcc::Abgr8888,
-            Size::from((w as i32, h as i32)),
-            false,
-            1,
-            Transform::Normal,
-            None,
-        ) {
-            Ok(buf) => buf,
-            Err(e) => {
-                tracing::error!("failed to upload border texture: {e:?}");
-                continue;
+        // Reuse cached GPU texture if available; upload only when
+        // the pixel cache was rebuilt (layout_dirty cleared it).
+        if texture_cache[i].is_none() {
+            match TextureBuffer::from_memory(
+                renderer,
+                data,
+                Fourcc::Abgr8888,
+                Size::from((w as i32, h as i32)),
+                false,
+                1,
+                Transform::Normal,
+                None,
+            ) {
+                Ok(buf) => texture_cache[i] = Some(buf),
+                Err(e) => {
+                    tracing::error!("failed to upload border texture: {e:?}");
+                    continue;
+                }
             }
+        }
+
+        let texture_buffer = match &texture_cache[i] {
+            Some(tb) => tb,
+            None => continue,
         };
 
         let (off_x, off_y) = offsets.get(i).copied().unwrap_or((0.0, 0.0));
@@ -296,7 +314,7 @@ fn render_border_set(
                 (border_loc.0 - out.location.x) as f64 + off_x,
                 (border_loc.1 - out.location.y) as f64 + off_y,
             )),
-            &texture_buffer,
+            texture_buffer,
             None,
             None,
             None,
@@ -405,6 +423,9 @@ pub fn build_custom_elements(
     if !has_fullscreen {
         refresh_border_tile_cache(state);
         let tile = state.border_tile_pixmap.as_ref().map(|(_, pm)| pm);
+        if state.layout_dirty {
+            state.border_texture_cache.clear();
+        }
         rasterize_border_set(
             &state.border_rects, &mut state.border_cache, state.layout_dirty,
             state.config.general.border_px, state.config.general.border_radius as f32,
@@ -413,7 +434,9 @@ pub fn build_custom_elements(
         );
         state.layout_dirty = false;
         elements.extend(render_border_set(
-            &state.border_rects, &state.border_cache, &state.border_offsets,
+            &state.border_rects, &state.border_cache,
+            &mut state.border_texture_cache,
+            &state.border_offsets,
             &state.window_base_positions, &state.space, state.config.general.border_px,
             state.outputs.get(output_idx), renderer,
         ));
@@ -634,6 +657,9 @@ pub fn build_scratchpad_borders(
     if !has_fullscreen {
         refresh_border_tile_cache(state);
         let tile = state.border_tile_pixmap.as_ref().map(|(_, pm)| pm);
+        if state.scratchpad_layout_dirty {
+            state.scratchpad_border_texture_cache.clear();
+        }
         rasterize_border_set(
             &state.scratchpad_border_rects, &mut state.scratchpad_border_cache,
             state.scratchpad_layout_dirty,
@@ -642,11 +668,12 @@ pub fn build_scratchpad_borders(
             tile,
         );
         state.scratchpad_layout_dirty = false;
-        // Scratchpad borders — window_base_positions has scratchpad windows after regular ones
         let sp_window_offset = state.border_rects.len();
         let sp_windows: Vec<_> = state.window_base_positions.get(sp_window_offset..).unwrap_or(&[]).to_vec();
         elements.extend(render_border_set(
-            &state.scratchpad_border_rects, &state.scratchpad_border_cache, &state.scratchpad_border_offsets,
+            &state.scratchpad_border_rects, &state.scratchpad_border_cache,
+            &mut state.scratchpad_border_texture_cache,
+            &state.scratchpad_border_offsets,
             &sp_windows, &state.space, state.config.general.border_px,
             state.outputs.get(output_idx), renderer,
         ));
