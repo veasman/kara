@@ -64,8 +64,8 @@ use wayland_client::{
 use crate::beautify_ipc::{self, Request, Response, ThemeEntry, VariantEntry, WallpaperEntry};
 use crate::thumb::ThumbCache;
 
-const WIDTH: u32 = 820;
-const HEIGHT: u32 = 500;
+const WIDTH: u32 = 420;
+const HEIGHT: u32 = 460;
 const PADDING: i32 = 18;
 const SECTION_LABEL_WIDTH: i32 = 90;
 const CHIP_HEIGHT: i32 = 32;
@@ -216,6 +216,11 @@ pub fn run(theme: ThemeColors) {
         layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some("kara-picker"), None);
     layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
     layer.set_size(WIDTH, HEIGHT);
+    layer.set_anchor(
+        smithay_client_toolkit::shell::wlr_layer::Anchor::TOP
+            | smithay_client_toolkit::shell::wlr_layer::Anchor::RIGHT,
+    );
+    layer.set_margin(8, 8, 0, 0);
     layer.commit();
 
     let pool = SlotPool::new(WIDTH as usize * HEIGHT as usize * 4, &shm)
