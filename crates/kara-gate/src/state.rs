@@ -1283,6 +1283,10 @@ impl Gate {
         //      names in either direction)
         if !app_id.is_empty() {
             let app_lower = app_id.to_ascii_lowercase();
+            tracing::debug!(
+                "route check: app_id={app_id:?} pending_routes={:?}",
+                self.pending_autostart_routes.iter().map(|(a, o, w, _)| format!("{a}→{o}:{w}")).collect::<Vec<_>>(),
+            );
             if let Some(pos) = self
                 .pending_autostart_routes
                 .iter()
@@ -1294,8 +1298,14 @@ impl Gate {
                         || route_lower.contains(&app_lower)
                 })
             {
+                // Read the route but DON'T remove it. The route stays
+                // active until TTL expiry so subsequent windows from
+                // the same app (e.g. Floorp spawning multiple toplevels
+                // for tabs) all land on the same output + workspace.
+                // The 30s TTL prevents stale routes from trapping
+                // windows spawned manually after the startup window.
                 let (_, target_out, target_ws, _) =
-                    self.pending_autostart_routes.remove(pos);
+                    self.pending_autostart_routes[pos].clone();
                 if target_out < self.workspaces.len() && target_ws < self.workspaces[target_out].len() {
                     self.workspaces[target_out][target_ws]
                         .add_client_floating(window.clone(), false);
