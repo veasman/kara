@@ -503,11 +503,13 @@ impl Gate {
             }
         }
 
-        // Update bar font
+        // Update bar font + clear blur cache so the next frame
+        // re-captures from the (potentially new) wallpaper.
         self.bar_renderer.set_font(
             &self.config.general.font,
             self.config.general.font_size,
         );
+        self.bar_blur_cache = None;
 
         // Recompute workarea for bar height changes
         self.recompute_workarea();

@@ -61,6 +61,7 @@ impl Gate {
                     self.wallpaper_pending = None;
                     if new_wp.is_some() {
                         self.wallpaper = new_wp;
+                        self.bar_blur_cache = None;
                     } else {
                         tracing::warn!("async wallpaper decode returned None");
                     }

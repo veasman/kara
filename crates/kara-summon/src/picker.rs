@@ -477,6 +477,18 @@ impl Picker {
             variant: variant_name,
             wallpaper: wallpaper_path,
         });
+
+        // Re-fetch the active theme colors so the picker itself
+        // redraws with the newly applied palette. Without this the
+        // picker stays in the old colors while the rest of the
+        // desktop updates around it.
+        if let Ok(mut client) = kara_ipc::IpcClient::connect() {
+            if let Ok(kara_ipc::Response::Theme { colors }) =
+                client.request(&kara_ipc::Request::GetTheme)
+            {
+                self.theme_colors = colors;
+            }
+        }
     }
 
     fn draw(&mut self) {
