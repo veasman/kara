@@ -116,6 +116,7 @@ fn main() {
             .as_deref()
             .and_then(|p| tiny_skia::Pixmap::load_png(p).ok()),
         overlay_pixmap: None,
+        last_highlight: (-1, -1, -1, -1),
         theme,
         windows,
         selection: SelectionState::new(0, 0),
@@ -290,6 +291,8 @@ struct Glimpse {
     /// the cost of allocating + zeroing a full-screen RGBA buffer
     /// on every hover move.
     overlay_pixmap: Option<tiny_skia::Pixmap>,
+    /// Last rendered highlight rect — skip redraw when unchanged.
+    last_highlight: (i32, i32, i32, i32),
 }
 
 impl Glimpse {
@@ -299,6 +302,14 @@ impl Glimpse {
         }
 
         let highlight = self.selection.highlight_rect();
+
+        // Skip redraw when the highlight hasn't moved — avoids the
+        // full overlay re-render + shm copy on every pointer micro-
+        // motion within the same window/fullscreen zone.
+        if highlight == self.last_highlight {
+            return;
+        }
+        self.last_highlight = highlight;
 
         // Lazily allocate (or re-allocate on resize) the overlay pixmap.
         let need_alloc = self
@@ -573,6 +584,11 @@ impl PointerHandler for Glimpse {
     ) {
         for event in events {
             match event.kind {
+                PointerEventKind::Enter { .. } => {
+                    self.selection.pointer = (event.position.0, event.position.1);
+                    self.selection.update_hover(&self.windows);
+                    self.draw(qh);
+                }
                 PointerEventKind::Motion { .. } => {
                     self.selection.pointer = (event.position.0, event.position.1);
                     self.selection.update_hover(&self.windows);

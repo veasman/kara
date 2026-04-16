@@ -106,15 +106,15 @@ tint_from_palette = "$accent"
 [bar]
 background = false
 background_alpha = 0
-height = 36
+height = 32
 pill = true
 hide_center = true
-edge_padding_x = 18
-edge_padding_y = 6
-module_gap = 14
-module_padding_x = 16
-module_padding_y = 8
-module_rounded = 10
+edge_padding_x = 14
+edge_padding_y = 2
+module_gap = 12
+module_padding_x = 14
+module_padding_y = 10
+module_rounded = 0
 font_family = "FiraCode Nerd Font"
 font_size = 12
 
