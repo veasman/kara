@@ -73,11 +73,16 @@ color_urgent = "$warning"
 
 [bar]
 hide_center = true
+height = 38
 background = true
-background_alpha = 140
+background_color = "$bg"
+background_alpha = 60
 blur = true
+edge_padding_x = 14
+edge_padding_y = 4
+module_gap = 14
 font_family = "ProFont IIx Nerd Font"
-font_size = 16
+font_size = 18
 
 [animations]
 duration_ms_fast = 120

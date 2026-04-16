@@ -221,7 +221,7 @@ fn build_memory(ctx: &ModuleContext) -> ModuleContent {
     }
 
     let text = if ctx.icons {
-        format!("\u{f035b} {}%", st.used_percent) // 󰍛 memory icon
+        format!("\u{f233} {}%", st.used_percent) //  ram-banks icon
     } else {
         format!("mem {}%", st.used_percent)
     };
@@ -242,7 +242,7 @@ fn build_cpu(ctx: &ModuleContext) -> ModuleContent {
     }
 
     let text = if ctx.icons {
-        format!("\u{f4bc} {}%", st.usage_percent) // 󰒼 cpu/chip icon
+        format!("\u{f2db} {}%", st.usage_percent) //  microchip icon
     } else {
         format!("cpu {}%", st.usage_percent)
     };
