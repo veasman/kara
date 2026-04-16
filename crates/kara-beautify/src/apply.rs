@@ -6,7 +6,7 @@ use kara_theme::resolve_theme;
 use kara_theme::render::kara_gate::{KaraGateRenderContext, render_kara_gate_theme_with};
 use kara_theme::render::{
     floorp::render_floorp_user_js,
-    foot::{foot_color_pairs, foot_color_section, render_foot_theme},
+    foot::{foot_color_pairs, foot_color_section, foot_main_pairs, render_foot_theme},
     fzf::render_fzf_theme, gtk::gtk_settings_pairs, kitty::render_kitty_theme,
     nvim::render_nvim_theme, session::render_session_theme, tmux::render_tmux_theme,
 };
@@ -125,6 +125,9 @@ pub fn apply_theme_file(
     let foot_pairs = foot_color_pairs(&resolved);
     let foot_pairs_ref: Vec<(&str, String)> =
         foot_pairs.iter().map(|(k, v)| (*k, v.clone())).collect();
+    let foot_main = foot_main_pairs(&resolved);
+    let foot_main_ref: Vec<(&str, String)> =
+        foot_main.iter().map(|(k, v)| (*k, v.clone())).collect();
     let nvim = render_nvim_theme(&resolved);
     let tmux = render_tmux_theme(&resolved);
     let fzf = render_fzf_theme(&resolved);
@@ -229,6 +232,10 @@ pub fn apply_theme_file(
         // signal, so the file patch only matters for new sessions.
         let _ =
             patch_ini_section(&paths.foot_config_path(), foot_section, &foot_pairs_ref)?;
+        // Patch [main] font= so the next foot server startup uses the
+        // theme's chosen font. Not live — font is cached at server start.
+        let _ =
+            patch_ini_section(&paths.foot_config_path(), "main", &foot_main_ref)?;
         // Human-readable preview for `kara-beautify render foot`
         // and manual inspection. Not on the reload path.
         let _ = write_if_changed(&paths.foot_theme_path(), &foot_preview)?;

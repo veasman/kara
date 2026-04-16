@@ -84,6 +84,18 @@ pub fn foot_color_pairs(theme: &ResolvedTheme) -> Vec<(&'static str, String)> {
     ]
 }
 
+/// Return `[main]` section key pairs for foot.ini. Currently just
+/// the font specification. foot parses font as `<family>:size=<N>`.
+/// Patched into `[main]` alongside the color section patch so the
+/// NEXT foot server startup picks up the theme's chosen font. Not
+/// live-reloadable (foot caches font at server start).
+pub fn foot_main_pairs(theme: &ResolvedTheme) -> Vec<(&'static str, String)> {
+    vec![(
+        "font",
+        format!("{}:size={}", theme.fonts.mono_family, theme.fonts.mono_size),
+    )]
+}
+
 /// Human-readable dump of the section kara-beautify will patch
 /// into foot.ini. Used by `kara-beautify render <theme> foot` for
 /// dry-inspection — NOT used on the apply path, which goes

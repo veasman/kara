@@ -52,10 +52,10 @@ transparency = 0.92
 blur = false
 
 [fonts]
-ui_family = "FiraCode Nerd Font"
-ui_size = 11
-mono_family = "FiraCode Nerd Font"
-mono_size = 13
+ui_family = "3270 Nerd Font"
+ui_size = 12
+mono_family = "3270 Nerd Font"
+mono_size = 14
 
 [cursor]
 # Skyrim — medieval-themed cursor that matches the gothic fantasy
@@ -115,7 +115,7 @@ module_gap = 14
 module_padding_x = 16
 module_padding_y = 12
 module_rounded = 0
-font_family = "FiraCode Nerd Font"
+font_family = "3270 Nerd Font"
 font_size = 14
 
 # Reserved — once kara-sight wires module SVG surfaces, this slot
