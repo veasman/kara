@@ -40,17 +40,17 @@ accent_strategy = "balanced"
 contrast = "medium"
 
 [style]
-radius = "small"
+radius = "none"
 density = "normal"
 surface_style = "soft"
 transparency = 0.92
 blur = false
 
 [fonts]
-ui_family = "SpaceMono Nerd Font"
-ui_size = 11
+ui_family = "ProFont IIx Nerd Font"
+ui_size = 12
 mono_family = "ProFont IIx Nerd Font"
-mono_size = 13
+mono_size = 14
 
 [cursor]
 # Nordzy fits the cool moonlight palette. AUR: nordzy-cursors
@@ -66,15 +66,25 @@ size = 24
 
 [window_border]
 width = 2
-radius = 6
+radius = 0
 color_focused = "$accent"
 color_unfocused = "$bg2"
 color_urgent = "$warning"
 
 [bar]
 hide_center = true
-font_family = "SpaceMono Nerd Font"
-font_size = 12
+height = 36
+pill = true
+background = false
+background_alpha = 0
+edge_padding_x = 14
+edge_padding_y = 3
+module_gap = 12
+module_padding_x = 14
+module_padding_y = 10
+module_rounded = 0
+font_family = "ProFont IIx Nerd Font"
+font_size = 14
 
 [animations]
 duration_ms_fast = 120
