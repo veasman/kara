@@ -104,6 +104,18 @@ pub struct ThemeColors {
     pub accent_soft: u32,
     pub border: u32,
 
+    // ── Bar geometry ────────────────────────────────────────────────
+    /// Bar height in pixels. Used by kara-summon to position the
+    /// theme picker directly below the bar.
+    #[serde(default)]
+    pub bar_height: Option<u16>,
+    /// Whether the bar draws its own background surface.
+    #[serde(default)]
+    pub bar_background: Option<bool>,
+    /// Bar background alpha (0-255).
+    #[serde(default)]
+    pub bar_background_alpha: Option<u8>,
+
     // ── Window decoration (optional) ───────────────────────────────
     /// Theme-driven border width in pixels. `None` → consumers use
     /// their own default (typically 2px).

@@ -165,6 +165,9 @@ impl Gate {
                         accent: t.accent,
                         accent_soft: t.accent_soft,
                         border: t.border,
+                        bar_height: Some(self.config.bar.height as u16),
+                        bar_background: Some(self.config.bar.background),
+                        bar_background_alpha: Some(self.config.bar.background_alpha),
                         // Surface the theme-driven window-border
                         // decoration so kara-glimpse / kara-whisper
                         // can draw the same chrome as real kara-gate

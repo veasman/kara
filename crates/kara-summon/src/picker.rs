@@ -231,18 +231,10 @@ pub fn run(theme: ThemeColors) {
         smithay_client_toolkit::shell::wlr_layer::Anchor::TOP
             | smithay_client_toolkit::shell::wlr_layer::Anchor::RIGHT,
     );
-    // Flush with the bar's bottom edge — the picker drops down
-    // from where the bar ends. Top margin = bar height (queried
-    // from compositor via IPC, fallback 26).
-    let bar_h = theme
-        .border_px
-        .map(|_| 0i32) // just use a fixed fallback for bar height
-        .unwrap_or(0);
-    let _ = bar_h;
-    // Use a small margin so the picker sits just below the bar.
-    // The picker has flat top corners so it looks like an
-    // extension of the bar area flowing downward.
-    layer.set_margin(0, 8, 0, 0);
+    // Position directly below the bar so the picker reads as a
+    // dropdown panel emerging from the bar's bottom edge.
+    let bar_h = theme.bar_height.unwrap_or(26) as i32;
+    layer.set_margin(bar_h, 0, 0, 0);
     layer.commit();
 
     let pool = SlotPool::new(WIDTH as usize * HEIGHT as usize * 4, &shm)
@@ -529,49 +521,57 @@ impl Picker {
         // borrow on self while the draw helpers take `&mut self`.
         let t = self.theme_colors.clone();
 
-        // Background — semi-transparent, flat top edge so the panel
-        // looks like it emerges from the screen/bar edge. Only the
-        // bottom corners are rounded.
+        // Background — matches the bar's visual treatment. When the
+        // bar has a background, the picker uses the same bg + alpha
+        // to look like a continuation. When the bar has no background,
+        // the picker uses a slightly more opaque bg with a top accent
+        // line.
         {
+            let bar_has_bg = t.bar_background.unwrap_or(true);
+            let alpha = if bar_has_bg {
+                t.bar_background_alpha.unwrap_or(220)
+            } else {
+                230
+            };
             let bg = t.bg;
             let r = ((bg >> 16) & 0xFF) as u8;
             let g = ((bg >> 8) & 0xFF) as u8;
             let b = (bg & 0xFF) as u8;
 
-            // Full rect with no rounding (flat top)
+            // Flat top (connects to bar), rounded bottom.
             if let Some(rect) = tiny_skia::Rect::from_xywh(0.0, 0.0, w as f32, h as f32) {
                 let mut paint = tiny_skia::Paint::default();
-                paint.set_color(tiny_skia::Color::from_rgba8(r, g, b, 230));
+                paint.set_color(tiny_skia::Color::from_rgba8(r, g, b, alpha));
                 pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
             }
-            // Round the bottom corners by drawing a rounded rect
-            // over just the bottom portion.
+            // Round bottom corners with a slightly inset fill.
             fill_rounded_rect(
                 &mut pixmap,
                 0.0, h as f32 - BORDER_RADIUS * 2.0, w as f32, BORDER_RADIUS * 2.0,
                 BORDER_RADIUS,
-                tiny_skia::Color::from_rgba8(r, g, b, 230),
+                tiny_skia::Color::from_rgba8(r, g, b, alpha),
             );
-        }
 
-        // Accent bar at the very top — visual connector to the bar
-        // above. Thin, bright, spans the full width.
-        {
-            let accent = t.accent;
-            let ar = ((accent >> 16) & 0xFF) as u8;
-            let ag = ((accent >> 8) & 0xFF) as u8;
-            let ab = (accent & 0xFF) as u8;
-            if let Some(rect) = tiny_skia::Rect::from_xywh(0.0, 0.0, w as f32, 2.0) {
-                let mut paint = tiny_skia::Paint::default();
-                paint.set_color(tiny_skia::Color::from_rgba8(ar, ag, ab, 200));
-                pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
+            if !bar_has_bg {
+                // No bar background — add a top accent line so the
+                // picker has a clear visual anchor.
+                let a = t.accent;
+                let ar = ((a >> 16) & 0xFF) as u8;
+                let ag = ((a >> 8) & 0xFF) as u8;
+                let ab = (a & 0xFF) as u8;
+                if let Some(rect) = tiny_skia::Rect::from_xywh(0.0, 0.0, w as f32, 2.0) {
+                    let mut paint = tiny_skia::Paint::default();
+                    paint.set_color(tiny_skia::Color::from_rgba8(ar, ag, ab, 180));
+                    pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
+                }
             }
         }
 
-        // Side + bottom borders (skip top — the accent bar handles it)
+        // Side + bottom border only — top connects to bar seamlessly.
+        // Left edge, bottom edge, right edge stroked; top edge open.
         stroke_rounded_rect(
             &mut pixmap,
-            0.5, 2.0, w as f32 - 1.0, h as f32 - 2.5,
+            0.5, 0.0, w as f32 - 1.0, h as f32 - 0.5,
             BORDER_RADIUS, color_from_u32(t.border), 1.0,
         );
 

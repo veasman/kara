@@ -45,6 +45,9 @@ fn default_theme() -> kara_ipc::ThemeColors {
         border_px: None,
         border_radius: None,
         border_tile_path: None,
+                bar_height: None,
+                bar_background: None,
+                bar_background_alpha: None,
     }
 }
 
