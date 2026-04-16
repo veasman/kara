@@ -4,8 +4,10 @@ use std::sync::mpsc;
 pub enum DbusEvent {
     Notify {
         app_name: String,
+        app_icon: String,
         summary: String,
         body: String,
+        actions: Vec<(String, String)>, // (id, label) pairs
         urgency: u8, // 0=low, 1=normal, 2=critical
         expire_timeout: i32,
         reply: mpsc::SyncSender<u32>,
@@ -22,17 +24,21 @@ struct NotificationsService {
 #[zbus::interface(name = "org.freedesktop.Notifications")]
 impl NotificationsService {
     fn get_capabilities(&self) -> Vec<String> {
-        vec!["body".to_string()]
+        vec![
+            "body".to_string(),
+            "body-markup".to_string(),
+            "actions".to_string(),
+        ]
     }
 
     fn notify(
         &self,
         app_name: String,
         _replaces_id: u32,
-        _app_icon: String,
+        app_icon: String,
         summary: String,
         body: String,
-        _actions: Vec<String>,
+        actions: Vec<String>,
         hints: HashMap<String, zbus::zvariant::OwnedValue>,
         expire_timeout: i32,
     ) -> u32 {
@@ -41,12 +47,20 @@ impl NotificationsService {
             .and_then(|v| <u8>::try_from(v).ok())
             .unwrap_or(1);
 
+        // Actions come as [id, label, id, label, ...] — pair them.
+        let action_pairs: Vec<(String, String)> = actions
+            .chunks_exact(2)
+            .map(|pair| (pair[0].clone(), pair[1].clone()))
+            .collect();
+
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.tx
             .send(DbusEvent::Notify {
                 app_name,
+                app_icon,
                 summary,
                 body,
+                actions: action_pairs,
                 urgency,
                 expire_timeout,
                 reply: reply_tx,

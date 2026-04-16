@@ -10,8 +10,10 @@ pub enum Urgency {
 pub struct Notification {
     pub id: u32,
     pub app_name: String,
+    pub app_icon: String,
     pub summary: String,
     pub body: String,
+    pub actions: Vec<(String, String)>, // (id, label) pairs
     pub urgency: Urgency,
     pub expire_ms: i32, // -1 = server decides, 0 = never
     pub created_at: Instant,
@@ -33,8 +35,10 @@ impl NotificationQueue {
     pub fn add(
         &mut self,
         app_name: String,
+        app_icon: String,
         summary: String,
         body: String,
+        actions: Vec<(String, String)>,
         urgency: Urgency,
         expire_ms: i32,
     ) -> u32 {
@@ -43,8 +47,10 @@ impl NotificationQueue {
         self.notifications.push(Notification {
             id,
             app_name,
+            app_icon,
             summary,
             body,
+            actions,
             urgency,
             expire_ms,
             created_at: Instant::now(),

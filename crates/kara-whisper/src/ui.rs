@@ -7,7 +7,8 @@ use kara_ui::text::TextRenderer;
 use tiny_skia::Pixmap;
 
 const CARD_WIDTH: u32 = 380;
-const CARD_HEIGHT: u32 = 90;
+const CARD_BASE_HEIGHT: u32 = 90;
+const CARD_ACTION_ROW: u32 = 28;
 const GAP: u32 = 8;
 const PADDING: f32 = 12.0;
 const BORDER_RADIUS: f32 = 8.0;
@@ -35,11 +36,26 @@ impl NotificationUI {
         self.theme = theme;
     }
 
-    pub fn total_height(count: usize) -> u32 {
-        if count == 0 {
+    pub fn total_height_for(notifications: &[Notification]) -> u32 {
+        if notifications.is_empty() {
             return 1;
         }
-        (count as u32) * CARD_HEIGHT + (count.saturating_sub(1) as u32) * GAP
+        let mut h = 0u32;
+        for (i, n) in notifications.iter().enumerate() {
+            h += Self::card_height(n);
+            if i + 1 < notifications.len() {
+                h += GAP;
+            }
+        }
+        h
+    }
+
+    fn card_height(n: &Notification) -> u32 {
+        if n.actions.is_empty() {
+            CARD_BASE_HEIGHT
+        } else {
+            CARD_BASE_HEIGHT + CARD_ACTION_ROW
+        }
     }
 
     pub fn card_width() -> u32 {
@@ -51,7 +67,7 @@ impl NotificationUI {
             return None;
         }
 
-        let height = Self::total_height(notifications.len());
+        let height = Self::total_height_for(notifications);
         let mut pixmap = Pixmap::new(CARD_WIDTH, height)?;
 
         // Load the theme's window border tile once per render. When
@@ -70,8 +86,9 @@ impl NotificationUI {
             .map(|r| r as f32)
             .unwrap_or(BORDER_RADIUS);
 
-        for (i, notif) in notifications.iter().enumerate() {
-            let y_off = (i as u32 * (CARD_HEIGHT + GAP)) as f32;
+        let mut y_off = 0.0f32;
+        for (_i, notif) in notifications.iter().enumerate() {
+            let card_h = Self::card_height(notif) as f32;
 
             // Theme-driven border chrome — draw the outer tiled
             // border first, then the inner card surface on top.
@@ -84,7 +101,7 @@ impl NotificationUI {
                         -bw,
                         y_off - bw,
                         CARD_WIDTH as f32 + bw * 2.0,
-                        CARD_HEIGHT as f32 + bw * 2.0,
+                        card_h + bw * 2.0,
                         theme_border_radius + bw,
                         tile_pm,
                     );
@@ -94,7 +111,7 @@ impl NotificationUI {
                         0.0,
                         y_off,
                         CARD_WIDTH as f32,
-                        CARD_HEIGHT as f32,
+                        card_h,
                         theme_border_radius,
                         color_from_u32(self.theme.surface),
                     );
@@ -104,7 +121,7 @@ impl NotificationUI {
                         0.0,
                         y_off,
                         CARD_WIDTH as f32,
-                        CARD_HEIGHT as f32,
+                        card_h,
                         theme_border_radius,
                         color_from_u32(self.theme.surface),
                     );
@@ -115,7 +132,7 @@ impl NotificationUI {
                     0.0,
                     y_off,
                     CARD_WIDTH as f32,
-                    CARD_HEIGHT as f32,
+                    card_h,
                     BORDER_RADIUS,
                     color_from_u32(self.theme.surface),
                 );
@@ -128,7 +145,7 @@ impl NotificationUI {
                     1.0,
                     y_off + 1.0,
                     CARD_WIDTH as f32 - 2.0,
-                    CARD_HEIGHT as f32 - 2.0,
+                    card_h - 2.0,
                     BORDER_RADIUS,
                     color_from_u32(self.theme.accent),
                     2.0,
@@ -158,17 +175,55 @@ impl NotificationUI {
                 self.theme.text_muted,
             );
 
-            // App name (bottom-right, small)
+            // App name (bottom-right of the base area, small)
+            let base_bottom = y_off + CARD_BASE_HEIGHT as f32;
             if !notif.app_name.is_empty() {
                 let app_w = self.text_small.measure(&notif.app_name);
                 self.text_small.draw(
                     &mut pixmap,
                     &notif.app_name,
                     CARD_WIDTH as f32 - PADDING - app_w as f32,
-                    y_off + CARD_HEIGHT as f32 - PADDING - 2.0,
+                    base_bottom - PADDING - 2.0,
                     self.theme.text_muted,
                 );
             }
+
+            // Action buttons (below the body, if any)
+            if !notif.actions.is_empty() {
+                let btn_y = base_bottom + 2.0;
+                let btn_h = CARD_ACTION_ROW as f32 - 4.0;
+                let btn_gap = 6.0f32;
+                let n_btns = notif.actions.len() as f32;
+                let total_gap = btn_gap * (n_btns - 1.0).max(0.0);
+                let avail = CARD_WIDTH as f32 - PADDING * 2.0 - total_gap;
+                let btn_w = (avail / n_btns).min(120.0);
+
+                let mut bx = PADDING;
+                for (_id, label) in &notif.actions {
+                    fill_rounded_rect(
+                        &mut pixmap,
+                        bx,
+                        btn_y,
+                        btn_w,
+                        btn_h,
+                        4.0,
+                        color_from_u32(self.theme.accent_soft),
+                    );
+                    let label_w = self.text_small.measure(label) as f32;
+                    let label_x = bx + (btn_w - label_w) / 2.0;
+                    let label_y = self.text_small.center_y_offset(btn_y + btn_h / 2.0);
+                    self.text_small.draw(
+                        &mut pixmap,
+                        label,
+                        label_x,
+                        label_y,
+                        self.theme.text,
+                    );
+                    bx += btn_w + btn_gap;
+                }
+            }
+
+            y_off += card_h + GAP as f32;
         }
 
         Some(pixmap)

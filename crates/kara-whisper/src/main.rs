@@ -98,7 +98,7 @@ impl Whisper {
             return;
         }
 
-        let new_height = NotificationUI::total_height(notifications.len());
+        let new_height = NotificationUI::total_height_for(notifications);
         let new_width = NotificationUI::card_width();
 
         if new_width != self.width || new_height != self.height {
@@ -370,8 +370,10 @@ fn main() {
             match event {
                 DbusEvent::Notify {
                     app_name,
+                    app_icon,
                     summary,
                     body,
+                    actions,
                     urgency,
                     expire_timeout,
                     reply,
@@ -381,7 +383,7 @@ fn main() {
                         2 => Urgency::Critical,
                         _ => Urgency::Normal,
                     };
-                    let id = whisper.queue.add(app_name, summary, body, u, expire_timeout);
+                    let id = whisper.queue.add(app_name, app_icon, summary, body, actions, u, expire_timeout);
                     reply.send(id).ok();
                     changed = true;
                 }
@@ -403,8 +405,10 @@ fn main() {
                 PopoverEvent::Show { text, duration_ms } => {
                     whisper.queue.add(
                         "kara".to_string(),
+                        String::new(),
                         text,
                         String::new(),
+                        Vec::new(),
                         Urgency::Low,
                         duration_ms as i32,
                     );
