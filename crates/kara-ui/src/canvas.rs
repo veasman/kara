@@ -98,6 +98,39 @@ pub fn fill_rounded_rect_with_pattern(
     }
 }
 
+/// Stroke a rounded rectangle outline with a repeating pattern.
+pub fn stroke_rounded_rect_with_pattern(
+    pixmap: &mut Pixmap,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    r: f32,
+    tile: &Pixmap,
+    stroke_width: f32,
+) {
+    let pattern_transform = Transform::from_translate(x, y);
+    let shader = tiny_skia::Pattern::new(
+        tile.as_ref(),
+        tiny_skia::SpreadMode::Repeat,
+        tiny_skia::FilterQuality::Nearest,
+        1.0,
+        pattern_transform,
+    );
+    let paint = Paint {
+        shader,
+        anti_alias: r > 0.0,
+        ..Default::default()
+    };
+    let stroke = tiny_skia::Stroke {
+        width: stroke_width,
+        ..Default::default()
+    };
+    if let Some(path) = rounded_rect_path(x, y, w, h, r) {
+        pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+    }
+}
+
 /// Stroke a rounded rectangle border on a pixmap.
 pub fn stroke_rounded_rect(pixmap: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, r: f32, color: Color, width: f32) {
     let mut paint = Paint::default();

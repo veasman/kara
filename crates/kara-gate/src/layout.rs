@@ -44,7 +44,7 @@ pub fn layout_workspace(
     // the monitor. Effective gap grows to 2*border_px so adjacent
     // tiles' borders don't overlap at the midpoint.
     let padded_area = inset_rect(area, border_px);
-    let effective_gap = ws.gap_px.max(border_px * 2);
+    let effective_gap = ws.gap_px + border_px * 2;
 
     // Separate tiled and floating
     let tiled_indices = ws.tiled_indices();

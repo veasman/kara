@@ -485,18 +485,33 @@ fn draw_pill(
 
     let radius = bar_config.module_rounded.max(0) as f32;
 
-    if let Some(tile_pm) = tile {
-        // Tileable SVG background — fill the rounded rect with a
-        // repeating pattern sourced from the pre-rasterized tile.
-        // Falls back to solid color if the path is somehow empty.
-        use kara_ui::canvas::fill_rounded_rect_with_pattern;
-        fill_rounded_rect_with_pattern(pixmap, x, y, w, h, radius, tile_pm);
-    } else {
-        let fill = bar_config.module_background.unwrap_or(theme.surface);
-        fill_rounded_rect(pixmap, x, y, w, h, radius, rgba(fill, bar_config.module_alpha));
-    }
+    // Solid surface fill inside the pill — always drawn regardless
+    // of whether the tile provides the outline or a flat color does.
+    let fill = bar_config.module_background.unwrap_or(theme.surface);
+    fill_rounded_rect(pixmap, x, y, w, h, radius, rgba(fill, bar_config.module_alpha));
 
-    if bar_config.module_border_px > 0 {
+    if let Some(tile_pm) = tile {
+        // Theme supplies an SVG tile → stroke the pill OUTLINE with
+        // the tiled pattern. Interior stays the solid surface fill
+        // above. Stroke width = module_border_px or a fallback of
+        // 2px so the tile is visible even without an explicit width.
+        use kara_ui::canvas::stroke_rounded_rect_with_pattern;
+        let stroke_w = if bar_config.module_border_px > 0 {
+            bar_config.module_border_px as f32
+        } else {
+            2.0
+        };
+        stroke_rounded_rect_with_pattern(
+            pixmap,
+            x + stroke_w / 2.0,
+            y + stroke_w / 2.0,
+            w - stroke_w,
+            h - stroke_w,
+            (radius - stroke_w / 2.0).max(0.0),
+            tile_pm,
+            stroke_w,
+        );
+    } else if bar_config.module_border_px > 0 {
         let border = bar_config.module_border_color.unwrap_or(theme.border);
         stroke_rounded_rect(
             pixmap,
