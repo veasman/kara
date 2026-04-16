@@ -126,15 +126,18 @@ contrast = "medium"
 [variants.deep]
 wallpaper = "deep.mp4"
 [variants.deep.palette]
-# Midnight navy — dense, late-night low-light.
-primary = "#3b4a6b"
+# Midnight navy — lightened from #3b4a6b so accent text
+# stays readable against dark backgrounds.
+primary = "#5b6d96"
 accent_strategy = "balanced"
 contrast = "medium"
 
 [variants.frost]
 wallpaper = "frost.mp4"
 [variants.frost.palette]
-# Icy cyan — waxing moon over snow.
-primary = "#a6c4c8"
+# Icy cyan — pushed harder into teal to differentiate from
+# calm's warm slate. Should feel like cold neon vs calm's
+# soft silver.
+primary = "#7eccd6"
 accent_strategy = "balanced"
 contrast = "medium"

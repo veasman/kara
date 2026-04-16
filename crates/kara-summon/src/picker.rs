@@ -160,6 +160,12 @@ pub fn run(theme: ThemeColors) {
         Some(Response::State { theme, variant, .. }) => (theme, variant),
         _ => (None, None),
     };
+    // Read current wallpaper from state file for initial selection.
+    let current_wallpaper: Option<String> = dirs::state_dir()
+        .map(|d| d.join("kara/current_wallpaper"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
     // Build groups and pre-fetch the currently-active theme's
     // variants + wallpapers so the picker opens with every
@@ -191,11 +197,16 @@ pub fn run(theme: ThemeColors) {
         0
     };
 
-    // Initial wallpaper selection — for now just start at the
-    // first entry. A future improvement could read the
-    // current_wallpaper state file and position the selection
-    // accordingly so the picker opens on the active wallpaper.
-    let initial_wallpaper_idx = 0;
+    // Position the wallpaper selection on the currently active
+    // wallpaper so variant switches don't reset the user's choice.
+    let initial_wallpaper_idx = if let Some(ref ws) = groups[initial_theme_idx].wallpapers {
+        current_wallpaper
+            .as_deref()
+            .and_then(|path| ws.iter().position(|w| w.path.to_string_lossy() == path || w.path.to_string_lossy().ends_with(&*path)))
+            .unwrap_or(0)
+    } else {
+        0
+    };
 
     let conn = match Connection::connect_to_env() {
         Ok(c) => c,
@@ -220,7 +231,10 @@ pub fn run(theme: ThemeColors) {
         smithay_client_toolkit::shell::wlr_layer::Anchor::TOP
             | smithay_client_toolkit::shell::wlr_layer::Anchor::RIGHT,
     );
-    layer.set_margin(8, 8, 0, 0);
+    // Offset below the bar (typically 26-40px) so the picker
+    // doesn't cover bar modules. Looks like it drops down from
+    // the bar area.
+    layer.set_margin(48, 8, 0, 0);
     layer.commit();
 
     let pool = SlotPool::new(WIDTH as usize * HEIGHT as usize * 4, &shm)
