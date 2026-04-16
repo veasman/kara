@@ -319,17 +319,13 @@ impl BarRenderer {
     }
 
     fn measure_workspaces(&mut self, ctx: &ModuleContext) -> u32 {
-        let glyph_h = {
-            let off = self.text.center_y_offset(0.0);
-            (off.abs() * 2.0).max(self.text.font_size * 0.5)
-        };
         if ctx.icons {
-            let dot_size = glyph_h * 0.5;
-            let gap = glyph_h * 0.45;
+            let dot_size = self.text.font_size * 0.45;
+            let gap = self.text.font_size * 0.4;
             (dot_size * 9.0 + gap * 8.0).ceil() as u32
         } else {
             let digit_w = self.text.measure("0") as f32;
-            let gap = glyph_h * 0.35;
+            let gap = self.text.font_size * 0.3;
             (digit_w * 9.0 + gap * 8.0).ceil() as u32
         }
     }
@@ -412,20 +408,11 @@ impl BarRenderer {
         theme: &Theme,
         ws_ctx: &WorkspaceContext,
     ) {
-        // Scale dots from the cached glyph bbox height so they match
-        // the actual rendered text size regardless of font. Fonts like
-        // ProFont IIx render smaller glyphs than FiraCode at the same
-        // point size — using font_size directly makes dots too small.
-        let glyph_h = {
-            let off = self.text.center_y_offset(0.0);
-            // center_y_offset returns -glyph_center, so glyph height ≈ 2 * |offset|
-            (off.abs() * 2.0).max(self.text.font_size * 0.5)
-        };
-        let dot_size = glyph_h * 0.5;
+        let dot_size = self.text.font_size * 0.45;
         let gap = if ctx.icons {
-            glyph_h * 0.45
+            self.text.font_size * 0.4
         } else {
-            glyph_h * 0.35
+            self.text.font_size * 0.3
         };
 
         let mut cx = x as f32;
