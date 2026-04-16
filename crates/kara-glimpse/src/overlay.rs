@@ -73,20 +73,38 @@ pub fn render_overlay(
         }
     }
 
-    // Draw a bright 2px accent stroke at the inner edge of the
-    // selection so the hovered area is clearly distinguishable from
-    // the dim overlay — even with a dark gothic tile border, this
-    // bright inner ring makes the selection boundary unambiguous.
-    stroke_rounded_rect(
-        &mut pixmap,
-        hx as f32 + 0.5,
-        hy as f32 + 0.5,
-        hw as f32 - 1.0,
-        hh as f32 - 1.0,
-        radius.max(0.0),
-        color_from_u32(theme.accent),
-        2.0,
-    );
+    // Draw a dark red glow at the inner edge of the selection.
+    // Multiple concentric strokes with decreasing alpha simulate
+    // a soft radiance that reads against the dark dim overlay
+    // without the harshness of a single bright stroke.
+    let accent = theme.accent;
+    let ar = ((accent >> 16) & 0xFF) as u8;
+    let ag = ((accent >> 8) & 0xFF) as u8;
+    let ab = (accent & 0xFF) as u8;
+    let glow_steps: &[(f32, u8)] = &[
+        (4.0, 40),   // outer soft haze
+        (3.0, 70),   // mid glow
+        (2.0, 110),  // inner glow
+        (1.0, 180),  // core
+    ];
+    for &(inset, alpha) in glow_steps {
+        let gx = hx as f32 + inset;
+        let gy = hy as f32 + inset;
+        let gw = hw as f32 - inset * 2.0;
+        let gh = hh as f32 - inset * 2.0;
+        if gw > 0.0 && gh > 0.0 {
+            stroke_rounded_rect(
+                &mut pixmap,
+                gx,
+                gy,
+                gw,
+                gh,
+                (radius - inset).max(0.0),
+                tiny_skia::Color::from_rgba8(ar, ag, ab, alpha),
+                1.5,
+            );
+        }
+    }
 
     Some(pixmap)
 }

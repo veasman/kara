@@ -46,23 +46,39 @@ impl TextRenderer {
         self.font_family = family.to_string();
     }
 
-    /// Compute the y offset needed so that text is vertically centered at `center_y`.
-    /// Returns the y value to pass to `draw()`.
+    /// Compute the y offset needed so that text is vertically
+    /// centered at `center_y`. Uses actual font metrics from
+    /// cosmic-text (max_ascent + max_descent from a shaped "Hg"
+    /// reference line) instead of a hardcoded constant. The shaped
+    /// result is cheap — cosmic-text caches shaped runs internally.
     ///
-    /// cosmic-text's `y` parameter is the top of the line area. With
-    /// typical Western font metrics (ascent ≈ 0.8 × font_size,
-    /// cap_height ≈ 0.7 × font_size), the visual center of uppercase
-    /// glyphs sits at `y + ascent - cap_height/2` = `y + 0.45 × fs`.
-    /// To land that at `center_y`: `y = center_y - 0.45 × fs`.
-    ///
-    /// The earlier constant of `+0.3` pushed the buffer top BELOW the
-    /// visual center line, making glyphs render too low inside pills
-    /// with generous `module_padding_y` and showing as uneven vertical
-    /// spacing around the text. Flipped to `-0.35` which lands cleanly
-    /// on cap-height center for FiraCode / the default monospace
-    /// fallback at bar font sizes (11-14 px).
-    pub fn center_y_offset(&self, center_y: f32) -> f32 {
-        center_y - self.font_size * 0.45
+    /// Centering strategy: the visible glyph span from top of
+    /// ascenders to bottom of descenders is `ascent + descent`.
+    /// The visual center of that span relative to the line top is
+    /// `ascent - (ascent + descent) / 2 = (ascent - descent) / 2`.
+    /// To place that at `center_y`: `y = center_y - (ascent - descent) / 2`.
+    pub fn center_y_offset(&mut self, center_y: f32) -> f32 {
+        let metrics = Metrics::new(self.font_size, self.line_height);
+        let mut buffer = Buffer::new(&mut self.font_system, metrics);
+        let attrs = if self.font_family.is_empty() {
+            Attrs::new().family(Family::SansSerif)
+        } else {
+            Attrs::new().family(Family::Name(&self.font_family))
+        };
+        buffer.set_text(&mut self.font_system, "Hg", &attrs, Shaping::Advanced, None);
+        buffer.shape_until_scroll(&mut self.font_system, false);
+
+        if let Some(run) = buffer.layout_runs().next() {
+            // line_top = y offset to top of the line area (usually 0
+            // for a single-line buffer). line_height = full vertical
+            // extent of the line including leading. The visual center
+            // of the line area is at line_top + line_height / 2.
+            // Setting y so that visual center lands at center_y:
+            let visual_center = run.line_top + run.line_height / 2.0;
+            center_y - visual_center
+        } else {
+            center_y - self.font_size / 2.0
+        }
     }
 
     /// Measure the pixel width of a text string.
