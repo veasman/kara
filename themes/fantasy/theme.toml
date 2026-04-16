@@ -58,13 +58,9 @@ mono_family = "FiraCode Nerd Font"
 mono_size = 14
 
 [cursor]
-# Skyrim — medieval-themed cursor that matches the gothic fantasy
-# look. Installed via our skyrim-cursor-theme AUR package. Both
-# Night-Diamond variants read as cold blue despite the name; Rage
-# Gothic is also blue-tinted. Skyrim's earthy medieval art fits
-# the blood/castle palette. Alternates: Bibata-Modern-Amber
-# (warm amber pointer).
-theme = "Skyrim"
+# Night Diamond (Red) — crimson cursor for the gothic fantasy look.
+# AUR: night-diamond-cursor-theme installs Night-Diamond-Red.
+theme = "Night-Diamond-Red"
 size = 24
 
 # ─── Reserved structured slots (no renderer consumes these yet) ────

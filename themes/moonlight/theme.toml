@@ -53,10 +53,9 @@ mono_family = "FiraCode Nerd Font"
 mono_size = 14
 
 [cursor]
-# JYxNeon — neon glow cursor, fits the moonlight/cyber-cool vibe.
-# AUR (local): vxneon-cursor-theme. Installed dir is "JYxNeon"
-# (upstream internal name, not "vxNeon").
-theme = "JYxNeon"
+# Oreo white — clean minimal white cursor for the moonlight palette.
+# Package: oreo-cursors-git (AUR).
+theme = "oreo_white_cursors"
 size = 24
 
 # ─── Reserved structured slots (no renderer consumes these yet) ────

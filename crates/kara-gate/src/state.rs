@@ -1298,14 +1298,17 @@ impl Gate {
                         || route_lower.contains(&app_lower)
                 })
             {
-                // Read the route but DON'T remove it. The route stays
-                // active until TTL expiry so subsequent windows from
-                // the same app (e.g. Floorp spawning multiple toplevels
-                // for tabs) all land on the same output + workspace.
-                // The 30s TTL prevents stale routes from trapping
-                // windows spawned manually after the startup window.
+                // Keep the route alive briefly for multi-toplevel apps
+                // (Floorp spawns 2-3 windows within seconds). On first
+                // match, reset the route's timestamp to "now" and
+                // shorten effective TTL to 3s. Subsequent windows from
+                // the same app arriving within 3s still match. After
+                // that the route expires and manual spawns (e.g. new
+                // foot terminals via keybind) go to the focused output.
                 let (_, target_out, target_ws, _) =
                     self.pending_autostart_routes[pos].clone();
+                self.pending_autostart_routes[pos].3 =
+                    std::time::Instant::now() - std::time::Duration::from_secs(27);
                 if target_out < self.workspaces.len() && target_ws < self.workspaces[target_out].len() {
                     self.workspaces[target_out][target_ws]
                         .add_client_floating(window.clone(), false);
