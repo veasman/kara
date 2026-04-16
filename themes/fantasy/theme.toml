@@ -106,17 +106,17 @@ tint_from_palette = "$accent"
 [bar]
 background = false
 background_alpha = 0
-height = 32
+height = 40
 pill = true
 hide_center = true
-edge_padding_x = 14
-edge_padding_y = 2
-module_gap = 12
-module_padding_x = 14
-module_padding_y = 10
+edge_padding_x = 16
+edge_padding_y = 4
+module_gap = 14
+module_padding_x = 16
+module_padding_y = 12
 module_rounded = 0
 font_family = "FiraCode Nerd Font"
-font_size = 12
+font_size = 14
 
 # Reserved — once kara-sight wires module SVG surfaces, this slot
 # will get rasterized alongside window_border.svg_tile and each pill

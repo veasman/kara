@@ -195,6 +195,23 @@ theme {{
         }
     }
 
+    // Theme-driven bar font override. The bar renderer reads font
+    // from `general { font font_size }`, so we emit a general block
+    // when the theme's [bar] section specifies font_family / font_size.
+    if let Some(bar) = theme.bar.as_ref() {
+        if bar.font_family.is_some() || bar.font_size.is_some() {
+            out.push('\n');
+            out.push_str("general {\n");
+            if let Some(ref f) = bar.font_family {
+                out.push_str(&format!("    font {f}\n"));
+            }
+            if let Some(s) = bar.font_size {
+                out.push_str(&format!("    font_size {s}\n"));
+            }
+            out.push_str("}\n");
+        }
+    }
+
     // Cursor theme + size override. Lets mod+shift+t flip the cursor
     // live: kara-beautify rewrites this include, SIGHUPs kara-gate,
     // reload_config reparses the include, load_cursor_theme flushes
