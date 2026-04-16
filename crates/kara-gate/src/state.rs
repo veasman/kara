@@ -177,7 +177,7 @@ impl ClientData for ClientState {
 /// but short enough that a route from a wrapper like `footclient` — which
 /// exits immediately without producing its own toplevel — can't capture a
 /// window the user manually spawns minutes later with the same app_id.
-const AUTOSTART_ROUTE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+const AUTOSTART_ROUTE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub struct Gate {
     pub display_handle: DisplayHandle,
@@ -1272,11 +1272,27 @@ impl Gate {
         // for placement at a specific (output, workspace) by a recent
         // autostart entry, consume the route and place the window there
         // regardless of where the user's focus currently is.
+        //
+        // Matching priority:
+        //   1. Exact match (app_id == route)
+        //   2. Case-insensitive exact match
+        //   3. Route is a substring of app_id (catches "thunderbird"
+        //      matching "thunderbird-esr", "floorp" matching "floorp",
+        //      etc.)
+        //   4. App_id is a substring of route (catches abbreviated
+        //      names in either direction)
         if !app_id.is_empty() {
+            let app_lower = app_id.to_ascii_lowercase();
             if let Some(pos) = self
                 .pending_autostart_routes
                 .iter()
-                .position(|(a, _, _, _)| a == &app_id)
+                .position(|(a, _, _, _)| {
+                    let route_lower = a.to_ascii_lowercase();
+                    a == &app_id
+                        || route_lower == app_lower
+                        || app_lower.contains(&route_lower)
+                        || route_lower.contains(&app_lower)
+                })
             {
                 let (_, target_out, target_ws, _) =
                     self.pending_autostart_routes.remove(pos);
