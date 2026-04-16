@@ -44,7 +44,15 @@ pub fn layout_workspace(
     // the monitor. Effective gap grows to 2*border_px so adjacent
     // tiles' borders don't overlap at the midpoint.
     let padded_area = inset_rect(area, border_px);
-    let effective_gap = ws.gap_px + border_px * 2;
+    // Outer gap = the user's configured gap; provides the margin
+    // between workarea edges and the outermost tile. Inner gap =
+    // gap_px + 2*border_px; provides enough room between adjacent
+    // tiles for both outward-extending borders + a visible gap equal
+    // to gap_px between those borders. Keeping them separate prevents
+    // the inflated inter-tile gap from applying at the workarea edges
+    // (where there's only one border, not two meeting).
+    let outer_gap = ws.gap_px;
+    let inner_gap = ws.gap_px + border_px * 2;
 
     // Separate tiled and floating
     let tiled_indices = ws.tiled_indices();
@@ -55,7 +63,8 @@ pub fn layout_workspace(
             ws,
             &tiled_indices,
             padded_area,
-            effective_gap,
+            outer_gap,
+            inner_gap,
             border_px,
             focused_idx,
         ),
@@ -63,7 +72,8 @@ pub fn layout_workspace(
             ws,
             &tiled_indices,
             padded_area,
-            effective_gap,
+            outer_gap,
+            inner_gap,
             border_px,
             focused_idx,
         ),
@@ -122,7 +132,8 @@ fn layout_tile_indexed(
     ws: &Workspace,
     indices: &[usize],
     area: Rectangle<i32, Logical>,
-    gap: i32,
+    outer_gap: i32,
+    inner_gap: i32,
     border_px: i32,
     focused_idx: Option<usize>,
 ) -> Vec<ClientGeometry> {
@@ -132,10 +143,10 @@ fn layout_tile_indexed(
         return vec![];
     }
 
-    // Apply outer gaps
+    // Apply outer gaps (workarea edge to outermost tile).
     let area = Rectangle::new(
-        (area.loc.x + gap, area.loc.y + gap).into(),
-        (area.size.w - gap * 2, area.size.h - gap * 2).into(),
+        (area.loc.x + outer_gap, area.loc.y + outer_gap).into(),
+        (area.size.w - outer_gap * 2, area.size.h - outer_gap * 2).into(),
     );
 
     if count == 1 {
@@ -156,13 +167,14 @@ fn layout_tile_indexed(
     } else {
         area.size.w
     };
-    let stack_w = area.size.w - master_w - gap;
+    // inner_gap between master and stack columns.
+    let stack_w = area.size.w - master_w - inner_gap;
 
     let mut result = Vec::with_capacity(count);
 
-    // Master area
+    // inner_gap between vertically stacked masters.
     let master_h_each = if nmaster > 0 {
-        (area.size.h - gap * (nmaster as i32 - 1)) / nmaster as i32
+        (area.size.h - inner_gap * (nmaster as i32 - 1)) / nmaster as i32
     } else {
         area.size.h
     };
@@ -171,7 +183,7 @@ fn layout_tile_indexed(
     let mut si = 0;
     let stack_count = count - nmaster;
     let stack_h_each = if stack_count > 0 {
-        (area.size.h - gap * (stack_count as i32 - 1)) / stack_count as i32
+        (area.size.h - inner_gap * (stack_count as i32 - 1)) / stack_count as i32
     } else {
         area.size.h
     };
@@ -179,14 +191,14 @@ fn layout_tile_indexed(
     for (pos, &client_idx) in indices.iter().enumerate() {
         let tile = if pos < nmaster {
             let r = Rectangle::new(
-                (area.loc.x, area.loc.y + (master_h_each + gap) * mi).into(),
+                (area.loc.x, area.loc.y + (master_h_each + inner_gap) * mi).into(),
                 (master_w, master_h_each).into(),
             );
             mi += 1;
             r
         } else {
             let r = Rectangle::new(
-                (area.loc.x + master_w + gap, area.loc.y + (stack_h_each + gap) * si).into(),
+                (area.loc.x + master_w + inner_gap, area.loc.y + (stack_h_each + inner_gap) * si).into(),
                 (stack_w.max(0), stack_h_each).into(),
             );
             si += 1;
@@ -211,13 +223,14 @@ fn layout_monocle_indexed(
     ws: &Workspace,
     indices: &[usize],
     area: Rectangle<i32, Logical>,
-    gap: i32,
+    outer_gap: i32,
+    _inner_gap: i32,
     border_px: i32,
     focused_idx: Option<usize>,
 ) -> Vec<ClientGeometry> {
     let area = Rectangle::new(
-        (area.loc.x + gap, area.loc.y + gap).into(),
-        (area.size.w - gap * 2, area.size.h - gap * 2).into(),
+        (area.loc.x + outer_gap, area.loc.y + outer_gap).into(),
+        (area.size.w - outer_gap * 2, area.size.h - outer_gap * 2).into(),
     );
 
     let fi = focused_idx.unwrap_or(0);

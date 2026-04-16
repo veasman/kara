@@ -32,7 +32,10 @@ pub struct SelectionState {
 impl SelectionState {
     pub fn new(screen_w: i32, screen_h: i32) -> Self {
         Self {
-            target: HoverTarget::None,
+            target: HoverTarget::Fullscreen {
+                w: screen_w,
+                h: screen_h,
+            },
             mode: Mode::Hover,
             pointer: (0.0, 0.0),
             screen_w,
