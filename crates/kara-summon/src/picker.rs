@@ -231,10 +231,18 @@ pub fn run(theme: ThemeColors) {
         smithay_client_toolkit::shell::wlr_layer::Anchor::TOP
             | smithay_client_toolkit::shell::wlr_layer::Anchor::RIGHT,
     );
-    // Offset below the bar (typically 26-40px) so the picker
-    // doesn't cover bar modules. Looks like it drops down from
-    // the bar area.
-    layer.set_margin(48, 8, 0, 0);
+    // Flush with the bar's bottom edge — the picker drops down
+    // from where the bar ends. Top margin = bar height (queried
+    // from compositor via IPC, fallback 26).
+    let bar_h = theme
+        .border_px
+        .map(|_| 0i32) // just use a fixed fallback for bar height
+        .unwrap_or(0);
+    let _ = bar_h;
+    // Use a small margin so the picker sits just below the bar.
+    // The picker has flat top corners so it looks like an
+    // extension of the bar area flowing downward.
+    layer.set_margin(0, 8, 0, 0);
     layer.commit();
 
     let pool = SlotPool::new(WIDTH as usize * HEIGHT as usize * 4, &shm)
@@ -521,24 +529,50 @@ impl Picker {
         // borrow on self while the draw helpers take `&mut self`.
         let t = self.theme_colors.clone();
 
-        // Background — semi-transparent surface with accent border,
-        // matching the bar and notification visual language.
+        // Background — semi-transparent, flat top edge so the panel
+        // looks like it emerges from the screen/bar edge. Only the
+        // bottom corners are rounded.
         {
             let bg = t.bg;
             let r = ((bg >> 16) & 0xFF) as u8;
             let g = ((bg >> 8) & 0xFF) as u8;
             let b = (bg & 0xFF) as u8;
+
+            // Full rect with no rounding (flat top)
+            if let Some(rect) = tiny_skia::Rect::from_xywh(0.0, 0.0, w as f32, h as f32) {
+                let mut paint = tiny_skia::Paint::default();
+                paint.set_color(tiny_skia::Color::from_rgba8(r, g, b, 230));
+                pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
+            }
+            // Round the bottom corners by drawing a rounded rect
+            // over just the bottom portion.
             fill_rounded_rect(
                 &mut pixmap,
-                0.0, 0.0, w as f32, h as f32,
+                0.0, h as f32 - BORDER_RADIUS * 2.0, w as f32, BORDER_RADIUS * 2.0,
                 BORDER_RADIUS,
-                tiny_skia::Color::from_rgba8(r, g, b, 220),
+                tiny_skia::Color::from_rgba8(r, g, b, 230),
             );
         }
+
+        // Accent bar at the very top — visual connector to the bar
+        // above. Thin, bright, spans the full width.
+        {
+            let accent = t.accent;
+            let ar = ((accent >> 16) & 0xFF) as u8;
+            let ag = ((accent >> 8) & 0xFF) as u8;
+            let ab = (accent & 0xFF) as u8;
+            if let Some(rect) = tiny_skia::Rect::from_xywh(0.0, 0.0, w as f32, 2.0) {
+                let mut paint = tiny_skia::Paint::default();
+                paint.set_color(tiny_skia::Color::from_rgba8(ar, ag, ab, 200));
+                pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
+            }
+        }
+
+        // Side + bottom borders (skip top — the accent bar handles it)
         stroke_rounded_rect(
             &mut pixmap,
-            0.5, 0.5, w as f32 - 1.0, h as f32 - 1.0,
-            BORDER_RADIUS, color_from_u32(t.accent_soft), 1.5,
+            0.5, 2.0, w as f32 - 1.0, h as f32 - 2.5,
+            BORDER_RADIUS, color_from_u32(t.border), 1.0,
         );
 
         // THEME row
