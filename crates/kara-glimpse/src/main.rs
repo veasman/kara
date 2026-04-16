@@ -111,6 +111,10 @@ fn main() {
         layer,
         keyboard: None,
         pointer: None,
+        border_tile_cache: theme
+            .border_tile_path
+            .as_deref()
+            .and_then(|p| tiny_skia::Pixmap::load_png(p).ok()),
         theme,
         windows,
         selection: SelectionState::new(0, 0),
@@ -278,6 +282,9 @@ struct Glimpse {
     windows: Vec<kara_ipc::WindowGeometry>,
     selection: SelectionState,
     save_path: Option<String>,
+    /// Cached decoded border tile pixmap — loaded once at init from
+    /// `theme.border_tile_path`, not per-frame.
+    border_tile_cache: Option<tiny_skia::Pixmap>,
 }
 
 impl Glimpse {
@@ -287,7 +294,13 @@ impl Glimpse {
         }
 
         let highlight = self.selection.highlight_rect();
-        let pixmap = match overlay::render_overlay(self.width, self.height, highlight, &self.theme)
+        let pixmap = match overlay::render_overlay(
+            self.width,
+            self.height,
+            highlight,
+            &self.theme,
+            self.border_tile_cache.as_ref(),
+        )
         {
             Some(p) => p,
             None => return,

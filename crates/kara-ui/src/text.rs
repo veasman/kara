@@ -62,7 +62,7 @@ impl TextRenderer {
     /// on cap-height center for FiraCode / the default monospace
     /// fallback at bar font sizes (11-14 px).
     pub fn center_y_offset(&self, center_y: f32) -> f32 {
-        center_y - self.font_size * 0.35
+        center_y - self.font_size * 0.45
     }
 
     /// Measure the pixel width of a text string.

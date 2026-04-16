@@ -7,6 +7,7 @@ pub fn render_overlay(
     height: u32,
     highlight: (i32, i32, i32, i32),
     theme: &ThemeColors,
+    tile_cache: Option<&Pixmap>,
 ) -> Option<Pixmap> {
     let mut pixmap = Pixmap::new(width, height)?;
 
@@ -22,10 +23,7 @@ pub fn render_overlay(
 
     let border_px = theme.border_px.unwrap_or(2).max(1) as f32;
     let radius = theme.border_radius.unwrap_or(0) as f32;
-    let tile = theme
-        .border_tile_path
-        .as_deref()
-        .and_then(|p| Pixmap::load_png(p).ok());
+    let tile = tile_cache;
 
     // Draw the theme-driven border FIRST (so the inner clear can
     // punch through the pattern as well as the dim fill in one
@@ -74,6 +72,21 @@ pub fn render_overlay(
             data[idx + 3] = 0;
         }
     }
+
+    // Draw a bright 2px accent stroke at the inner edge of the
+    // selection so the hovered area is clearly distinguishable from
+    // the dim overlay — even with a dark gothic tile border, this
+    // bright inner ring makes the selection boundary unambiguous.
+    stroke_rounded_rect(
+        &mut pixmap,
+        hx as f32 + 0.5,
+        hy as f32 + 0.5,
+        hw as f32 - 1.0,
+        hh as f32 - 1.0,
+        radius.max(0.0),
+        color_from_u32(theme.accent),
+        2.0,
+    );
 
     Some(pixmap)
 }

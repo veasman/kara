@@ -58,13 +58,13 @@ mono_family = "FiraCode Nerd Font"
 mono_size = 13
 
 [cursor]
-# Night-Diamond-Red — crimson, high-contrast, matches the blood
-# palette. AUR: night-diamond-cursor-theme installs both -Red and
-# -Blue variants. Swapped back from Rage-Gothic because the Rage
-# art reads as cold blue rather than the warm crimson we want for
-# the gothic look. Alternates: Bibata-Modern-Classic (neutral
-# pointer), Rage-Gothic (if you prefer the blue look).
-theme = "Night-Diamond-Red"
+# Skyrim — medieval-themed cursor that matches the gothic fantasy
+# look. Installed via our skyrim-cursor-theme AUR package. Both
+# Night-Diamond variants read as cold blue despite the name; Rage
+# Gothic is also blue-tinted. Skyrim's earthy medieval art fits
+# the blood/castle palette. Alternates: Bibata-Modern-Amber
+# (warm amber pointer).
+theme = "Skyrim"
 size = 24
 
 # ─── Reserved structured slots (no renderer consumes these yet) ────
