@@ -206,7 +206,7 @@ theme {{
             out.push('\n');
             out.push_str("general {\n");
             if let Some(ref f) = bar.font_family {
-                out.push_str(&format!("    font {f}\n"));
+                out.push_str(&format!("    font \"{f}\"\n"));
             }
             if let Some(s) = bar.font_size {
                 out.push_str(&format!("    font_size {s}\n"));

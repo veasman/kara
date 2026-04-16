@@ -1298,8 +1298,18 @@ impl Gate {
                         || route_lower.contains(&app_lower)
                 })
             {
+                // Sliding-window keepalive: on each match, reset the
+                // route's timestamp so it has 5s of TTL remaining.
+                // Multi-window apps (Floorp) that spawn windows every
+                // 1-2s keep refreshing the window — all land together.
+                // Single-window apps (foot): one match → 5s passes
+                // with no new matches → route expires → manual spawns
+                // go to focused output.
+                self.pending_autostart_routes[pos].3 =
+                    std::time::Instant::now()
+                        - (AUTOSTART_ROUTE_TTL - std::time::Duration::from_secs(5));
                 let (_, target_out, target_ws, _) =
-                    self.pending_autostart_routes.remove(pos);
+                    self.pending_autostart_routes[pos].clone();
                 if target_out < self.workspaces.len() && target_ws < self.workspaces[target_out].len() {
                     self.workspaces[target_out][target_ws]
                         .add_client_floating(window.clone(), false);
