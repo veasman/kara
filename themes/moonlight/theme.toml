@@ -83,7 +83,7 @@ module_gap = 12
 module_padding_x = 14
 module_padding_y = 10
 module_rounded = 0
-font_family = "FiraCode Nerd Font"
+font_family = "ProFont IIx Nerd Font"
 font_size = 14
 
 [animations]
