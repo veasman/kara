@@ -39,6 +39,14 @@ pub struct Wallpaper {
     kind: WallpaperKind,
     width: u32,
     height: u32,
+    /// Cached copy of the most recently uploaded frame's raw pixels.
+    /// Used by bar blur to crop + blur without a GPU readback. Updated
+    /// every time `texture()` uploads a new frame. The pixel format
+    /// matches the source: premultiplied RGBA for images/GIFs, BGRA
+    /// for gstreamer video — bar blur treats all channels identically
+    /// (box blur on R/G/B/A independently) so the swizzle doesn't
+    /// affect the blur quality.
+    last_pixels: Option<Vec<u8>>,
 }
 
 enum WallpaperKind {
@@ -100,6 +108,7 @@ impl Wallpaper {
             },
             width,
             height,
+            last_pixels: None,
         })
     }
 
@@ -114,19 +123,18 @@ impl Wallpaper {
         let height = rgba_img.height();
         let data = premultiply(rgba_img.into_raw());
 
+        let last_pixels = Some(data.clone());
         Some(Self {
             kind: WallpaperKind::Frames {
                 frames: vec![Frame {
                     rgba: data,
-                    // ~1 year — effectively "never advance." Used
-                    // instead of Duration::MAX so any future code
-                    // that does delay arithmetic doesn't overflow.
                     delay: Duration::from_secs(60 * 60 * 24 * 365),
                     cached_texture: None,
                 }],
                 current: 0,
                 frame_started: Instant::now(),
             },
+            last_pixels,
             width,
             height,
         })
@@ -198,6 +206,7 @@ impl Wallpaper {
 
         let (width, height) = dims.unwrap_or((1, 1));
 
+        let last_pixels = frames.first().map(|f| f.rgba.clone());
         Some(Self {
             kind: WallpaperKind::Frames {
                 frames,
@@ -206,6 +215,7 @@ impl Wallpaper {
             },
             width,
             height,
+            last_pixels,
         })
     }
 
@@ -213,12 +223,9 @@ impl Wallpaper {
     /// Used by the bar blur path to sample the bar-region pixels
     /// without a GPU readback.
     pub fn current_rgba(&self) -> Option<(&[u8], u32, u32)> {
-        match &self.kind {
-            WallpaperKind::Frames { frames, current, .. } => {
-                frames.get(*current).map(|f| (f.rgba.as_slice(), self.width, self.height))
-            }
-            WallpaperKind::Video { .. } => None,
-        }
+        self.last_pixels
+            .as_ref()
+            .map(|p| (p.as_slice(), self.width, self.height))
     }
 
     /// Source image dimensions in pixels. Used by the render path
@@ -337,10 +344,10 @@ impl Wallpaper {
                     if frame.serial != *uploaded_serial {
                         self.width = frame.width;
                         self.height = frame.height;
+                        self.last_pixels = Some(frame.bgra.clone());
                         let new_tex = TextureBuffer::from_memory(
                             renderer,
                             &frame.bgra,
-                            // BGRA on LE = Argb8888 fourcc.
                             Fourcc::Argb8888,
                             Size::from((frame.width as i32, frame.height as i32)),
                             false,
