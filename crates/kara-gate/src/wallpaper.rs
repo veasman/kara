@@ -344,7 +344,13 @@ impl Wallpaper {
                     if frame.serial != *uploaded_serial {
                         self.width = frame.width;
                         self.height = frame.height;
-                        self.last_pixels = Some(frame.bgra.clone());
+                        // Convert BGRA→RGBA so downstream CPU consumers
+                        // (bar blur) get a consistent pixel format.
+                        let mut rgba = frame.bgra.clone();
+                        for px in rgba.chunks_exact_mut(4) {
+                            px.swap(0, 2); // B↔R
+                        }
+                        self.last_pixels = Some(rgba);
                         let new_tex = TextureBuffer::from_memory(
                             renderer,
                             &frame.bgra,
