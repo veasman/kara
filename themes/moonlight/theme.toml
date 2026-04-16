@@ -56,7 +56,7 @@ mono_size = 14
 # Oreo spark lite — clean glowing white cursor for the moonlight palette.
 # Package: oreo-cursors-git (AUR).
 theme = "oreo_spark_lite_cursors"
-size = 20
+size = 16
 
 # ─── Reserved structured slots (no renderer consumes these yet) ────
 # These blocks are schema-only today. They let the theme TOML carry
