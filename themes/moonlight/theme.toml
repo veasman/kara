@@ -73,16 +73,9 @@ color_urgent = "$warning"
 
 [bar]
 hide_center = true
-height = 36
-pill = true
-background = false
-background_alpha = 0
-edge_padding_x = 14
-edge_padding_y = 3
-module_gap = 12
-module_padding_x = 14
-module_padding_y = 10
-module_rounded = 0
+background = true
+background_alpha = 140
+blur = true
 font_family = "ProFont IIx Nerd Font"
 font_size = 14
 
