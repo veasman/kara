@@ -193,6 +193,9 @@ theme {{
         if let Some(s) = bar.font_size {
             lines.push(format!("    font_size         {s}"));
         }
+        if let Some(s) = bar.icon_size {
+            lines.push(format!("    icon_size         {s}"));
+        }
         if !lines.is_empty() {
             out.push('\n');
             out.push_str("bar {\n");

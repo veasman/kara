@@ -7,6 +7,35 @@ use tiny_skia::Pixmap;
 
 use crate::canvas::{blit_color, blit_mask};
 
+/// True for codepoints that nerd fonts use for icon glyphs. All nerd
+/// font icon ranges (powerline, devicons, fontawesome, weather, seti,
+/// octicons, material) live inside the Unicode Private Use Area
+/// U+E000..=U+F8FF, so a single range check catches them all without
+/// a lookup table.
+pub fn is_icon_codepoint(c: char) -> bool {
+    matches!(c as u32, 0xE000..=0xF8FF)
+}
+
+/// Walk a string and yield `(&str, is_icon)` runs of consecutive
+/// icon or non-icon characters. Pure helper — no allocation beyond
+/// the iterator state.
+fn split_icon_runs(text: &str) -> impl Iterator<Item = (&str, bool)> {
+    let mut chars = text.char_indices().peekable();
+    std::iter::from_fn(move || {
+        let (start, first) = chars.next()?;
+        let kind = is_icon_codepoint(first);
+        let mut end = start + first.len_utf8();
+        while let Some(&(i, c)) = chars.peek() {
+            if is_icon_codepoint(c) != kind {
+                break;
+            }
+            chars.next();
+            end = i + c.len_utf8();
+        }
+        Some((&text[start..end], kind))
+    })
+}
+
 /// Text renderer wrapping cosmic-text font system and glyph cache.
 pub struct TextRenderer {
     pub font_system: FontSystem,
@@ -148,6 +177,63 @@ impl TextRenderer {
             .map(|run| run.line_w)
             .fold(0.0_f32, f32::max)
             .ceil() as u32
+    }
+
+    /// Measure a string that mixes regular text and nerd-font icons,
+    /// rendering each icon-codepoint run at `icon_size` and text runs
+    /// at `self.font_size`. Some fonts (e.g. 3270 Nerd Font Mono)
+    /// design icon glyphs smaller than their text glyphs so an
+    /// icon_size > font_size is often needed to match visual weight.
+    pub fn measure_row(&mut self, text: &str, icon_size: f32) -> u32 {
+        if text.is_empty() {
+            return 0;
+        }
+        let base_size = self.font_size;
+        let mut total = 0.0f32;
+        for (segment, is_icon) in split_icon_runs(text) {
+            let size = if is_icon { icon_size } else { base_size };
+            if size != self.font_size {
+                self.set_font_size(size);
+            }
+            total += self.measure(segment) as f32;
+        }
+        if self.font_size != base_size {
+            self.set_font_size(base_size);
+        }
+        total.ceil() as u32
+    }
+
+    /// Draw a string that mixes regular text and nerd-font icons,
+    /// centering each run on `center_y`. Icon-codepoint runs render
+    /// at `icon_size`; text runs at `self.font_size`. Returns the
+    /// total advance in pixels.
+    pub fn draw_row(
+        &mut self,
+        pixmap: &mut Pixmap,
+        text: &str,
+        x: f32,
+        center_y: f32,
+        color: u32,
+        icon_size: f32,
+    ) -> f32 {
+        if text.is_empty() {
+            return 0.0;
+        }
+        let base_size = self.font_size;
+        let mut cx = x;
+        for (segment, is_icon) in split_icon_runs(text) {
+            let size = if is_icon { icon_size } else { base_size };
+            if size != self.font_size {
+                self.set_font_size(size);
+            }
+            let y = self.center_y_offset(center_y);
+            self.draw(pixmap, segment, cx, y, color);
+            cx += self.measure(segment) as f32;
+        }
+        if self.font_size != base_size {
+            self.set_font_size(base_size);
+        }
+        cx - x
     }
 
     /// Draw text onto a pixmap at (x, y) with a 0xRRGGBB color.

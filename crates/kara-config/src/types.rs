@@ -257,6 +257,12 @@ pub struct Bar {
     pub font: Option<String>,
     /// Bar-specific font size override.
     pub font_size: Option<f32>,
+    /// Explicit size for nerd-font icon glyphs inside module text.
+    /// Some fonts (e.g. 3270 Nerd Font Mono) design icon glyphs
+    /// noticeably smaller than text glyphs; this override lets a
+    /// theme bump icons up without also bumping text up. `None` →
+    /// icons render at `font_size` (current behavior).
+    pub icon_size: Option<f32>,
 
     pub icons: bool,
     pub colors: bool,
@@ -313,6 +319,7 @@ impl Default for Bar {
 
             font: None,
             font_size: None,
+            icon_size: None,
             icons: true,
             colors: true,
             minimal: false,

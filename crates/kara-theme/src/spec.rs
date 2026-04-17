@@ -465,6 +465,12 @@ pub struct BarStyleSpec {
     pub font_family: Option<String>,
     #[serde(default)]
     pub font_size: Option<u16>,
+    /// Explicit render size for nerd-font icon glyphs inside bar
+    /// module text. Useful when the chosen font designs icon glyphs
+    /// smaller than its text glyphs (e.g. 3270 Nerd Font Mono) —
+    /// set `icon_size` larger than `font_size` to match the weight.
+    #[serde(default)]
+    pub icon_size: Option<u16>,
     #[serde(default)]
     pub module_fg: Option<String>,
     #[serde(default)]

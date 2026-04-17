@@ -83,6 +83,9 @@ edge_padding_y = 4
 module_gap = 14
 font_family = "ProFont IIx Nerd Font Mono"
 font_size = 14
+# ProFont IIx's nerd icons render a touch small relative to its text;
+# nudge them up so monitor / sync / etc. glyphs read at parity.
+icon_size = 17
 
 [animations]
 duration_ms_fast = 120

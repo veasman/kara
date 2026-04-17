@@ -496,6 +496,11 @@ fn parse_bar_line(tokens: &[String], bar: &mut Bar, ctx: &ParseContext) {
                 bar.font_size = Some(v);
             }
         }
+        "icon_size" => {
+            if let Ok(v) = val.parse::<f32>() {
+                bar.icon_size = Some(v);
+            }
+        }
         "module_bg_tile" => {
             if val.is_empty() {
                 bar.module_bg_tile = None;

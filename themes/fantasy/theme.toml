@@ -129,6 +129,10 @@ module_padding_y = 12
 module_rounded = 0
 font_family = "3270 Nerd Font Mono"
 font_size = 16
+# 3270 Nerd Font Mono ships noticeably smaller icon glyphs than text
+# glyphs — bump icon codepoints (PUA U+E000..U+F8FF) up so they match
+# the text visually. Only affects icons; text stays at font_size.
+icon_size = 20
 
 # Reserved — once kara-sight wires module SVG surfaces, this slot
 # will get rasterized alongside window_border.svg_tile and each pill

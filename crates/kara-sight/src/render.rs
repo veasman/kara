@@ -293,7 +293,7 @@ impl BarRenderer {
         &mut self,
         module: &BarModule,
         ctx: &ModuleContext,
-        _bar_config: &BarConfig,
+        bar_config: &BarConfig,
         ws_ctx: &WorkspaceContext,
     ) -> u32 {
         if module.kind == BarModuleKind::Workspaces {
@@ -305,7 +305,12 @@ impl BarRenderer {
             return 0;
         }
 
-        let mut w = self.text.measure(&content.text);
+        let mut w = match bar_config.icon_size {
+            Some(s) if s > 0.0 && s != self.text.font_size => {
+                self.text.measure_row(&content.text, s)
+            }
+            _ => self.text.measure(&content.text),
+        };
 
         // Volume module may carry an inline bar graph. Its size preset
         // comes from the first positional arg (`small|med|large|none`).
@@ -400,15 +405,26 @@ impl BarRenderer {
             return;
         }
 
-        // Draw text — use center_y_offset to vertically center glyphs
-        let text_y = self.text.center_y_offset(center_y);
-        self.text.draw(pixmap, &content.text, x as f32, text_y, content.color);
+        // Draw text. When the theme provides an explicit icon_size and
+        // it differs from the bar font size, fall back to draw_row /
+        // measure_row which render icon codepoints at icon_size while
+        // leaving regular glyphs at font_size.
+        let text_w = match bar_config.icon_size {
+            Some(s) if s > 0.0 && s != self.text.font_size => {
+                self.text.draw_row(pixmap, &content.text, x as f32, center_y, content.color, s)
+                    as i32
+            }
+            _ => {
+                let text_y = self.text.center_y_offset(center_y);
+                self.text.draw(pixmap, &content.text, x as f32, text_y, content.color);
+                self.text.measure(&content.text) as i32
+            }
+        };
 
         // Volume bar — size preset comes from the module's first
         // positional arg (see `volume_bar_size`). `none` disables.
         if module.kind == BarModuleKind::Volume {
             if let Some(size) = volume_bar_size(module) {
-                let text_w = self.text.measure(&content.text) as i32;
                 let bar_x = x + text_w + 8;
                 let bar_w = size.width as i32;
                 let bar_h = size.height as i32;
