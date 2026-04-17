@@ -1,7 +1,6 @@
 use kara_ipc::WindowGeometry;
 
 pub enum HoverTarget {
-    None,
     Fullscreen { w: i32, h: i32 },
     Window {
         /// Index into the window geometry vec from the compositor. Held
@@ -98,7 +97,6 @@ impl SelectionState {
         match &self.target {
             HoverTarget::Window { x, y, w, h, .. } => (*x, *y, *w, *h),
             HoverTarget::Fullscreen { w, h } => (0, 0, *w, *h),
-            HoverTarget::None => (0, 0, self.screen_w, self.screen_h),
         }
     }
 

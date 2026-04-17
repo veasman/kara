@@ -12,6 +12,12 @@ const CARD_ACTION_ROW: u32 = 28;
 const GAP: u32 = 8;
 const PADDING: f32 = 14.0;
 const CARD_RADIUS: f32 = 10.0;
+/// Square side length for the card's leading icon thumbnail. Sized
+/// so glimpse's capture previews still read at typical card heights.
+const ICON_SIZE: u32 = 60;
+/// Column offset for the text block when the notification carries an
+/// `app_icon` — leaves `ICON_SIZE` + padding of room for the thumbnail.
+const TEXT_X_WITH_ICON: f32 = PADDING + ICON_SIZE as f32 + PADDING * 0.5;
 /// Card background alpha — semi-transparent so wallpaper bleeds
 /// through if the layer surface composits over it.
 const CARD_ALPHA: u8 = 200;
@@ -159,11 +165,25 @@ impl NotificationUI {
                 );
             }
 
+            // Optional leading thumbnail. notify-send --icon accepts a
+            // filesystem path; glimpse passes the saved PNG so the
+            // screenshot preview appears directly on the card. XDG
+            // theme-name lookup (org.freedesktop.Notifications style)
+            // is not supported yet — only direct paths.
+            let has_icon = draw_app_icon(
+                &mut pixmap,
+                &notif.app_icon,
+                PADDING,
+                y_off + PADDING,
+                ICON_SIZE,
+            );
+            let text_x = if has_icon { TEXT_X_WITH_ICON } else { PADDING };
+
             // Summary text (top)
             self.text.draw(
                 &mut pixmap,
                 &notif.summary,
-                PADDING,
+                text_x,
                 y_off + PADDING + 14.0,
                 self.theme.text,
             );
@@ -177,7 +197,7 @@ impl NotificationUI {
             self.text_small.draw(
                 &mut pixmap,
                 &body,
-                PADDING,
+                text_x,
                 y_off + PADDING + 34.0,
                 self.theme.text_muted,
             );
@@ -235,4 +255,80 @@ impl NotificationUI {
 
         Some(pixmap)
     }
+}
+
+/// Try to load and draw an icon image at `(x, y)` scaled to fit a
+/// `size × size` box (aspect-preserving, letterboxed). Returns `true`
+/// if something was drawn. Empty paths, missing files, or decode
+/// failures all quietly return `false`, so the card just falls back
+/// to the text-only layout.
+fn draw_app_icon(pixmap: &mut Pixmap, path_str: &str, x: f32, y: f32, size: u32) -> bool {
+    if path_str.is_empty() {
+        return false;
+    }
+    if !path_str.starts_with('/') {
+        // Only absolute filesystem paths today. XDG icon theme
+        // lookup (name-only identifiers like "firefox") would need
+        // a full icon-theme resolver — out of scope for this patch.
+        return false;
+    }
+    let path = std::path::Path::new(path_str);
+    if !path.is_file() {
+        return false;
+    }
+
+    let img = match image::open(path) {
+        Ok(i) => i.to_rgba8(),
+        Err(_) => return false,
+    };
+    let (src_w, src_h) = (img.width(), img.height());
+    if src_w == 0 || src_h == 0 {
+        return false;
+    }
+
+    // Aspect-preserving fit into the target box.
+    let scale = (size as f32 / src_w as f32).min(size as f32 / src_h as f32);
+    let dst_w = (src_w as f32 * scale).round() as u32;
+    let dst_h = (src_h as f32 * scale).round() as u32;
+    if dst_w == 0 || dst_h == 0 {
+        return false;
+    }
+    let off_x = x + (size as f32 - dst_w as f32) * 0.5;
+    let off_y = y + (size as f32 - dst_h as f32) * 0.5;
+
+    // Resize into a pixmap and blit with tiny-skia Pattern fill —
+    // piggybacks on the existing render path instead of pulling in a
+    // separate blitter.
+    let mut icon_pm = match tiny_skia::Pixmap::new(dst_w, dst_h) {
+        Some(p) => p,
+        None => return false,
+    };
+    let sx = src_w as f32 / dst_w as f32;
+    let sy = src_h as f32 / dst_h as f32;
+    let dst = icon_pm.data_mut();
+    for py in 0..dst_h {
+        for px in 0..dst_w {
+            let qx = ((px as f32 * sx) as u32).min(src_w - 1);
+            let qy = ((py as f32 * sy) as u32).min(src_h - 1);
+            let src_px = img.get_pixel(qx, qy).0;
+            // Premultiply for tiny-skia.
+            let a = src_px[3] as f32 / 255.0;
+            let di = (py * dst_w + px) as usize * 4;
+            dst[di] = (src_px[0] as f32 * a).round() as u8;
+            dst[di + 1] = (src_px[1] as f32 * a).round() as u8;
+            dst[di + 2] = (src_px[2] as f32 * a).round() as u8;
+            dst[di + 3] = src_px[3];
+        }
+    }
+
+    let paint = tiny_skia::PixmapPaint::default();
+    pixmap.draw_pixmap(
+        off_x.round() as i32,
+        off_y.round() as i32,
+        icon_pm.as_ref(),
+        &paint,
+        tiny_skia::Transform::identity(),
+        None,
+    );
+    true
 }

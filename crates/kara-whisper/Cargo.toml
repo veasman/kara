@@ -16,6 +16,7 @@ kara-ui = { path = "../kara-ui" }
 smithay-client-toolkit = "0.19"
 wayland-client = "0.31"
 tiny-skia = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 zbus = { version = "4", features = ["blocking"] }
 dirs = "6"
 serde = { workspace = true }
