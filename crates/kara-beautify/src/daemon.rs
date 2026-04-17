@@ -65,8 +65,22 @@ pub struct DaemonState {
 pub fn run(repo_root: PathBuf, paths: KaraPaths) -> Result<()> {
     let sock = socket_path();
 
-    // Remove any stale socket from a crashed previous daemon.
-    let _ = fs::remove_file(&sock);
+    // If another daemon is already listening, bail out instead of
+    // stealing its socket path — that leaves the previous process
+    // alive with an orphaned listener FD, which is how we ended up
+    // with dozens of zombie daemons accumulating across reloads.
+    if sock.exists() {
+        if UnixStream::connect(&sock).is_ok() {
+            println!(
+                "kara-beautify daemon already running at {}; exiting",
+                sock.display()
+            );
+            return Ok(());
+        }
+        // Socket file exists but nobody's home — previous daemon
+        // crashed. Safe to remove.
+        let _ = fs::remove_file(&sock);
+    }
 
     let listener = UnixListener::bind(&sock)
         .with_context(|| format!("binding daemon socket {}", sock.display()))?;

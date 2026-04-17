@@ -53,9 +53,9 @@ blur = false
 
 [fonts]
 ui_family = "FiraCode Nerd Font"
-ui_size = 12
+ui_size = 14
 mono_family = "FiraCode Nerd Font"
-mono_size = 14
+mono_size = 16
 
 [cursor]
 # Night Diamond (Red) — crimson cursor for the gothic fantasy look.
@@ -104,7 +104,23 @@ background = false
 background_alpha = 0
 height = 40
 pill = true
-hide_center = true
+hide_center = false
+# Fantasy overrides the module layout: monitor stays on the left,
+# workspaces move to the center with the badge style (filled
+# numbered circles, autohiding unused workspaces). When this field
+# is present the generated include emits a `bar { modules { ... } }`
+# block that replaces the user's base modules at parse time —
+# themes without `modules` leave the user's layout untouched.
+modules = [
+    "left monitor group:nav",
+    "center workspaces badges",
+    "right memory group:spec",
+    "right cpu group:spec",
+    "right battery group:sys",
+    "right network group:sys",
+    "right volume none group:sys",
+    "right clock \"%a %d %b %H:%M\"",
+]
 edge_padding_x = 16
 edge_padding_y = 4
 module_gap = 14
@@ -112,7 +128,7 @@ module_padding_x = 16
 module_padding_y = 12
 module_rounded = 0
 font_family = "3270 Nerd Font Mono"
-font_size = 14
+font_size = 16
 
 # Reserved — once kara-sight wires module SVG surfaces, this slot
 # will get rasterized alongside window_border.svg_tile and each pill

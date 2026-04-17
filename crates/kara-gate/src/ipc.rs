@@ -61,7 +61,12 @@ impl Gate {
                     self.wallpaper_pending = None;
                     if new_wp.is_some() {
                         self.wallpaper = new_wp;
+                        // Drop every cache that sampled the old wallpaper
+                        // — otherwise a theme switch keeps blurring the
+                        // previous theme's background behind the bar and
+                        // the theme picker.
                         self.bar_blur_cache = None;
+                        self.picker_blur_cache = None;
                     } else {
                         tracing::warn!("async wallpaper decode returned None");
                     }
@@ -254,43 +259,107 @@ impl Gate {
             }
 
             Request::GetWindowGeometries => {
-                let out = self.focused_output;
-                let ws_idx = self.effective_ws(out);
-                let ws = match self.workspaces.get(out).and_then(|pool| pool.get(ws_idx)) {
-                    Some(ws) => ws,
-                    None => return Response::WindowGeometries { windows: Vec::new() },
-                };
-                let area = self.workarea();
-                let geos = crate::layout::layout_workspace(ws, area, self.config.general.border_px);
-                let windows: Vec<WindowGeometry> = geos.iter()
-                    .filter(|g| g.visible)
-                    .map(|g| {
-                        let (title, app_id) = g.window.toplevel()
-                            .map(|t| {
-                                smithay::wayland::compositor::with_states(t.wl_surface(), |states| {
-                                    let data = states.data_map
-                                        .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
-                                        .and_then(|d| d.lock().ok());
-                                    let title = data.as_ref()
-                                        .and_then(|d| d.title.clone())
-                                        .unwrap_or_default();
-                                    let app_id = data.as_ref()
-                                        .and_then(|d| d.app_id.clone())
-                                        .unwrap_or_default();
-                                    (title, app_id)
-                                })
+                // Glimpse's overlay is a layer surface on the focused output,
+                // so it compares its surface-local pointer against the rects
+                // we return. Send them in output-local coords by subtracting
+                // the output's location from the global workspace rects.
+                let out_idx = self.focused_output;
+                let out_loc = self
+                    .outputs
+                    .get(out_idx)
+                    .map(|o| (o.location.x, o.location.y))
+                    .unwrap_or((0, 0));
+                let out_size = self
+                    .outputs
+                    .get(out_idx)
+                    .map(|o| o.size)
+                    .unwrap_or((0, 0));
+
+                let title_for = |w: &smithay::desktop::Window| -> (String, String) {
+                    w.toplevel()
+                        .map(|t| {
+                            smithay::wayland::compositor::with_states(t.wl_surface(), |states| {
+                                let data = states.data_map
+                                    .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                                    .and_then(|d| d.lock().ok());
+                                let title = data.as_ref()
+                                    .and_then(|d| d.title.clone())
+                                    .unwrap_or_default();
+                                let app_id = data.as_ref()
+                                    .and_then(|d| d.app_id.clone())
+                                    .unwrap_or_default();
+                                (title, app_id)
                             })
-                            .unwrap_or_default();
-                        WindowGeometry {
+                        })
+                        .unwrap_or_default()
+                };
+
+                let mut windows: Vec<WindowGeometry> = Vec::new();
+
+                // Fullscreen occludes everything else on the output — if one
+                // is active, that's the only thing glimpse should be able to
+                // quick-select.
+                if let Some(fs_win) = self
+                    .outputs
+                    .get(out_idx)
+                    .and_then(|o| o.fullscreen_window.as_ref())
+                {
+                    let (title, app_id) = title_for(fs_win);
+                    windows.push(WindowGeometry {
+                        app_id,
+                        title,
+                        x: 0,
+                        y: 0,
+                        w: out_size.0,
+                        h: out_size.1,
+                    });
+                    return Response::WindowGeometries { windows };
+                }
+
+                let ws_idx = self.effective_ws(out_idx);
+                if let Some(ws) = self.workspaces.get(out_idx).and_then(|pool| pool.get(ws_idx)) {
+                    let area = self.workarea();
+                    let geos = crate::layout::layout_workspace(
+                        ws,
+                        area,
+                        self.config.general.border_px,
+                    );
+                    for g in geos.iter().filter(|g| g.visible) {
+                        let (title, app_id) = title_for(&g.window);
+                        windows.push(WindowGeometry {
                             app_id,
                             title,
-                            x: g.rect.loc.x,
-                            y: g.rect.loc.y,
+                            x: g.rect.loc.x - out_loc.0,
+                            y: g.rect.loc.y - out_loc.1,
                             w: g.rect.size.w,
                             h: g.rect.size.h,
+                        });
+                    }
+                }
+
+                // Include currently-visible scratchpad windows on this output
+                // so they can be quick-selected while open; skip hidden ones.
+                for sp in self
+                    .scratchpads
+                    .iter()
+                    .filter(|sp| sp.visible && !sp.hiding && sp.output_idx == out_idx)
+                {
+                    for client in sp.workspace.clients.iter() {
+                        let geo = client.geometry();
+                        if let Some(loc) = self.space.element_location(client) {
+                            let (title, app_id) = title_for(client);
+                            windows.push(WindowGeometry {
+                                app_id,
+                                title,
+                                x: loc.x - out_loc.0,
+                                y: loc.y - out_loc.1,
+                                w: geo.size.w,
+                                h: geo.size.h,
+                            });
                         }
-                    })
-                    .collect();
+                    }
+                }
+
                 Response::WindowGeometries { windows }
             }
 

@@ -1677,10 +1677,19 @@ fn render_frame(
             .map(DrmRenderElement::Texture),
     );
 
-    // Overlay/Top layer surfaces (e.g., kara-summon) — with correct arranged positions
-    {
+    // Overlay/Top layer surfaces (e.g., kara-summon) — with correct arranged positions.
+    //
+    // When the theme picker (namespace "kara-picker") is up and the
+    // bar has blur enabled, we also emit a backdrop-blur texture
+    // immediately after the picker's surface element. Element index
+    // order is front→back, so pushing the blur AFTER the picker places
+    // it behind the picker at paint time. That gives the translucent
+    // picker the same frosted-glass look the bar has without needing
+    // a compositor-level blur extension protocol.
+    let picker_blur_rect: Option<smithay::utils::Rectangle<i32, smithay::utils::Logical>> = {
         use smithay::backend::renderer::element::AsRenderElements;
         let map = smithay::desktop::layer_map_for_output(&instance.output);
+        let mut picker_rect = None;
         for layer in map.layers().rev() {
             if matches!(layer.layer(), smithay::wayland::shell::wlr_layer::Layer::Top | smithay::wayland::shell::wlr_layer::Layer::Overlay) {
                 if let Some(geo) = map.layer_geometry(layer) {
@@ -1688,9 +1697,31 @@ fn render_frame(
                         WaylandSurfaceRenderElement<KaraRenderer<'_>>,
                     >(layer, &mut renderer, geo.loc.to_physical_precise_round(1.0), smithay::utils::Scale::from(1.0), 1.0);
                     elements.extend(layer_elements.into_iter().map(DrmRenderElement::Surface));
+                    if layer.namespace() == "kara-picker" && state.config.bar.blur {
+                        // Output-local -> global coords for the blur helper.
+                        let out_loc = state
+                            .outputs
+                            .get(output_idx)
+                            .map(|o| (o.location.x, o.location.y))
+                            .unwrap_or((0, 0));
+                        picker_rect = Some(smithay::utils::Rectangle::new(
+                            (geo.loc.x + out_loc.0, geo.loc.y + out_loc.1).into(),
+                            geo.size,
+                        ));
+                    }
                 }
             }
         }
+        picker_rect
+    };
+    if let Some(rect) = picker_blur_rect {
+        if let Some(elem) = crate::render::render_picker_blur(state, &mut renderer, rect) {
+            elements.push(DrmRenderElement::Texture(elem));
+        }
+    } else if state.picker_blur_cache.is_some() {
+        // Picker closed: drop the cached blur so we don't hold a
+        // full-rect wallpaper crop past its usefulness.
+        state.picker_blur_cache = None;
     }
 
     // Scratchpad borders (in front of everything window-like)
@@ -1816,10 +1847,16 @@ fn render_frame(
                 }
             }
 
-            // Screenshot capture — render to offscreen and save PNG
-            if let Some(path) = state.screenshot_path.take() {
-                let region = state.screenshot_region.take();
-                capture_screenshot(&mut renderer, &elements, state, output_idx, &path, region);
+            // Screenshot capture — render to offscreen and save PNG.
+            // Gate on focused_output: glimpse lives on the focused output
+            // and its region coords are in that output's local space, so
+            // capturing another output here would save the wrong image at
+            // the wrong crop. `take()` only consumes when we actually match.
+            if state.screenshot_path.is_some() && output_idx == state.focused_output {
+                if let Some(path) = state.screenshot_path.take() {
+                    let region = state.screenshot_region.take();
+                    capture_screenshot(&mut renderer, &elements, state, output_idx, &path, region);
+                }
             }
         }
         Err(err) => {

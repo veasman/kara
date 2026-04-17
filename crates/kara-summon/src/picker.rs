@@ -32,7 +32,7 @@
 //! the primary UX promise of variants.
 
 use kara_ipc::ThemeColors;
-use kara_ui::canvas::{color_from_u32, fill_rounded_rect, stroke_rounded_rect};
+use kara_ui::canvas::{color_from_u32, fill_rounded_rect, rounded_rect_path, stroke_rounded_rect};
 use kara_ui::TextRenderer;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
@@ -231,14 +231,29 @@ pub fn run(theme: ThemeColors) {
         smithay_client_toolkit::shell::wlr_layer::Anchor::TOP
             | smithay_client_toolkit::shell::wlr_layer::Anchor::RIGHT,
     );
-    // Position directly below the bar so the picker reads as a
-    // dropdown panel emerging from the bar's bottom edge.
+    // Position below the bar so the picker reads as a dropdown.
+    // Flush-to-bar when the bar has its own background (they visually
+    // continue as one surface); inset by the bar's edge padding when
+    // the bar has no background so the picker floats as a detached
+    // pill-styled card aligned with the rightmost pill module.
     let bar_h = theme.bar_height.unwrap_or(26) as i32;
-    layer.set_margin(bar_h, 0, 0, 0);
+    let float_top_margin = if theme.bar_background.unwrap_or(true) {
+        bar_h
+    } else {
+        bar_h + 6
+    };
+    let float_right_margin = if theme.bar_background.unwrap_or(true) {
+        0
+    } else {
+        16
+    };
+    layer.set_margin(float_top_margin, float_right_margin, 0, 0);
     layer.commit();
 
     let pool = SlotPool::new(WIDTH as usize * HEIGHT as usize * 4, &shm)
         .expect("failed to create SHM pool");
+
+    let initial_border_tile = theme_border_tile(&theme);
 
     let mut picker = Picker {
         registry_state: RegistryState::new(&globals),
@@ -264,6 +279,8 @@ pub fn run(theme: ThemeColors) {
         focus: Focus::Theme,
         ctrl_held: false,
         thumbs: ThumbCache::new(),
+
+        border_tile: initial_border_tile,
 
         commit_on_exit: false,
     };
@@ -365,6 +382,12 @@ struct Picker {
     /// — first display request decodes + caches, subsequent draws
     /// reuse. Lives for the picker's lifetime.
     thumbs: ThumbCache,
+
+    /// Cached decoded border tile (from theme.border_tile_path).
+    /// When the active theme provides one and the bar has no own
+    /// background, the picker renders it as a floating card with the
+    /// same tiled border the compositor paints around windows.
+    border_tile: Option<tiny_skia::Pixmap>,
 
     commit_on_exit: bool,
 }
@@ -505,6 +528,7 @@ impl Picker {
             if let Ok(kara_ipc::Response::Theme { colors }) =
                 client.request(&kara_ipc::Request::GetTheme)
             {
+                self.border_tile = theme_border_tile(&colors);
                 self.theme_colors = colors;
             }
         }
@@ -521,59 +545,100 @@ impl Picker {
         // borrow on self while the draw helpers take `&mut self`.
         let t = self.theme_colors.clone();
 
-        // Background — matches the bar's visual treatment. When the
-        // bar has a background, the picker uses the same bg + alpha
-        // to look like a continuation. When the bar has no background,
-        // the picker uses a slightly more opaque bg with a top accent
-        // line.
-        {
-            let bar_has_bg = t.bar_background.unwrap_or(true);
-            let alpha = if bar_has_bg {
-                t.bar_background_alpha.unwrap_or(220)
-            } else {
-                230
-            };
+        // Background — matches the bar's visual treatment.
+        //
+        // * Bar HAS a background (default, moonlight): the picker
+        //   flows into the bar with a flat top + rounded bottom,
+        //   reusing the bar's bg + alpha so it reads as one shape.
+        //
+        // * Bar has NO background (fantasy): the picker floats as a
+        //   self-contained card with all four corners rounded, filled
+        //   from `theme.surface`, and bordered with the same styling
+        //   used by bar pills — the theme's border tile if one is
+        //   provided, or a solid `border` stroke otherwise. That
+        //   matches the look of a pill module so the picker feels
+        //   like part of the bar's vocabulary even while floating.
+        let bar_has_bg = t.bar_background.unwrap_or(true);
+        if bar_has_bg {
+            // Picker docked to the bar: flat top, flat bottom, no
+            // outline. Bar background is already behind us so the two
+            // surfaces blend into one continuous rectangle.
+            let alpha = t.bar_background_alpha.unwrap_or(220);
             let bg = t.bg;
-            let r = ((bg >> 16) & 0xFF) as u8;
-            let g = ((bg >> 8) & 0xFF) as u8;
-            let b = (bg & 0xFF) as u8;
-
-            // Flat top (connects to bar), rounded bottom.
+            let fill = tiny_skia::Color::from_rgba8(
+                ((bg >> 16) & 0xFF) as u8,
+                ((bg >> 8) & 0xFF) as u8,
+                (bg & 0xFF) as u8,
+                alpha,
+            );
             if let Some(rect) = tiny_skia::Rect::from_xywh(0.0, 0.0, w as f32, h as f32) {
                 let mut paint = tiny_skia::Paint::default();
-                paint.set_color(tiny_skia::Color::from_rgba8(r, g, b, alpha));
+                paint.set_color(fill);
                 pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
             }
-            // Round bottom corners with a slightly inset fill.
-            fill_rounded_rect(
-                &mut pixmap,
-                0.0, h as f32 - BORDER_RADIUS * 2.0, w as f32, BORDER_RADIUS * 2.0,
-                BORDER_RADIUS,
-                tiny_skia::Color::from_rgba8(r, g, b, alpha),
-            );
+        } else {
+            let border_px = t.border_px.unwrap_or(2).max(1) as f32;
+            let radius = t.border_radius.map(|r| r as f32).unwrap_or(BORDER_RADIUS);
 
-            if !bar_has_bg {
-                // No bar background — add a top accent line so the
-                // picker has a clear visual anchor.
-                let a = t.accent;
-                let ar = ((a >> 16) & 0xFF) as u8;
-                let ag = ((a >> 8) & 0xFF) as u8;
-                let ab = (a & 0xFF) as u8;
-                if let Some(rect) = tiny_skia::Rect::from_xywh(0.0, 0.0, w as f32, 2.0) {
-                    let mut paint = tiny_skia::Paint::default();
-                    paint.set_color(tiny_skia::Color::from_rgba8(ar, ag, ab, 180));
-                    pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
+            // Pill fill — theme.surface at near-opaque alpha so text
+            // stays legible over varied wallpapers.
+            let fill_color = {
+                let s = t.surface;
+                tiny_skia::Color::from_rgba8(
+                    ((s >> 16) & 0xFF) as u8,
+                    ((s >> 8) & 0xFF) as u8,
+                    (s & 0xFF) as u8,
+                    235,
+                )
+            };
+            fill_rounded_rect(&mut pixmap, 0.0, 0.0, w as f32, h as f32, radius, fill_color);
+
+            // Border: tile pattern when the theme ships one (mirrors
+            // the compositor's tiled window border), solid stroke
+            // otherwise.
+            if let Some(tile) = self.border_tile.as_ref() {
+                if let Some(path) = rounded_rect_path(0.0, 0.0, w as f32, h as f32, radius) {
+                    let paint = tiny_skia::Paint {
+                        shader: tiny_skia::Pattern::new(
+                            tile.as_ref(),
+                            tiny_skia::SpreadMode::Repeat,
+                            tiny_skia::FilterQuality::Nearest,
+                            1.0,
+                            tiny_skia::Transform::identity(),
+                        ),
+                        anti_alias: radius > 0.0,
+                        ..Default::default()
+                    };
+                    pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
                 }
+                // Clear the interior so only the outer border ring
+                // keeps the tile — the pill fill above already went
+                // down, and we re-apply it inside the ring.
+                let inner_x = border_px;
+                let inner_y = border_px;
+                let inner_w = (w as f32 - border_px * 2.0).max(0.0);
+                let inner_h = (h as f32 - border_px * 2.0).max(0.0);
+                let inner_radius = (radius - border_px).max(0.0);
+                if inner_w > 0.0 && inner_h > 0.0 {
+                    fill_rounded_rect(
+                        &mut pixmap,
+                        inner_x, inner_y, inner_w, inner_h,
+                        inner_radius, fill_color,
+                    );
+                }
+            } else {
+                stroke_rounded_rect(
+                    &mut pixmap,
+                    border_px * 0.5,
+                    border_px * 0.5,
+                    w as f32 - border_px,
+                    h as f32 - border_px,
+                    radius,
+                    color_from_u32(t.border),
+                    border_px,
+                );
             }
         }
-
-        // Side + bottom border only — top connects to bar seamlessly.
-        // Left edge, bottom edge, right edge stroked; top edge open.
-        stroke_rounded_rect(
-            &mut pixmap,
-            0.5, 0.0, w as f32 - 1.0, h as f32 - 0.5,
-            BORDER_RADIUS, color_from_u32(t.border), 1.0,
-        );
 
         // THEME row
         let theme_row_y = PADDING;
@@ -1145,3 +1210,12 @@ impl ProvidesRegistryState for Picker {
     }
     registry_handlers![OutputState, SeatState];
 }
+
+/// Decode the theme's border tile PNG if the active theme provides
+/// one. Returns `None` on any failure so the picker falls back to a
+/// solid-color stroke. Called on startup and after every apply so
+/// the picker's border art follows the live theme.
+fn theme_border_tile(theme: &ThemeColors) -> Option<tiny_skia::Pixmap> {
+    tiny_skia::Pixmap::load_png(theme.border_tile_path.as_deref()?).ok()
+}
+

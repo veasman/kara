@@ -495,6 +495,14 @@ pub struct BarStyleSpec {
     /// Reserved slot.
     #[serde(default)]
     pub module_outline_svg: Option<SvgTileSpec>,
+    /// Theme-driven module layout override. Each string is one raw
+    /// module declaration line (e.g. `"left monitor group:nav"`,
+    /// `"center workspaces badges"`). When present, the generated
+    /// kara-gate include emits a `bar { modules { ... } }` block that
+    /// fully replaces the user's base module layout at parse time —
+    /// themes without `modules` leave the user's layout untouched.
+    #[serde(default)]
+    pub modules: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

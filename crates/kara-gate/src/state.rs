@@ -292,9 +292,14 @@ pub struct Gate {
     pub scratchpad_border_rects: Vec<(smithay::utils::Rectangle<i32, Logical>, bool)>,
     pub layout_dirty: bool,
     pub scratchpad_layout_dirty: bool,
-    // Cached border pixmap data per rect: (rgba_bytes, width, height)
-    pub border_cache: Vec<(Vec<u8>, u32, u32)>,
-    pub scratchpad_border_cache: Vec<(Vec<u8>, u32, u32)>,
+    // Cached border strips per rect. One `BorderStrips` = 4 small
+    // pixmaps (top / bottom / left / right) instead of a single
+    // window-sized pixmap that was 99% transparent. On a 1920×1080
+    // window this cuts per-border RAM from ~8 MB to ~50 KB and GPU
+    // upload proportionally — the single biggest memory reduction
+    // available without touching Mesa/gstreamer.
+    pub border_cache: Vec<crate::render::BorderStrips>,
+    pub scratchpad_border_cache: Vec<crate::render::BorderStrips>,
     /// Cached PNG → tiny-skia Pixmap for the active theme's window
     /// border tile (from `general.border_tile` in kara-gate.conf,
     /// written by kara-beautify from `window_border.svg_tile`).
@@ -306,6 +311,13 @@ pub struct Gate {
     /// rasterized on bar_dirty. `None` when bar blur is disabled or
     /// no wallpaper is loaded.
     pub bar_blur_cache: Option<(Vec<u8>, u32, u32)>,
+    /// CPU-side blurred wallpaper crop for a layer-shell surface that
+    /// asks for backdrop blur (kara-summon's theme picker). Keyed by
+    /// the surface's screen rect so we can invalidate when the picker
+    /// moves, resizes, or goes away. Tuple is
+    /// (rgba_bytes, width, height, x, y) where x/y are the global
+    /// coordinates the pixmap was generated at.
+    pub picker_blur_cache: Option<(Vec<u8>, u32, u32, i32, i32)>,
     pub border_offsets: Vec<(f64, f64)>,
     pub scratchpad_border_offsets: Vec<(f64, f64)>,
 
@@ -333,9 +345,10 @@ pub struct Gate {
     /// when bar_dirty fires.
     pub bar_texture_cache: std::collections::HashMap<usize, TextureBuffer<KaraTexture>>,
     /// Cached GPU TextureBuffers for window borders — parallel to
-    /// border_cache. Cleared on layout_dirty.
-    pub border_texture_cache: Vec<Option<TextureBuffer<KaraTexture>>>,
-    pub scratchpad_border_texture_cache: Vec<Option<TextureBuffer<KaraTexture>>>,
+    /// border_cache. Each entry holds up to 4 small strip textures.
+    /// Cleared on layout_dirty.
+    pub border_texture_cache: Vec<crate::render::BorderStripTextures>,
+    pub scratchpad_border_texture_cache: Vec<crate::render::BorderStripTextures>,
 
     /// Lazily-compiled Gaussian shader program for scratchpad backdrop
     /// blur. Compiled on first blur-enabled frame; shared across all
@@ -467,6 +480,7 @@ impl Gate {
             scratchpad_border_cache: Vec::new(),
             border_tile_pixmap: None,
             bar_blur_cache: None,
+            picker_blur_cache: None,
             scratchpad_border_offsets: Vec::new(),
             border_offsets: Vec::new(),
             animations: crate::animation::AnimationManager::new(),
@@ -526,6 +540,7 @@ impl Gate {
             .unwrap_or(self.config.general.font_size);
         self.bar_renderer.set_font(bar_font, bar_font_size);
         self.bar_blur_cache = None;
+        self.picker_blur_cache = None;
 
         // Recompute workarea for bar height changes
         self.recompute_workarea();

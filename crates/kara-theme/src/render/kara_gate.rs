@@ -202,6 +202,26 @@ theme {{
             }
             out.push_str("}\n");
         }
+
+        // Module layout override. kara-config clears bar.modules when
+        // a new `modules { }` block is parsed, so emitting one here
+        // replaces the user's base layout with the theme's for as
+        // long as this theme is active. Pass each user-authored line
+        // through verbatim — the config parser handles section /
+        // module-kind / args / group tokens the same way it does in
+        // the user's kara-gate.conf.
+        if let Some(mods) = bar.modules.as_ref() {
+            if !mods.is_empty() {
+                out.push('\n');
+                out.push_str("bar {\n    modules {\n");
+                for line in mods {
+                    out.push_str("        ");
+                    out.push_str(line);
+                    out.push('\n');
+                }
+                out.push_str("    }\n}\n");
+            }
+        }
     }
 
     // Theme-driven bar font override emitted INTO the bar { } block

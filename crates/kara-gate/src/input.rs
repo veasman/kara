@@ -279,10 +279,14 @@ impl Gate {
         event: B::PointerMotionEvent,
     ) {
         let delta = event.delta();
-        let (max_x, max_y) = self.output_bounds;
-        let new_x = (self.pointer_location.x + delta.x).clamp(0.0, max_x as f64 - 1.0);
-        let new_y = (self.pointer_location.y + delta.y).clamp(0.0, max_y as f64 - 1.0);
-        self.pointer_location = (new_x, new_y).into();
+        let old = self.pointer_location;
+        let proposed = smithay::utils::Point::from((old.x + delta.x, old.y + delta.y));
+        // Monitors may not tile the bounding rectangle (different sizes,
+        // gaps, portrait mixed with landscape) — a simple clamp to
+        // `output_bounds` lets the cursor escape into dead zones between
+        // outputs. Clamp axis-by-axis against the union of real output
+        // rects so the cursor always lands on a visible monitor.
+        self.pointer_location = clamp_to_outputs(&self.outputs, old, proposed);
         self.update_cursor_idle();
 
         // NOTE: pointer motion no longer updates `focused_output`. The user's
@@ -425,4 +429,41 @@ impl Gate {
         pointer.axis(self, frame);
         pointer.frame(self);
     }
+}
+
+/// Clamp a proposed cursor position to the union of output rectangles.
+/// Outputs can be laid out with gaps, mixed sizes, or a portrait mixed
+/// with landscape — simply clipping to a bounding box admits dead zones.
+/// Try the proposed point; if it's off-screen, try sliding along one
+/// axis at a time so edge-skimming movement still works; otherwise hold
+/// the old position.
+fn clamp_to_outputs(
+    outputs: &[crate::state::OutputState],
+    old: smithay::utils::Point<f64, smithay::utils::Logical>,
+    new: smithay::utils::Point<f64, smithay::utils::Logical>,
+) -> smithay::utils::Point<f64, smithay::utils::Logical> {
+    if outputs.is_empty() {
+        return new;
+    }
+    let inside = |p: smithay::utils::Point<f64, smithay::utils::Logical>| -> bool {
+        outputs.iter().any(|o| {
+            let (w, h) = o.size;
+            p.x >= o.location.x as f64
+                && p.x < (o.location.x + w) as f64
+                && p.y >= o.location.y as f64
+                && p.y < (o.location.y + h) as f64
+        })
+    };
+    if inside(new) {
+        return new;
+    }
+    let try_x = smithay::utils::Point::from((new.x, old.y));
+    if inside(try_x) {
+        return try_x;
+    }
+    let try_y = smithay::utils::Point::from((old.x, new.y));
+    if inside(try_y) {
+        return try_y;
+    }
+    old
 }

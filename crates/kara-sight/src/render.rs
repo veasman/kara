@@ -294,10 +294,10 @@ impl BarRenderer {
         module: &BarModule,
         ctx: &ModuleContext,
         _bar_config: &BarConfig,
-        _ws_ctx: &WorkspaceContext,
+        ws_ctx: &WorkspaceContext,
     ) -> u32 {
         if module.kind == BarModuleKind::Workspaces {
-            return self.measure_workspaces(ctx);
+            return self.measure_workspaces(ctx, module, ws_ctx);
         }
 
         let content = text::build_module_text(&module.kind, &module.args, ctx);
@@ -318,7 +318,28 @@ impl BarRenderer {
         w
     }
 
-    fn measure_workspaces(&mut self, ctx: &ModuleContext) -> u32 {
+    fn measure_workspaces(
+        &mut self,
+        ctx: &ModuleContext,
+        module: &BarModule,
+        ws_ctx: &WorkspaceContext,
+    ) -> u32 {
+        if workspaces_is_badges(module) {
+            // Badges: a filled dot per visible workspace. Skip empty,
+            // unused workspaces so the module shrinks to just what's
+            // in use. Current dot is larger; each dot occupies the
+            // current-dot size so gaps stay even regardless of focus.
+            let slot = self.text.font_size * 0.9;
+            let gap = self.text.font_size * 0.45;
+            let count = (0..9)
+                .filter(|i| *i == ws_ctx.current_ws || ws_ctx.occupied_workspaces[*i])
+                .count();
+            if count == 0 {
+                return 0;
+            }
+            return (slot * count as f32 + gap * (count.saturating_sub(1)) as f32)
+                .ceil() as u32;
+        }
         if ctx.icons {
             let dot_size = self.text.font_size * 0.45;
             let gap = self.text.font_size * 0.4;
@@ -366,7 +387,11 @@ impl BarRenderer {
 
         // Special: Workspaces
         if module.kind == BarModuleKind::Workspaces {
-            self.draw_workspaces(pixmap, x, center_y, ctx, theme, ws_ctx);
+            if workspaces_is_badges(module) {
+                self.draw_workspaces_badges(pixmap, x, center_y, ctx, theme, ws_ctx);
+            } else {
+                self.draw_workspaces(pixmap, x, center_y, ctx, theme, ws_ctx);
+            }
             return;
         }
 
@@ -448,6 +473,56 @@ impl BarRenderer {
             }
         }
     }
+
+    /// Badges style (fantasy): one filled dot per visible workspace.
+    /// Skips unoccupied workspaces so the module shrinks with use.
+    /// The current workspace's dot is slightly larger and uses the
+    /// accent color; occupied-but-unfocused dots use text_muted for a
+    /// dimmer read. Each dot is allotted the same slot width so the
+    /// module doesn't re-flow when focus moves between workspaces.
+    fn draw_workspaces_badges(
+        &mut self,
+        pixmap: &mut Pixmap,
+        x: i32,
+        center_y: f32,
+        _ctx: &ModuleContext,
+        theme: &Theme,
+        ws_ctx: &WorkspaceContext,
+    ) {
+        let slot = self.text.font_size * 0.9;
+        let current_radius = slot * 0.45;
+        let other_radius = slot * 0.28;
+        let gap = self.text.font_size * 0.45;
+
+        let visible: Vec<usize> = (0..9)
+            .filter(|i| *i == ws_ctx.current_ws || ws_ctx.occupied_workspaces[*i])
+            .collect();
+
+        let mut cx = x as f32;
+        let n = visible.len();
+        for (idx, &i) in visible.iter().enumerate() {
+            let is_current = i == ws_ctx.current_ws;
+            let (radius, color) = if is_current {
+                (current_radius, theme.accent)
+            } else {
+                (other_radius, theme.text_muted)
+            };
+            fill_circle(pixmap, cx + slot * 0.5, center_y, radius, color_from_u32(color));
+            cx += slot;
+            if idx + 1 < n {
+                cx += gap;
+            }
+        }
+    }
+}
+
+/// True when the workspaces module has opted into the badge style
+/// (filled circles with numbers, autohiding unused workspaces).
+fn workspaces_is_badges(module: &BarModule) -> bool {
+    module
+        .args
+        .iter()
+        .any(|a| a.eq_ignore_ascii_case("badges") || a.eq_ignore_ascii_case("big"))
 }
 
 // ── Workspace context (provided by compositor) ──────────────────────
