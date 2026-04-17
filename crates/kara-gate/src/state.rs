@@ -368,16 +368,6 @@ pub struct Gate {
 
     // Cursor rendering
     pub cursor_status: CursorImageStatus,
-    /// Last wl_surface the pointer was over. When pointer motion moves
-    /// onto a different surface (or onto empty desktop), kara resets
-    /// `cursor_status` back to the default Named cursor so the new
-    /// surface shows an arrow until its client calls set_cursor.
-    /// Without this the cursor sticks on whatever the previous client
-    /// had set (e.g. the text I-beam from a terminal follows the
-    /// pointer over the next window).
-    pub last_pointer_surface: Option<
-        smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
-    >,
     pub cursor_cache: Option<crate::cursor::CursorCache>,
     pub named_cursor_cache: std::collections::HashMap<smithay::input::pointer::CursorIcon, crate::cursor::CursorCache>,
     pub cursor_last_moved: std::time::Instant,
@@ -517,7 +507,6 @@ impl Gate {
             blur_program: crate::blur::BlurProgram::new(),
             pointer_location: (0.0, 0.0).into(),
             cursor_status: CursorImageStatus::default_named(),
-            last_pointer_surface: None,
             cursor_cache: None,
             named_cursor_cache: std::collections::HashMap::new(),
             cursor_last_moved: std::time::Instant::now(),

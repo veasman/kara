@@ -295,6 +295,17 @@ impl VideoStream {
     pub fn take_latest(&self) -> Option<VideoFrame> {
         self.latest.lock().unwrap().take()
     }
+
+    /// Peek whether a decoded frame is waiting in the shared slot
+    /// without consuming it. Used by `Wallpaper::tick` so the main
+    /// loop can decide whether to invalidate downstream caches
+    /// (bar blur etc.) only when a frame actually changed. Before
+    /// this, `tick` claimed every poll was a new frame and the
+    /// CPU-side bar blur rebuilt at the tick cadence even during
+    /// idle stretches of the video.
+    pub fn has_pending_frame(&self) -> bool {
+        self.latest.lock().unwrap().is_some()
+    }
 }
 
 impl Drop for VideoStream {

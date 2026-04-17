@@ -260,19 +260,15 @@ impl Wallpaper {
                 false
             }
             WallpaperKind::Video { stream, .. } => {
-                // The actual upload happens in `texture()`. Here we
-                // just peek at whether a new frame is waiting so
-                // the main loop knows to schedule a redraw — but
-                // we don't consume the frame yet (that's what
-                // texture() does). A cheap way to check: the video
-                // stream's latest slot is Some if there's a new
-                // frame since the last `take_latest()`. Rather
-                // than peek-vs-take, always return true for video
-                // and let `texture()` decide whether to actually
-                // re-upload. Wastes at most one no-op redraw
-                // check per tick interval, which is negligible.
-                let _ = stream;
-                true
+                // Only report a new frame when the decode pipeline
+                // actually produced one since the last take_latest().
+                // Returning `true` unconditionally made downstream
+                // invalidation (bar blur, bar_dirty) fire at tick
+                // cadence regardless of whether a frame changed —
+                // which rebuilt the full CPU box blur of the bar
+                // region 60×/sec even during idle video stretches
+                // and showed up as compositor-wide choppiness.
+                stream.has_pending_frame()
             }
         }
     }
