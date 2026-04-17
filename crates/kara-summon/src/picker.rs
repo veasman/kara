@@ -530,6 +530,19 @@ impl Picker {
             {
                 self.border_tile = theme_border_tile(&colors);
                 self.theme_colors = colors;
+                // Themes ship their own bar heights (fantasy 40 /
+                // moonlight 38 / default 26) and their own
+                // background opacity. When the user previews a
+                // different theme, re-pin the picker's top margin
+                // against the new bar_height so it keeps docking to
+                // (or floating just below) the bar instead of
+                // floating over the old-bar position.
+                let bar_h = self.theme_colors.bar_height.unwrap_or(26) as i32;
+                let has_bg = self.theme_colors.bar_background.unwrap_or(true);
+                let top_margin = if has_bg { bar_h } else { bar_h + 6 };
+                let right_margin = if has_bg { 0 } else { 16 };
+                self.layer.set_margin(top_margin, right_margin, 0, 0);
+                self.layer.commit();
             }
         }
     }
