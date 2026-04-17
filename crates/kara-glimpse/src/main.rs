@@ -256,15 +256,42 @@ fn wait_and_copy(capture_path: &str, save_path: Option<String>) {
         }
         Err(e) => eprintln!("kara-glimpse: failed to open capture for clipboard: {e}"),
     }
-    if let Some(dest) = save_path {
+    let final_path = if let Some(dest) = save_path {
         if let Err(e) = std::fs::copy(capture_path, &dest) {
             eprintln!("kara-glimpse: failed to save to {dest}: {e}");
+            capture_path.to_string()
         } else {
             println!("{dest}");
+            dest
         }
     } else {
         println!("{capture_path}");
-    }
+        capture_path.to_string()
+    };
+
+    notify_captured(&final_path);
+}
+
+/// Fire a desktop notification confirming the screenshot. Uses the
+/// saved PNG itself as the notification icon so whisper renders a
+/// thumbnail of the capture on the card — closes the screenshot loop
+/// without a separate thumbnail pipeline. Best-effort: if notify-send
+/// isn't installed or the D-Bus service is down, we silently skip.
+fn notify_captured(path: &str) {
+    use std::process::{Command, Stdio};
+
+    let _ = Command::new("notify-send")
+        .args([
+            "--app-name=kara-glimpse",
+            "--icon",
+            path,
+            "--expire-time=4000",
+            "Screenshot captured",
+            path,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }
 
 struct Glimpse {
