@@ -649,9 +649,14 @@ impl Gate {
 
         match crate::cursor::load_xcursor(theme_name, "default", size) {
             Some(cache) => {
+                let (w, h, n_frames) = cache
+                    .frames
+                    .first()
+                    .map(|f| (f.width, f.height, cache.frames.len()))
+                    .unwrap_or((0, 0, 0));
                 tracing::info!(
-                    "loaded cursor: {}x{} from theme '{}'",
-                    cache.width, cache.height, theme_name,
+                    "loaded cursor: {}x{} ({} frame(s)) from theme '{}'",
+                    w, h, n_frames, theme_name,
                 );
                 self.cursor_cache = Some(cache);
             }

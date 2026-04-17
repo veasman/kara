@@ -60,8 +60,8 @@ mono_size = 16
 [cursor]
 # Night Diamond (Red) — crimson cursor for the gothic fantasy look.
 # AUR: night-diamond-cursor-theme installs Night-Diamond-Red.
-theme = "Night-Diamond-Red"
-size = 24
+theme = "Rage-Gothic-Light"
+size = 34
 
 # ─── Reserved structured slots (no renderer consumes these yet) ────
 # Forward-compatible decoration slots. Per-variant legacy blocks

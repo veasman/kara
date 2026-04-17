@@ -37,8 +37,8 @@ mono_family = "FiraCode Nerd Font"
 mono_size = 13
 
 [cursor]
-theme = "Night-Diamond-Blue"
-size = 24
+theme = "miku-cursor-linux"
+size = 30
 
 [nvim]
 preset = "semantic"
