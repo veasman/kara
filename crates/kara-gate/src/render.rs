@@ -618,8 +618,14 @@ fn render_bar_blur(
         kara_config::BarPosition::Bottom => out_h - bar_h,
     };
 
-    // Re-rasterize on bar_dirty (includes first frame).
-    if state.bar_blur_cache.is_none() || state.bar_dirty {
+    // Rebuild on cache miss only. `bar_dirty` fires every second
+    // from the status timer (clock tick, battery/cpu refresh, etc.)
+    // and would otherwise force the blur pipeline to re-box-blur
+    // the full bar region on every cache-dirty second even when the
+    // wallpaper hasn't changed. Wallpaper swaps and wallpaper frame
+    // advances explicitly clear `bar_blur_cache` themselves, so
+    // static wallpapers hold the cached blur indefinitely.
+    if state.bar_blur_cache.is_none() {
         let wp = state.wallpaper.as_ref()?;
         let (rgba, src_w, src_h) = wp.current_rgba()?;
 

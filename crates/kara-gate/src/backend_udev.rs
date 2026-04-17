@@ -1357,6 +1357,15 @@ pub fn run(
                         // costs an extra bar redraw per frame
                         // but bar rendering is cheap (~1 ms).
                         state.bar_dirty = true;
+                        // Wallpaper pixels moved under the bar,
+                        // so the cached blur is stale. Drop both
+                        // the pixel cache and its GPU texture so
+                        // the next bar render rebuilds from the
+                        // new frame. Without this the frosted
+                        // glass behind the bar would freeze on
+                        // the first wallpaper frame.
+                        state.bar_blur_cache = None;
+                        state.bar_blur_texture = None;
                     }
                     // Reschedule per frame for animations, or
                     // 250ms for stills/no-wallpaper so a new
