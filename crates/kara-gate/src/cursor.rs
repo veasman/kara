@@ -138,10 +138,15 @@ pub fn build_cursor_element(
     renderer: &mut KaraRenderer<'_>,
     output_idx: usize,
 ) -> Option<TextureRenderElement<KaraTexture>> {
-    // Check pointer-on-output and idle-hide using immutable borrows
-    // BEFORE taking a &mut cache reference. Otherwise the mutable
-    // borrow required to lazily upload per-frame textures collides
-    // with the immutable calls into `state`.
+    // Honor the idle-hide timeout for every cursor, animated or not.
+    // Autohide is "the user stopped interacting, get the pointer out
+    // of the content" — animations aren't a reason to override that.
+    // The Miku/Koishi animation still plays while the user is active
+    // because the idle timer resets on every pointer motion.
+    if state.cursor_is_idle() {
+        return None;
+    }
+
     let status = state.cursor_status.clone();
     if matches!(status, CursorImageStatus::Hidden) {
         return None;
@@ -155,7 +160,6 @@ pub fn build_cursor_element(
         return None;
     }
     let out_loc = out.location;
-    let idle = state.cursor_is_idle();
 
     // Make sure the named cursor is loaded. This is the only path
     // that needs `state` mutably outside of the texture-upload step
@@ -181,13 +185,6 @@ pub fn build_cursor_element(
         CursorImageStatus::Surface(_) => state.cursor_cache.as_mut()?,
         CursorImageStatus::Hidden => return None,
     };
-
-    // Idle-hide: static cursors fade out on idle, animated cursors
-    // keep playing. Users watch them play.
-    let is_animated = cache.frames.len() > 1 && cache.total_cycle_ms > 0;
-    if !is_animated && idle {
-        return None;
-    }
 
     let idx = cache.current_frame_idx(Instant::now());
     let frame = cache.frames.get(idx)?;
