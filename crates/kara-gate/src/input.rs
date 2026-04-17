@@ -204,26 +204,32 @@ impl Gate {
         }
     }
 
-    /// When the pointer moves onto a different wl_surface than last
-    /// frame, reset `cursor_status` to the default Named cursor. This
-    /// gives the new surface's client a clean slate: if they call
-    /// `set_cursor` via `wp_cursor_shape` or classic `wl_pointer.set_cursor`,
-    /// the update flows through `cursor_image` and replaces the default.
-    /// If they don't, the cursor stays as the theme's default arrow
-    /// instead of bleeding through whatever the previous client last
-    /// set (the text I-beam sticking around after leaving a terminal).
+    /// Reset `cursor_status` to the default Named cursor when the
+    /// pointer moves onto empty desktop after being over a surface.
+    /// This clears the previous client's cursor (e.g. a terminal's
+    /// I-beam) so moving the pointer off a window shows the arrow
+    /// again. We intentionally do NOT reset on every surface change
+    /// — subsurface boundaries within a single toplevel (Firefox
+    /// widgets, popups) would otherwise flicker the cursor on every
+    /// pixel of motion. When the pointer enters a new toplevel
+    /// surface, that client's `set_cursor` on wl_pointer.enter takes
+    /// effect through the normal path.
     fn reset_cursor_on_surface_change(
         &mut self,
         new_surface: Option<&smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
     ) {
-        let same = match (&self.last_pointer_surface, new_surface) {
-            (None, None) => true,
-            (Some(a), Some(b)) => a == b,
-            _ => false,
-        };
-        if !same {
+        let was_over = self.last_pointer_surface.is_some();
+        let now_over = new_surface.is_some();
+        if was_over && !now_over {
             self.cursor_status =
                 smithay::input::pointer::CursorImageStatus::default_named();
+        }
+        // Track the current surface for the None↔Some transition
+        // detection above. Cloning a WlSurface is a ref-count bump
+        // so this is cheap at motion-event rates.
+        if was_over != now_over
+            || self.last_pointer_surface.as_ref() != new_surface
+        {
             self.last_pointer_surface = new_surface.cloned();
         }
     }

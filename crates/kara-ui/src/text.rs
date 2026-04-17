@@ -43,9 +43,14 @@ pub struct TextRenderer {
     pub font_size: f32,
     pub line_height: f32,
     font_family: String,
-    /// Cached result of center_y_offset for the current font.
-    /// Invalidated when font_size or font_family changes.
-    cached_center_offset: Option<f32>,
+    /// Glyph-bbox center offsets, keyed by (font_family, font_size
+    /// bits). Memoizing here is critical for the bar's mixed-size
+    /// rendering path: `draw_row` / `measure_row` swap `font_size`
+    /// between the text and icon sizes a handful of times per module
+    /// per frame, and without a persistent cache each swap would
+    /// reshape `"Hg"` through cosmic-text and rasterize both glyphs
+    /// just to recompute the same centering offset.
+    cached_center_offsets: std::collections::HashMap<(String, u32), f32>,
 }
 
 impl TextRenderer {
@@ -56,7 +61,7 @@ impl TextRenderer {
             font_size,
             line_height: font_size,
             font_family: String::new(),
-            cached_center_offset: None,
+            cached_center_offsets: std::collections::HashMap::new(),
         }
     }
 
@@ -67,19 +72,17 @@ impl TextRenderer {
             font_size,
             line_height: font_size,
             font_family: font_family.to_string(),
-            cached_center_offset: None,
+            cached_center_offsets: std::collections::HashMap::new(),
         }
     }
 
     pub fn set_font_size(&mut self, size: f32) {
         self.font_size = size;
         self.line_height = size;
-        self.cached_center_offset = None;
     }
 
     pub fn set_font_family(&mut self, family: &str) {
         self.font_family = family.to_string();
-        self.cached_center_offset = None;
     }
 
     /// Compute the y offset needed so that text is vertically
@@ -104,17 +107,18 @@ impl TextRenderer {
     pub fn center_y_offset(&mut self, center_y: f32) -> f32 {
         // Cache the glyph-bbox offset — it only depends on font
         // family + size, not on center_y or the specific text. The
-        // expensive shaping + glyph-image walk runs once per font
-        // config change, not once per module per frame.
-        let offset = match self.cached_center_offset {
-            Some(off) => off,
-            None => {
-                let off = self.compute_glyph_center_offset();
-                self.cached_center_offset = Some(off);
-                off
-            }
-        };
-        center_y - offset
+        // expensive shaping + glyph-image walk runs once per
+        // (font_family, font_size) combination for the process
+        // lifetime, so the bar's draw_row pattern (which swaps
+        // font_size between text and icon sizes several times per
+        // module) stays in cache after the first render.
+        let key = (self.font_family.clone(), self.font_size.to_bits());
+        if let Some(off) = self.cached_center_offsets.get(&key) {
+            return center_y - *off;
+        }
+        let off = self.compute_glyph_center_offset();
+        self.cached_center_offsets.insert(key, off);
+        center_y - off
     }
 
     fn compute_glyph_center_offset(&mut self) -> f32 {
@@ -184,9 +188,17 @@ impl TextRenderer {
     /// at `self.font_size`. Some fonts (e.g. 3270 Nerd Font Mono)
     /// design icon glyphs smaller than their text glyphs so an
     /// icon_size > font_size is often needed to match visual weight.
+    ///
+    /// Fast-paths: if the text contains no icon codepoints, or the
+    /// caller passed `icon_size == self.font_size`, skip the segment
+    /// split and delegate straight to `measure` — avoids one extra
+    /// Buffer shape per call that the caller doesn't need.
     pub fn measure_row(&mut self, text: &str, icon_size: f32) -> u32 {
         if text.is_empty() {
             return 0;
+        }
+        if icon_size == self.font_size || !text.chars().any(is_icon_codepoint) {
+            return self.measure(text);
         }
         let base_size = self.font_size;
         let mut total = 0.0f32;
@@ -207,6 +219,8 @@ impl TextRenderer {
     /// centering each run on `center_y`. Icon-codepoint runs render
     /// at `icon_size`; text runs at `self.font_size`. Returns the
     /// total advance in pixels.
+    ///
+    /// Fast-paths analogous to `measure_row`.
     pub fn draw_row(
         &mut self,
         pixmap: &mut Pixmap,
@@ -218,6 +232,11 @@ impl TextRenderer {
     ) -> f32 {
         if text.is_empty() {
             return 0.0;
+        }
+        if icon_size == self.font_size || !text.chars().any(is_icon_codepoint) {
+            let y = self.center_y_offset(center_y);
+            self.draw(pixmap, text, x, y, color);
+            return self.measure(text) as f32;
         }
         let base_size = self.font_size;
         let mut cx = x;
