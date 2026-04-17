@@ -148,6 +148,20 @@ pub fn apply_theme_file(
         } else {
             None
         };
+    // Thunderbird shares the Mozilla profiles.ini layout, so the same
+    // locator resolves its active profile. Same user.js prefs apply —
+    // systemUsesDarkTheme, prefers-color-scheme-content-override,
+    // allow-gtk-dark-theme — which together drive the message-list
+    // content area and compose window into dark when the theme is dark.
+    let thunderbird_user_js_path =
+        if c.thunderbird {
+            match crate::floorp_profile::find_active_profile(&paths.thunderbird_root())? {
+                Some(profile) => Some(profile.join("user.js")),
+                None => None,
+            }
+        } else {
+            None
+        };
 
     if options.dry_run {
         println!("dry-run: {}", spec.meta.name);
@@ -196,9 +210,14 @@ pub fn apply_theme_file(
         } else if c.floorp {
             println!("  would write: (floorp enabled but no profile found)");
         }
+        if let Some(ref p) = thunderbird_user_js_path {
+            println!("  would write: {}", p.display());
+        } else if c.thunderbird {
+            println!("  would write: (thunderbird enabled but no profile found)");
+        }
         println!(
-            "  (consumers: kara_gate={} kitty={} foot={} nvim={} tmux={} fzf={} session={} gtk={} floorp={})",
-            c.kara_gate, c.kitty, c.foot, c.nvim, c.tmux, c.fzf, c.session, c.gtk, c.floorp
+            "  (consumers: kara_gate={} kitty={} foot={} nvim={} tmux={} fzf={} session={} gtk={} floorp={} thunderbird={})",
+            c.kara_gate, c.kitty, c.foot, c.nvim, c.tmux, c.fzf, c.session, c.gtk, c.floorp, c.thunderbird
         );
 
         if let Some(wallpaper) = selected_wallpaper(
@@ -280,6 +299,11 @@ pub fn apply_theme_file(
         // want to merge with arbitrary user prefs — if the user wants
         // custom prefs alongside, they can set consumers.floorp = false
         // and maintain their own file. Atomic write via write_if_changed.
+        let _ = write_if_changed(path, &floorp_user_js)?;
+    }
+    if let Some(ref path) = thunderbird_user_js_path {
+        // Same reasoning as Floorp — full-file owned by kara-beautify.
+        // Set consumers.thunderbird = false to opt out.
         let _ = write_if_changed(path, &floorp_user_js)?;
     }
     // write_current_theme takes the bare theme name (not "theme:variant"

@@ -236,6 +236,16 @@ impl KaraPaths {
         self.home.join(".floorp")
     }
 
+    /// Root of the Thunderbird profile tree. Same `profiles.ini`
+    /// layout as Floorp — the active profile is resolved through
+    /// the shared `mozilla_profile` locator and gets a user.js
+    /// written with the same dark-mode prefs so its message view
+    /// and settings UI follow the active kara theme instead of
+    /// defaulting to the system light palette.
+    pub fn thunderbird_root(&self) -> PathBuf {
+        self.home.join(".thunderbird")
+    }
+
     pub fn nvim_theme_path(&self) -> PathBuf {
         self.generated_dir().join("nvim-theme.lua")
     }

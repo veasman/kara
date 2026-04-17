@@ -65,6 +65,12 @@ pub struct ConsumerConfig {
     pub gtk: bool,
     #[serde(default = "default_true")]
     pub floorp: bool,
+    /// Patch the active Thunderbird profile's user.js with the same
+    /// dark-mode prefs we write for Floorp so the message list,
+    /// compose window, and settings UI follow the active kara theme
+    /// instead of defaulting to the system light palette.
+    #[serde(default = "default_true")]
+    pub thunderbird: bool,
 }
 
 impl Default for ConsumerConfig {
@@ -79,6 +85,7 @@ impl Default for ConsumerConfig {
             session: true,
             gtk: true,
             floorp: true,
+            thunderbird: true,
         }
     }
 }
