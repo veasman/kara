@@ -652,8 +652,12 @@ fn render_bar_blur(
         }
 
         // Iterated box blur (3 passes ≈ Gaussian approximation).
+        // One scratch vec shared across passes so we don't allocate
+        // a fresh full-sized tmp buffer inside `box_blur_rgba` three
+        // times per rebuild.
+        let mut scratch: Vec<u8> = vec![0u8; buf.len()];
         for _ in 0..3 {
-            box_blur_rgba(&mut buf, bw, bh);
+            box_blur_rgba(&mut buf, bw, bh, &mut scratch);
         }
 
         // Scale to output bar dimensions.
@@ -678,24 +682,36 @@ fn render_bar_blur(
         }
 
         state.bar_blur_cache = Some((pixmap.data().to_vec(), out_w as u32, bar_h as u32));
+        // Pixel cache rebuilt → drop the stale GPU texture so the
+        // next access uploads fresh bytes.
+        state.bar_blur_texture = None;
     }
 
-    let (data, w, h) = state.bar_blur_cache.as_ref()?;
-    let texture_buffer = TextureBuffer::from_memory(
-        renderer,
-        data,
-        Fourcc::Abgr8888,
-        Size::from((*w as i32, *h as i32)),
-        false,
-        1,
-        Transform::Normal,
-        None,
-    )
-    .ok()?;
+    // Upload the blurred bytes to the GPU once per cache rebuild,
+    // then reuse the `TextureBuffer` across every subsequent frame.
+    // Before this caching step the bar would reupload its full
+    // bar-width-by-height texture on every frame, wasting driver
+    // bandwidth for a surface that only changes on wallpaper or bar
+    // geometry moves.
+    if state.bar_blur_texture.is_none() {
+        let (data, w, h) = state.bar_blur_cache.as_ref()?;
+        state.bar_blur_texture = TextureBuffer::from_memory(
+            renderer,
+            data,
+            Fourcc::Abgr8888,
+            Size::from((*w as i32, *h as i32)),
+            false,
+            1,
+            Transform::Normal,
+            None,
+        )
+        .ok();
+    }
+    let texture_buffer = state.bar_blur_texture.as_ref()?;
 
     Some(TextureRenderElement::from_texture_buffer(
         Point::from((0.0, bar_y as f64)),
-        &texture_buffer,
+        texture_buffer,
         None,
         None,
         None,
@@ -774,9 +790,11 @@ pub(crate) fn render_picker_blur(
         }
         // Iterated box blur (3 passes ≈ Gaussian approximation) —
         // same recipe as the bar's blur so the two surfaces look
-        // like one frosted pane.
+        // like one frosted pane. Single scratch buffer shared across
+        // the three passes.
+        let mut scratch: Vec<u8> = vec![0u8; buf.len()];
         for _ in 0..3 {
-            box_blur_rgba(&mut buf, bw, bh);
+            box_blur_rgba(&mut buf, bw, bh, &mut scratch);
         }
 
         let mut pixmap = tiny_skia::Pixmap::new(rw as u32, rh as u32)?;
@@ -804,26 +822,36 @@ pub(crate) fn render_picker_blur(
             rx,
             ry,
         ));
+        // Pixel cache rebuilt → drop the stale GPU texture so the
+        // next access uploads fresh bytes.
+        state.picker_blur_texture = None;
     }
 
-    let (data, w, h, _, _) = state.picker_blur_cache.as_ref()?;
-    let texture_buffer = TextureBuffer::from_memory(
-        renderer,
-        data,
-        Fourcc::Abgr8888,
-        Size::from((*w as i32, *h as i32)),
-        false,
-        1,
-        Transform::Normal,
-        None,
-    )
-    .ok()?;
+    // Upload once per cache rebuild, reuse the TextureBuffer across
+    // every subsequent frame the picker is open. Before this we were
+    // reuploading the full picker-rect blurred texture to the GPU on
+    // every compositor frame while the picker was visible.
+    if state.picker_blur_texture.is_none() {
+        let (data, w, h, _, _) = state.picker_blur_cache.as_ref()?;
+        state.picker_blur_texture = TextureBuffer::from_memory(
+            renderer,
+            data,
+            Fourcc::Abgr8888,
+            Size::from((*w as i32, *h as i32)),
+            false,
+            1,
+            Transform::Normal,
+            None,
+        )
+        .ok();
+    }
+    let texture_buffer = state.picker_blur_texture.as_ref()?;
 
     // Position is output-local (the caller is operating in output
     // coordinates for its frame). Subtract the output origin here.
     Some(TextureRenderElement::from_texture_buffer(
         Point::from(((rx - out_x) as f64, (ry - out_y) as f64)),
-        &texture_buffer,
+        texture_buffer,
         None,
         None,
         None,
@@ -831,11 +859,16 @@ pub(crate) fn render_picker_blur(
     ))
 }
 
-/// Single-pass horizontal box blur on RGBA buffer.
-fn box_blur_rgba(buf: &mut [u8], w: usize, h: usize) {
+/// Two-pass separable box blur on an RGBA buffer. Callers pass in a
+/// `scratch` slice of the same length as `buf` so iterated passes can
+/// share a single temporary — the old signature allocated a fresh
+/// `Vec<u8>` sized to the image inside every call, which cost three
+/// full-rect allocations per blur rebuild.
+fn box_blur_rgba(buf: &mut [u8], w: usize, h: usize, scratch: &mut [u8]) {
     let radius = 5usize;
     let diam = radius * 2 + 1;
-    let mut tmp = vec![0u8; buf.len()];
+    debug_assert_eq!(scratch.len(), buf.len());
+    let tmp = scratch;
 
     // Horizontal pass → tmp
     for y in 0..h {

@@ -64,9 +64,14 @@ impl Gate {
                         // Drop every cache that sampled the old wallpaper
                         // — otherwise a theme switch keeps blurring the
                         // previous theme's background behind the bar and
-                        // the theme picker.
+                        // the theme picker. GPU textures go with the
+                        // bytes: keeping a stale texture would have the
+                        // compositor uploading the new blur bytes on
+                        // cache rebuild but still drawing the old one.
                         self.bar_blur_cache = None;
+                        self.bar_blur_texture = None;
                         self.picker_blur_cache = None;
+                        self.picker_blur_texture = None;
                     } else {
                         tracing::warn!("async wallpaper decode returned None");
                     }

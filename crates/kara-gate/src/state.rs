@@ -311,6 +311,13 @@ pub struct Gate {
     /// rasterized on bar_dirty. `None` when bar blur is disabled or
     /// no wallpaper is loaded.
     pub bar_blur_cache: Option<(Vec<u8>, u32, u32)>,
+    /// Cached GPU upload of `bar_blur_cache`. Reuploading the blurred
+    /// wallpaper via `TextureBuffer::from_memory` every frame was
+    /// costing one full bar-sized GPU upload per output per frame;
+    /// storing the `TextureBuffer` alongside the bytes lets the
+    /// compositor reuse it across frames. Dropped whenever the byte
+    /// cache is invalidated.
+    pub bar_blur_texture: Option<TextureBuffer<KaraTexture>>,
     /// CPU-side blurred wallpaper crop for a layer-shell surface that
     /// asks for backdrop blur (kara-summon's theme picker). Keyed by
     /// the surface's screen rect so we can invalidate when the picker
@@ -318,6 +325,10 @@ pub struct Gate {
     /// (rgba_bytes, width, height, x, y) where x/y are the global
     /// coordinates the pixmap was generated at.
     pub picker_blur_cache: Option<(Vec<u8>, u32, u32, i32, i32)>,
+    /// Cached GPU upload of `picker_blur_cache`. Same motivation as
+    /// `bar_blur_texture` — the picker would otherwise reupload a
+    /// full-rect blurred texture every frame while open.
+    pub picker_blur_texture: Option<TextureBuffer<KaraTexture>>,
     pub border_offsets: Vec<(f64, f64)>,
     pub scratchpad_border_offsets: Vec<(f64, f64)>,
 
@@ -480,7 +491,9 @@ impl Gate {
             scratchpad_border_cache: Vec::new(),
             border_tile_pixmap: None,
             bar_blur_cache: None,
+            bar_blur_texture: None,
             picker_blur_cache: None,
+            picker_blur_texture: None,
             scratchpad_border_offsets: Vec::new(),
             border_offsets: Vec::new(),
             animations: crate::animation::AnimationManager::new(),
@@ -540,7 +553,9 @@ impl Gate {
             .unwrap_or(self.config.general.font_size);
         self.bar_renderer.set_font(bar_font, bar_font_size);
         self.bar_blur_cache = None;
+        self.bar_blur_texture = None;
         self.picker_blur_cache = None;
+        self.picker_blur_texture = None;
 
         // Recompute workarea for bar height changes
         self.recompute_workarea();

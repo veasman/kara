@@ -1722,6 +1722,7 @@ fn render_frame(
         // Picker closed: drop the cached blur so we don't hold a
         // full-rect wallpaper crop past its usefulness.
         state.picker_blur_cache = None;
+        state.picker_blur_texture = None;
     }
 
     // Scratchpad borders (in front of everything window-like)
