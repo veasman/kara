@@ -37,7 +37,7 @@ mono_family = "FiraCode Nerd Font"
 mono_size = 13
 
 [cursor]
-theme = "Bibata-Modern-Classic"
+theme = "Night-Diamond-Blue"
 size = 24
 
 [nvim]

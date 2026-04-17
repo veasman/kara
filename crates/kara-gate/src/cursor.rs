@@ -39,18 +39,57 @@ pub fn load_xcursor(theme_name: &str, icon_name: &str, size: u32) -> Option<Curs
         return None;
     }
 
-    // Pick the image closest to the requested size
+    // Pick the image closest to the requested size. Xcursor files
+    // only store discrete sizes (typically 16 / 24 / 32 / 48 / 64),
+    // so the closest one won't usually match `size` exactly.
     let image = images
         .iter()
         .min_by_key(|img| (img.size as i32 - size as i32).unsigned_abs())
         .unwrap();
 
+    if image.size == size {
+        return Some(CursorCache {
+            pixels_rgba: image.pixels_rgba.clone(),
+            width: image.width,
+            height: image.height,
+            xhot: image.xhot as i32,
+            yhot: image.yhot as i32,
+        });
+    }
+
+    // Rescale the nearest-size image to honor the configured
+    // `cursor_size` — otherwise requesting size 32 on a theme that
+    // only ships a 24px variant silently renders at 24px and the
+    // config value appears ignored. Nearest-neighbor keeps cursor
+    // edges crisp; a cursor bitmap is tiny so the cost is noise.
+    let scale = size as f32 / image.size as f32;
+    let new_w = ((image.width as f32) * scale).round().max(1.0) as u32;
+    let new_h = ((image.height as f32) * scale).round().max(1.0) as u32;
+    let mut out = Vec::with_capacity((new_w * new_h * 4) as usize);
+    let src = &image.pixels_rgba;
+    let src_w = image.width as usize;
+    let src_h = image.height as usize;
+    for dy in 0..new_h {
+        let sy = ((dy as f32 + 0.5) / scale).floor() as usize;
+        let sy = sy.min(src_h - 1);
+        for dx in 0..new_w {
+            let sx = ((dx as f32 + 0.5) / scale).floor() as usize;
+            let sx = sx.min(src_w - 1);
+            let i = (sy * src_w + sx) * 4;
+            out.push(src[i]);
+            out.push(src[i + 1]);
+            out.push(src[i + 2]);
+            out.push(src[i + 3]);
+        }
+    }
+    let scale_hot = |h: u32| ((h as f32) * scale).round() as i32;
+
     Some(CursorCache {
-        pixels_rgba: image.pixels_rgba.clone(),
-        width: image.width,
-        height: image.height,
-        xhot: image.xhot as i32,
-        yhot: image.yhot as i32,
+        pixels_rgba: out,
+        width: new_w,
+        height: new_h,
+        xhot: scale_hot(image.xhot),
+        yhot: scale_hot(image.yhot),
     })
 }
 
@@ -107,10 +146,17 @@ pub fn build_cursor_element(
         return None;
     }
 
+    // The xcursor crate's `pixels_rgba` field is misnamed — the X
+    // cursor file format stores ARGB32 in native byte order, which
+    // on little-endian is the byte sequence [B, G, R, A]. Uploading
+    // those bytes as Abgr8888 (which expects [R, G, B, A] on LE)
+    // swaps blue and red: a yellow Banana cursor renders blue, a
+    // blue Banana cursor renders yellow. Argb8888 is the Fourcc
+    // that treats the buffer as BGRA bytes.
     let texture_buffer = TextureBuffer::from_memory(
         renderer,
         &cache.pixels_rgba,
-        Fourcc::Abgr8888,
+        Fourcc::Argb8888,
         Size::from((cache.width as i32, cache.height as i32)),
         false,
         1,
