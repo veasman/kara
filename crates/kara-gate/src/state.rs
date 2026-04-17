@@ -1315,13 +1315,20 @@ impl Gate {
             .iter()
             .position(|sp| !sp.autostart_remaining.is_empty())
         {
+            let sp_name = self
+                .config
+                .scratchpads
+                .get(sp_idx)
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| "?".to_string());
             // Remove the one we were waiting for.
-            self.scratchpads[sp_idx].autostart_remaining.remove(0);
+            let consumed = self.scratchpads[sp_idx].autostart_remaining.remove(0);
             let next_cmd = self.scratchpads[sp_idx].autostart_remaining.first().cloned();
             tracing::info!(
-                "scratchpad '{}' captured autostart window ({}); remaining={:?}, next={:?}",
-                self.config.scratchpads.get(sp_idx).map(|s| s.name.as_str()).unwrap_or("?"),
+                "scratchpad '{}' captured autostart window (app_id='{}'): consumed={:?} remaining={:?} next={:?}",
+                sp_name,
                 app_id,
+                consumed,
                 self.scratchpads[sp_idx].autostart_remaining,
                 next_cmd,
             );

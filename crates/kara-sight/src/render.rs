@@ -156,9 +156,21 @@ impl BarRenderer {
         let item_gap = bar_config.module_gap.max(0) as u32;
         let content_margin = bar_config.edge_padding_x.max(0) as u32;
 
-        // Compute the vertical content area (where pills sit, and where content is centered)
-        let content_y = bar_config.edge_padding_y.max(0);
-        let content_h = (height as i32 - content_y * 2).max(1);
+        // Vertical layout:
+        //   * `edge_padding_y` insets every pill from the bar's top
+        //     and bottom edge — the gap between bar edge and pill.
+        //   * `module_padding_y` further insets the pill from the
+        //     content area. Previously this field was parsed but
+        //     never rendered, so there was no way to make pills
+        //     shorter than (bar_height - 2*edge_padding_y). With it
+        //     wired in, a theme can hold edge_padding_y small (pills
+        //     sit close to the bar edges) while still giving the
+        //     pills themselves more vertical breathing room around
+        //     their contents.
+        let pad_y = if uses_pills { bar_config.module_padding_y.max(0) } else { 0 };
+        let content_y = bar_config.edge_padding_y.max(0) + pad_y;
+        let content_h =
+            (height as i32 - bar_config.edge_padding_y.max(0) * 2 - pad_y * 2).max(1);
 
         // Measure a whole group's total outer width: sum of member
         // content widths + (n-1) intra-group gaps + 2*pill_pad. One
