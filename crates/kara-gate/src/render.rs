@@ -659,12 +659,16 @@ fn render_bar_blur(
         }
 
         // Iterated box blur (3 passes ≈ Gaussian approximation).
-        // One scratch vec shared across passes so we don't allocate
-        // a fresh full-sized tmp buffer inside `box_blur_rgba` three
-        // times per rebuild.
-        let mut scratch: Vec<u8> = vec![0u8; buf.len()];
+        // The scratch buffer persists on Gate and is resized up to
+        // the largest blur region kara has ever done, so video-fps
+        // rebuilds don't churn the allocator with fresh multi-MB
+        // Vecs.
+        let buf_len = buf.len();
+        if state.blur_scratch.len() < buf_len {
+            state.blur_scratch.resize(buf_len, 0);
+        }
         for _ in 0..3 {
-            box_blur_rgba(&mut buf, bw, bh, &mut scratch);
+            box_blur_rgba(&mut buf, bw, bh, &mut state.blur_scratch[..buf_len]);
         }
 
         // Scale to output bar dimensions.
@@ -688,12 +692,28 @@ fn render_bar_blur(
             }
         }
 
-        state.bar_blur_cache = Some((
-            pixmap.data().to_vec(),
-            out_w as u32,
-            bar_h as u32,
-            pixel_order,
-        ));
+        // Reuse the cache's Vec<u8> allocation across rebuilds so
+        // the allocator doesn't churn a fresh multi-MB buffer at
+        // video frame rate. clear()+extend_from_slice keeps the
+        // same heap backing.
+        let pixmap_data = pixmap.data();
+        match state.bar_blur_cache.as_mut() {
+            Some(existing) => {
+                existing.0.clear();
+                existing.0.extend_from_slice(pixmap_data);
+                existing.1 = out_w as u32;
+                existing.2 = bar_h as u32;
+                existing.3 = pixel_order;
+            }
+            None => {
+                state.bar_blur_cache = Some((
+                    pixmap_data.to_vec(),
+                    out_w as u32,
+                    bar_h as u32,
+                    pixel_order,
+                ));
+            }
+        }
         // Pixel cache rebuilt → drop the stale GPU texture so the
         // next access uploads fresh bytes.
         state.bar_blur_texture = None;
@@ -810,11 +830,14 @@ pub(crate) fn render_picker_blur(
         }
         // Iterated box blur (3 passes ≈ Gaussian approximation) —
         // same recipe as the bar's blur so the two surfaces look
-        // like one frosted pane. Single scratch buffer shared across
-        // the three passes.
-        let mut scratch: Vec<u8> = vec![0u8; buf.len()];
+        // like one frosted pane. Shared scratch on Gate; resized
+        // upward as needed.
+        let buf_len = buf.len();
+        if state.blur_scratch.len() < buf_len {
+            state.blur_scratch.resize(buf_len, 0);
+        }
         for _ in 0..3 {
-            box_blur_rgba(&mut buf, bw, bh, &mut scratch);
+            box_blur_rgba(&mut buf, bw, bh, &mut state.blur_scratch[..buf_len]);
         }
 
         let mut pixmap = tiny_skia::Pixmap::new(rw as u32, rh as u32)?;
@@ -835,14 +858,30 @@ pub(crate) fn render_picker_blur(
                 }
             }
         }
-        state.picker_blur_cache = Some((
-            pixmap.data().to_vec(),
-            rw as u32,
-            rh as u32,
-            rx,
-            ry,
-            pixel_order,
-        ));
+        // Reuse Vec allocation across rebuilds — same reasoning as
+        // the bar-blur cache above.
+        let pixmap_data = pixmap.data();
+        match state.picker_blur_cache.as_mut() {
+            Some(existing) => {
+                existing.0.clear();
+                existing.0.extend_from_slice(pixmap_data);
+                existing.1 = rw as u32;
+                existing.2 = rh as u32;
+                existing.3 = rx;
+                existing.4 = ry;
+                existing.5 = pixel_order;
+            }
+            None => {
+                state.picker_blur_cache = Some((
+                    pixmap_data.to_vec(),
+                    rw as u32,
+                    rh as u32,
+                    rx,
+                    ry,
+                    pixel_order,
+                ));
+            }
+        }
         // Pixel cache rebuilt → drop the stale GPU texture so the
         // next access uploads fresh bytes.
         state.picker_blur_texture = None;

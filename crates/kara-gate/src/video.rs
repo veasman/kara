@@ -86,13 +86,24 @@ impl VideoStream {
         };
 
         // Build the video-sink bin: videoconvert + videoscale
-        // + caps filter forcing BGRA + an appsink the compositor
-        // pulls decoded frames from. BGRA maps to
-        // `Fourcc::Argb8888` on little-endian so the buffer can
-        // go straight to `TextureBuffer::from_memory`.
+        // + caps filter forcing BGRA + a leaky queue + appsink the
+        // compositor pulls decoded frames from. BGRA maps to
+        // `Fourcc::Argb8888` on little-endian so the buffer can go
+        // straight to `TextureBuffer::from_memory`.
+        //
+        // The explicit `queue max-size-buffers=1 leaky=downstream`
+        // caps frames waiting in front of the sink to one. Without
+        // it, once the compositor's per-frame CPU cost dropped
+        // (eliminating backpressure), playbin3's internal queues
+        // would fill up with unbounded 4K BGRA frames — a 4K frame
+        // is ~33 MB, so a dozen buffered frames balloons RSS by
+        // several hundred MB. Leaking downstream means "drop the
+        // oldest" rather than block the decoder, which is what
+        // a wallpaper wants.
         let sink_bin_desc = "videoconvert ! videoscale \
             ! video/x-raw,format=BGRA \
-            ! appsink name=sink drop=true max-buffers=2 sync=true";
+            ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream \
+            ! appsink name=sink drop=true max-buffers=1 sync=true";
         let sink_bin = match gst::parse::bin_from_description(sink_bin_desc, true) {
             Ok(b) => b,
             Err(e) => {

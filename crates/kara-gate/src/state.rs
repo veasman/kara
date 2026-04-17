@@ -315,6 +315,13 @@ pub struct Gate {
     /// right Fourcc instead of the compositor paying a ~33 MB
     /// BGRA→RGBA conversion per video frame to normalize formats.
     pub bar_blur_cache: Option<(Vec<u8>, u32, u32, crate::wallpaper::PixelOrder)>,
+    /// Scratch buffer shared by every box-blur pass across every
+    /// rebuild. Sized up to the largest blur region kara has touched
+    /// and reused in place; without this, each blur rebuild was
+    /// allocating a fresh multi-MB `Vec<u8>` (and every rebuild at
+    /// video frame rate would return the memory straight to the
+    /// allocator's pool, fragmenting RSS over time).
+    pub blur_scratch: Vec<u8>,
     /// Cached GPU upload of `bar_blur_cache`. Reuploading the blurred
     /// wallpaper via `TextureBuffer::from_memory` every frame was
     /// costing one full bar-sized GPU upload per output per frame;
@@ -496,6 +503,7 @@ impl Gate {
             border_tile_pixmap: None,
             bar_blur_cache: None,
             bar_blur_texture: None,
+            blur_scratch: Vec::new(),
             picker_blur_cache: None,
             picker_blur_texture: None,
             scratchpad_border_offsets: Vec::new(),
