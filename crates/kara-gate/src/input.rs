@@ -395,23 +395,36 @@ impl Gate {
         let v_amount = event.amount(Axis::Vertical);
         let h_v120 = event.amount_v120(Axis::Horizontal);
         let v_v120 = event.amount_v120(Axis::Vertical);
+        let source = event.source();
+        frame = frame.source(source);
 
-        if let Some(amount) = h_amount {
-            frame = frame.value(Axis::Horizontal, amount);
-        }
+        // When the scroll source is a trackpad ("Finger"), libinput sends
+        // a final event with amount == 0 on each axis at the moment the
+        // user lifts their fingers. The Wayland spec requires this to be
+        // translated to `wl_pointer.axis_stop`, not to a zero-value axis
+        // event — Firefox/Floorp accumulate scroll deltas and wait for a
+        // stop to finalize the gesture. Without it, the browser holds on
+        // to kinetic/fling state and page scrolling gets stuck or jumpy.
+        // Terminals don't use the kinetic-scroll path so they worked fine
+        // despite the missing stop.
+        let is_finger = matches!(source, smithay::backend::input::AxisSource::Finger);
+
+        let push_axis = |frame: AxisFrame, axis: Axis, amount: Option<f64>| -> AxisFrame {
+            match amount {
+                Some(v) if v == 0.0 && is_finger => frame.stop(axis),
+                Some(v) => frame.value(axis, v),
+                None => frame,
+            }
+        };
+        frame = push_axis(frame, Axis::Horizontal, h_amount);
+        frame = push_axis(frame, Axis::Vertical, v_amount);
+
         if let Some(discrete) = h_v120 {
             frame = frame.v120(Axis::Horizontal, discrete as i32);
-        }
-
-        if let Some(amount) = v_amount {
-            frame = frame.value(Axis::Vertical, amount);
         }
         if let Some(discrete) = v_v120 {
             frame = frame.v120(Axis::Vertical, discrete as i32);
         }
-
-        let source = event.source();
-        frame = frame.source(source);
 
         // Diagnostic for Floorp scroll overshoot. Logs one line per axis
         // event so we can compare raw libinput frame count against client
