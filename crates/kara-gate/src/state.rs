@@ -310,7 +310,11 @@ pub struct Gate {
     /// Cached CPU-side blurred wallpaper crop for bar blur. Re-
     /// rasterized on bar_dirty. `None` when bar blur is disabled or
     /// no wallpaper is loaded.
-    pub bar_blur_cache: Option<(Vec<u8>, u32, u32)>,
+    /// Tuple is (bytes, width, height, pixel_order). The fourth field
+    /// tracks byte order (RGBA vs BGRA) so the GPU upload picks the
+    /// right Fourcc instead of the compositor paying a ~33 MB
+    /// BGRA→RGBA conversion per video frame to normalize formats.
+    pub bar_blur_cache: Option<(Vec<u8>, u32, u32, crate::wallpaper::PixelOrder)>,
     /// Cached GPU upload of `bar_blur_cache`. Reuploading the blurred
     /// wallpaper via `TextureBuffer::from_memory` every frame was
     /// costing one full bar-sized GPU upload per output per frame;
@@ -324,7 +328,7 @@ pub struct Gate {
     /// moves, resizes, or goes away. Tuple is
     /// (rgba_bytes, width, height, x, y) where x/y are the global
     /// coordinates the pixmap was generated at.
-    pub picker_blur_cache: Option<(Vec<u8>, u32, u32, i32, i32)>,
+    pub picker_blur_cache: Option<(Vec<u8>, u32, u32, i32, i32, crate::wallpaper::PixelOrder)>,
     /// Cached GPU upload of `picker_blur_cache`. Same motivation as
     /// `bar_blur_texture` — the picker would otherwise reupload a
     /// full-rect blurred texture every frame while open.

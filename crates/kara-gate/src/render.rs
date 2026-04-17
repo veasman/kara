@@ -627,6 +627,7 @@ fn render_bar_blur(
     // static wallpapers hold the cached blur indefinitely.
     if state.bar_blur_cache.is_none() {
         let wp = state.wallpaper.as_ref()?;
+        let pixel_order = wp.current_pixel_order();
         let (rgba, src_w, src_h) = wp.current_rgba()?;
 
         // Compute the crop rect on the source image that corresponds
@@ -687,7 +688,12 @@ fn render_bar_blur(
             }
         }
 
-        state.bar_blur_cache = Some((pixmap.data().to_vec(), out_w as u32, bar_h as u32));
+        state.bar_blur_cache = Some((
+            pixmap.data().to_vec(),
+            out_w as u32,
+            bar_h as u32,
+            pixel_order,
+        ));
         // Pixel cache rebuilt → drop the stale GPU texture so the
         // next access uploads fresh bytes.
         state.bar_blur_texture = None;
@@ -700,11 +706,18 @@ fn render_bar_blur(
     // bandwidth for a surface that only changes on wallpaper or bar
     // geometry moves.
     if state.bar_blur_texture.is_none() {
-        let (data, w, h) = state.bar_blur_cache.as_ref()?;
+        let (data, w, h, order) = state.bar_blur_cache.as_ref()?;
+        // Fourcc picked from the source's byte order so the GPU
+        // sees channels in the correct positions without any prior
+        // CPU swizzle.
+        let fourcc = match order {
+            crate::wallpaper::PixelOrder::Rgba => Fourcc::Abgr8888,
+            crate::wallpaper::PixelOrder::Bgra => Fourcc::Argb8888,
+        };
         state.bar_blur_texture = TextureBuffer::from_memory(
             renderer,
             data,
-            Fourcc::Abgr8888,
+            fourcc,
             Size::from((*w as i32, *h as i32)),
             false,
             1,
@@ -761,11 +774,12 @@ pub(crate) fn render_picker_blur(
     let cache_matches = state
         .picker_blur_cache
         .as_ref()
-        .map(|(_, w, h, x, y)| *w == rw as u32 && *h == rh as u32 && *x == rx && *y == ry)
+        .map(|(_, w, h, x, y, _)| *w == rw as u32 && *h == rh as u32 && *x == rx && *y == ry)
         .unwrap_or(false);
 
     if !cache_matches {
         let wp = state.wallpaper.as_ref()?;
+        let pixel_order = wp.current_pixel_order();
         let (rgba, src_w, src_h) = wp.current_rgba()?;
         let crop = center_crop_src_rect(src_w, src_h, out_w, out_h);
 
@@ -827,6 +841,7 @@ pub(crate) fn render_picker_blur(
             rh as u32,
             rx,
             ry,
+            pixel_order,
         ));
         // Pixel cache rebuilt → drop the stale GPU texture so the
         // next access uploads fresh bytes.
@@ -838,11 +853,15 @@ pub(crate) fn render_picker_blur(
     // reuploading the full picker-rect blurred texture to the GPU on
     // every compositor frame while the picker was visible.
     if state.picker_blur_texture.is_none() {
-        let (data, w, h, _, _) = state.picker_blur_cache.as_ref()?;
+        let (data, w, h, _, _, order) = state.picker_blur_cache.as_ref()?;
+        let fourcc = match order {
+            crate::wallpaper::PixelOrder::Rgba => Fourcc::Abgr8888,
+            crate::wallpaper::PixelOrder::Bgra => Fourcc::Argb8888,
+        };
         state.picker_blur_texture = TextureBuffer::from_memory(
             renderer,
             data,
-            Fourcc::Abgr8888,
+            fourcc,
             Size::from((*w as i32, *h as i32)),
             false,
             1,

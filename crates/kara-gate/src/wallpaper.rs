@@ -35,18 +35,31 @@ pub struct Frame {
 
 /// Loaded wallpaper ready for GPU upload. May be a still image,
 /// a multi-frame GIF, or a live video stream.
+/// Byte order of the pixel buffer returned by [`Wallpaper::current_rgba`].
+/// Bar blur is channel-agnostic in its arithmetic, but the final
+/// TextureBuffer upload needs to know whether the bytes are laid out
+/// `[R, G, B, A]` (images / GIFs decoded via `image`) or `[B, G, R, A]`
+/// (raw gstreamer video frames) so it picks the matching Fourcc.
+/// Tracking the format here lets the compositor skip the expensive
+/// BGRA→RGBA conversion that was previously paid on every video
+/// frame just to keep downstream consumers on one byte order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PixelOrder {
+    Rgba,
+    Bgra,
+}
+
 pub struct Wallpaper {
     kind: WallpaperKind,
     width: u32,
     height: u32,
     /// Cached copy of the most recently uploaded frame's raw pixels.
     /// Used by bar blur to crop + blur without a GPU readback. Updated
-    /// every time `texture()` uploads a new frame. The pixel format
-    /// matches the source: premultiplied RGBA for images/GIFs, BGRA
-    /// for gstreamer video — bar blur treats all channels identically
-    /// (box blur on R/G/B/A independently) so the swizzle doesn't
-    /// affect the blur quality.
+    /// every time `texture()` uploads a new frame. Byte order is
+    /// reported by `last_pixel_order` — callers pick the matching
+    /// Fourcc when uploading the blurred result to the GPU.
     last_pixels: Option<Vec<u8>>,
+    last_pixel_order: PixelOrder,
 }
 
 enum WallpaperKind {
@@ -109,6 +122,8 @@ impl Wallpaper {
             width,
             height,
             last_pixels: None,
+            // Gstreamer appsink delivers BGRA.
+            last_pixel_order: PixelOrder::Bgra,
         })
     }
 
@@ -135,6 +150,7 @@ impl Wallpaper {
                 frame_started: Instant::now(),
             },
             last_pixels,
+            last_pixel_order: PixelOrder::Rgba,
             width,
             height,
         })
@@ -216,16 +232,25 @@ impl Wallpaper {
             width,
             height,
             last_pixels,
+            last_pixel_order: PixelOrder::Rgba,
         })
     }
 
-    /// Borrow the current frame's raw premultiplied RGBA pixel data.
-    /// Used by the bar blur path to sample the bar-region pixels
-    /// without a GPU readback.
+    /// Borrow the current frame's raw pixel data. Byte order is
+    /// reported separately via `current_pixel_order`. Used by the
+    /// bar blur path to sample the bar-region pixels without a GPU
+    /// readback.
     pub fn current_rgba(&self) -> Option<(&[u8], u32, u32)> {
         self.last_pixels
             .as_ref()
             .map(|p| (p.as_slice(), self.width, self.height))
+    }
+
+    /// Byte order of `current_rgba`'s buffer. Callers pick the
+    /// matching Fourcc so a video-source BGRA buffer isn't re-
+    /// shuffled into RGBA just to upload.
+    pub fn current_pixel_order(&self) -> PixelOrder {
+        self.last_pixel_order
     }
 
     /// Source image dimensions in pixels. Used by the render path
@@ -340,13 +365,6 @@ impl Wallpaper {
                     if frame.serial != *uploaded_serial {
                         self.width = frame.width;
                         self.height = frame.height;
-                        // Convert BGRA→RGBA so downstream CPU consumers
-                        // (bar blur) get a consistent pixel format.
-                        let mut rgba = frame.bgra.clone();
-                        for px in rgba.chunks_exact_mut(4) {
-                            px.swap(0, 2); // B↔R
-                        }
-                        self.last_pixels = Some(rgba);
                         let new_tex = TextureBuffer::from_memory(
                             renderer,
                             &frame.bgra,
@@ -364,6 +382,17 @@ impl Wallpaper {
                         if new_tex.is_some() {
                             *current_texture = new_tex;
                             *uploaded_serial = frame.serial;
+                            // Stash the raw BGRA so bar blur has a
+                            // CPU copy without having to read back
+                            // from the GPU. No clone, no channel
+                            // swap — bar blur is channel-agnostic
+                            // arithmetically and the blurred-bar
+                            // upload picks a Fourcc matching our
+                            // `last_pixel_order`. This eliminates
+                            // a ~33 MB memcpy + ~8M byte-swaps per
+                            // 4K video frame.
+                            self.last_pixels = Some(frame.bgra);
+                            self.last_pixel_order = PixelOrder::Bgra;
                         }
                     }
                 }
