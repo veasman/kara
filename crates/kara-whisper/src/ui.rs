@@ -1,7 +1,7 @@
 use crate::notification::{Notification, Urgency};
 use kara_ipc::ThemeColors;
 use kara_ui::canvas::{
-    color_from_u32, fill_rounded_rect, fill_rounded_rect_with_pattern, stroke_rounded_rect,
+    color_from_u32, fill_rounded_rect, stroke_rounded_rect,
 };
 use kara_ui::text::TextRenderer;
 use tiny_skia::Pixmap;
@@ -34,9 +34,15 @@ impl NotificationUI {
     /// Live-reload entry point for when kara-beautify pushes a new
     /// theme over IPC. Not wired to the IPC handler yet but part of
     /// the public UI surface.
-    #[allow(dead_code)]
     pub fn set_theme(&mut self, theme: ThemeColors) {
         self.theme = theme;
+    }
+
+    /// Current accent color as a fingerprint for "did the palette
+    /// change?" polling in the main loop. Cheaper than diffing the
+    /// whole ThemeColors struct and moves on every theme swap.
+    pub fn accent(&self) -> u32 {
+        self.theme.accent
     }
 
     pub fn total_height_for(notifications: &[Notification]) -> u32 {
@@ -100,30 +106,37 @@ impl NotificationUI {
             let bg_r = ((bg >> 16) & 0xFF) as u8;
             let bg_g = ((bg >> 8) & 0xFF) as u8;
             let bg_b = (bg & 0xFF) as u8;
+            // Card radius follows the theme's window border radius so
+            // notifications inherit the same silhouette as windows.
+            let card_radius = theme_border_radius;
             fill_rounded_rect(
                 &mut pixmap,
                 0.0,
                 y_off,
                 CARD_WIDTH as f32,
                 card_h,
-                CARD_RADIUS,
+                card_radius,
                 tiny_skia::Color::from_rgba8(bg_r, bg_g, bg_b, CARD_ALPHA),
             );
 
             // Border chrome — tile pattern when available (matches
             // compositor window borders), accent stroke fallback.
-            // Always drawn so the card has a visible edge.
+            // Stroke width follows the theme's window border_px so
+            // themes with thick ornamental borders read the same on
+            // notifications as they do on windows.
+            let stroke_w = if theme_border_px > 0.0 { theme_border_px } else { 2.0 };
+            let inset = stroke_w * 0.5;
             if let Some(tile_pm) = &border_tile {
                 use kara_ui::canvas::stroke_rounded_rect_with_pattern;
                 stroke_rounded_rect_with_pattern(
                     &mut pixmap,
-                    1.0,
-                    y_off + 1.0,
-                    CARD_WIDTH as f32 - 2.0,
-                    card_h - 2.0,
-                    (CARD_RADIUS - 1.0).max(0.0),
+                    inset,
+                    y_off + inset,
+                    CARD_WIDTH as f32 - stroke_w,
+                    card_h - stroke_w,
+                    (card_radius - inset).max(0.0),
                     tile_pm,
-                    2.0,
+                    stroke_w,
                 );
             } else {
                 // Accent stroke — gives the card a visible themed edge
@@ -136,13 +149,13 @@ impl NotificationUI {
                 };
                 stroke_rounded_rect(
                     &mut pixmap,
-                    1.0,
-                    y_off + 1.0,
-                    CARD_WIDTH as f32 - 2.0,
-                    card_h - 2.0,
-                    (CARD_RADIUS - 1.0).max(0.0),
+                    inset,
+                    y_off + inset,
+                    CARD_WIDTH as f32 - stroke_w,
+                    card_h - stroke_w,
+                    (card_radius - inset).max(0.0),
                     color_from_u32(border_color),
-                    1.5,
+                    stroke_w,
                 );
             }
 

@@ -346,6 +346,14 @@ fn main() {
         surface_visible: false,
     };
 
+    // Poll the compositor for the live theme every second so notifications
+    // recolor when the user switches themes (kara-beautify writes the
+    // generated include + SIGHUPs kara-gate). Cheap enough that we don't
+    // need a subscription protocol — a unix-socket round-trip at 1 Hz is
+    // well below the card redraw budget. Comparing `accent` is enough:
+    // every palette swap moves accent, and set_theme is idempotent.
+    let mut last_theme_poll = std::time::Instant::now();
+    let mut last_accent = whisper.ui.accent();
     // Main loop: multiplex Wayland events + D-Bus channel
     loop {
         // Dispatch pending Wayland events
@@ -420,6 +428,23 @@ fn main() {
                 PopoverEvent::Hide => {
                     // No-op for v1 — popovers auto-expire via the
                     // normal tick() path.
+                }
+            }
+        }
+
+        // Periodic theme poll — redraws with the new palette when the
+        // user switches themes. 1 s cadence keeps CPU negligible.
+        if last_theme_poll.elapsed() >= std::time::Duration::from_secs(1) {
+            last_theme_poll = std::time::Instant::now();
+            if let Ok(mut client) = kara_ipc::IpcClient::connect() {
+                if let Ok(kara_ipc::Response::Theme { colors }) =
+                    client.request(&kara_ipc::Request::GetTheme)
+                {
+                    if colors.accent != last_accent {
+                        last_accent = colors.accent;
+                        whisper.ui.set_theme(colors);
+                        changed = true;
+                    }
                 }
             }
         }
