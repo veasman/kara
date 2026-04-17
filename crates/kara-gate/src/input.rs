@@ -204,6 +204,30 @@ impl Gate {
         }
     }
 
+    /// When the pointer moves onto a different wl_surface than last
+    /// frame, reset `cursor_status` to the default Named cursor. This
+    /// gives the new surface's client a clean slate: if they call
+    /// `set_cursor` via `wp_cursor_shape` or classic `wl_pointer.set_cursor`,
+    /// the update flows through `cursor_image` and replaces the default.
+    /// If they don't, the cursor stays as the theme's default arrow
+    /// instead of bleeding through whatever the previous client last
+    /// set (the text I-beam sticking around after leaving a terminal).
+    fn reset_cursor_on_surface_change(
+        &mut self,
+        new_surface: Option<&smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
+    ) {
+        let same = match (&self.last_pointer_surface, new_surface) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        };
+        if !same {
+            self.cursor_status =
+                smithay::input::pointer::CursorImageStatus::default_named();
+            self.last_pointer_surface = new_surface.cloned();
+        }
+    }
+
     /// Find the surface under the pointer, checking layer surfaces (overlay/top) first,
     /// then falling back to windows in the space.
     fn surface_under_pointer(
@@ -299,6 +323,7 @@ impl Gate {
         let pointer = self.seat.get_pointer().unwrap();
 
         let under = self.surface_under_pointer(pos);
+        self.reset_cursor_on_surface_change(under.as_ref().map(|(s, _)| s));
 
         pointer.motion(
             self,
@@ -333,6 +358,7 @@ impl Gate {
         let pointer = self.seat.get_pointer().unwrap();
 
         let under = self.surface_under_pointer(pos);
+        self.reset_cursor_on_surface_change(under.as_ref().map(|(s, _)| s));
 
         pointer.motion(
             self,

@@ -20,11 +20,26 @@ pub fn render_overlay(
     // allocating a fresh pixmap every frame.
     pixmap.data_mut().fill(0);
 
-    // Fill with semi-transparent dark overlay
+    let (hx, hy, hw, hh) = highlight;
+    // Fullscreen hover (pointer over empty desktop): the "highlight"
+    // equals the entire overlay, so the normal dim-plus-outline
+    // treatment would wrap a heavy frame around the whole screen and
+    // hide whatever's on it. Instead, show a gentle uniform dim so
+    // the user can still see their content and still reads a
+    // selection-preview signal. Skip the border, clear, and glow
+    // passes entirely in this case.
+    let is_fullscreen =
+        hx <= 0 && hy <= 0 && hw >= width as i32 && hh >= height as i32;
+    if is_fullscreen {
+        pixmap.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 50));
+        return true;
+    }
+
+    // Windowed hover / drag selection: dim everything, then cut a
+    // clean transparent window where the selection lies and frame it.
     let dim = tiny_skia::Color::from_rgba8(0, 0, 0, 128);
     pixmap.fill(dim);
 
-    let (hx, hy, hw, hh) = highlight;
     let hx = hx.max(0) as u32;
     let hy = hy.max(0) as u32;
     let hw = (hw as i32).min((width as i32 - hx as i32).max(0)) as u32;

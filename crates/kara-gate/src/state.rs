@@ -368,6 +368,16 @@ pub struct Gate {
 
     // Cursor rendering
     pub cursor_status: CursorImageStatus,
+    /// Last wl_surface the pointer was over. When pointer motion moves
+    /// onto a different surface (or onto empty desktop), kara resets
+    /// `cursor_status` back to the default Named cursor so the new
+    /// surface shows an arrow until its client calls set_cursor.
+    /// Without this the cursor sticks on whatever the previous client
+    /// had set (e.g. the text I-beam from a terminal follows the
+    /// pointer over the next window).
+    pub last_pointer_surface: Option<
+        smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    >,
     pub cursor_cache: Option<crate::cursor::CursorCache>,
     pub named_cursor_cache: std::collections::HashMap<smithay::input::pointer::CursorIcon, crate::cursor::CursorCache>,
     pub cursor_last_moved: std::time::Instant,
@@ -507,6 +517,7 @@ impl Gate {
             blur_program: crate::blur::BlurProgram::new(),
             pointer_location: (0.0, 0.0).into(),
             cursor_status: CursorImageStatus::default_named(),
+            last_pointer_surface: None,
             cursor_cache: None,
             named_cursor_cache: std::collections::HashMap::new(),
             cursor_last_moved: std::time::Instant::now(),
@@ -811,8 +822,15 @@ impl Gate {
             if let Some(fs_window) = fs_window {
                 let fs_window = fs_window.clone();
                 let ws = &self.workspaces[*out_idx][*ws_idx];
-                for w in &ws.clients {
-                    if *w != fs_window {
+                // Unmap every OTHER tiled window, but keep floating
+                // windows visible — a dialog / popup that opens while
+                // a window is fullscreened should spotlight on top of
+                // the fullscreen content the same way it does in
+                // tiling mode, not get hidden along with the tiled
+                // backdrop. Floating windows below get re-laid-out a
+                // few lines down.
+                for (idx, w) in ws.clients.iter().enumerate() {
+                    if *w != fs_window && !ws.is_floating(idx) {
                         self.space.unmap_elem(w);
                     }
                 }
@@ -823,7 +841,36 @@ impl Gate {
                     });
                     toplevel.send_configure();
                 }
-                self.space.map_element(fs_window, *location, false);
+                self.space.map_element(fs_window.clone(), *location, false);
+
+                // Re-lay-out every floating window in this workspace on
+                // top of the fullscreen window. Same center-at-requested-
+                // size logic layout_workspace uses for the tiling case.
+                let (wa_x, wa_y) = (workarea.loc.x, workarea.loc.y);
+                let (wa_w, wa_h) = (workarea.size.w, workarea.size.h);
+                let max_w = (wa_w as f32 * 0.95) as i32;
+                let max_h = (wa_h as f32 * 0.95) as i32;
+                for (idx, w) in ws.clients.iter().enumerate() {
+                    if !ws.is_floating(idx) || *w == fs_window {
+                        continue;
+                    }
+                    let requested = w.geometry().size;
+                    let rw = if requested.w > 1 { requested.w } else { 640 };
+                    let rh = if requested.h > 1 { requested.h } else { 480 };
+                    let fw = rw.min(max_w).max(1);
+                    let fh = rh.min(max_h).max(1);
+                    let fx = wa_x + (wa_w - fw) / 2;
+                    let fy = wa_y + (wa_h - fh) / 2;
+                    if let Some(toplevel) = w.toplevel() {
+                        toplevel.with_pending_state(|state| {
+                            state.size = Some((fw, fh).into());
+                        });
+                        toplevel.send_configure();
+                    }
+                    let loc: Point<i32, Logical> = (fx, fy).into();
+                    self.space.map_element(w.clone(), loc, false);
+                    self.window_base_positions.push((w.clone(), loc));
+                }
                 continue;
             }
 
