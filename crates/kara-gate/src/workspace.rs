@@ -19,6 +19,13 @@ pub struct Workspace {
     pub floating: Vec<bool>,
     pub focused_idx: Option<usize>,
     pub last_focused_idx: Option<usize>,
+    /// Which client on this workspace is currently true-fullscreen,
+    /// if any. Owned by the workspace rather than the output so the
+    /// state survives workspace switches: toggling to another
+    /// workspace and back should find the same window still
+    /// fullscreen. Rendering and action gating read this via
+    /// `Gate::effective_fullscreen()`.
+    pub fullscreen_window: Option<Window>,
 }
 
 impl Workspace {
@@ -33,6 +40,7 @@ impl Workspace {
             floating: Vec::new(),
             focused_idx: None,
             last_focused_idx: None,
+            fullscreen_window: None,
         }
     }
 
@@ -63,6 +71,13 @@ impl Workspace {
         let Some(pos) = self.clients.iter().position(|c| c == window) else {
             return false;
         };
+
+        // If the removed client was the fullscreen one, clear the
+        // marker so the next layout pass doesn't try to render a
+        // window that's already gone.
+        if self.fullscreen_window.as_ref() == Some(window) {
+            self.fullscreen_window = None;
+        }
 
         let was_focused = self.focused_idx == Some(pos);
         self.clients.remove(pos);

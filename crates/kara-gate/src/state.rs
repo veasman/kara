@@ -173,7 +173,6 @@ pub struct OutputState {
     pub size: (i32, i32),
     pub workarea: Rectangle<i32, Logical>,
     pub location: Point<i32, Logical>,
-    pub fullscreen_window: Option<Window>,
 }
 
 pub struct ClientState {
@@ -815,7 +814,6 @@ impl Gate {
             size,
             workarea: Rectangle::new((0, 0).into(), size.into()),
             location,
-            fullscreen_window: None,
         };
         self.recompute_workarea_for(&mut out_state);
         self.outputs.push(out_state);
@@ -878,6 +876,20 @@ impl Gate {
                 .unwrap_or(self.current_ws)
         }
     }
+
+    /// Currently-rendered fullscreen window on a given output: look up
+    /// that output's effective workspace and return its
+    /// `fullscreen_window`. Fullscreen state is scoped to the workspace
+    /// (not the output) so switching away from a fullscreen workspace
+    /// hides that window entirely and switching back restores it.
+    pub fn effective_fullscreen(&self, output_idx: usize) -> Option<&Window> {
+        let ws_idx = self.effective_ws(output_idx);
+        self.workspaces
+            .get(output_idx)
+            .and_then(|pool| pool.get(ws_idx))
+            .and_then(|ws| ws.fullscreen_window.as_ref())
+    }
+
 
     /// Find which output contains a point (for pointer tracking).
     #[allow(dead_code)]
@@ -961,13 +973,18 @@ impl Gate {
         // workspace to render where.
         let output_ws: Vec<(usize, usize, (i32, i32), Rectangle<i32, Logical>, Point<i32, Logical>, Option<Window>)> =
             self.outputs.iter().enumerate().map(|(i, out)| {
+                let ws_idx = self.effective_ws(i);
+                let fs = self.workspaces
+                    .get(i)
+                    .and_then(|pool| pool.get(ws_idx))
+                    .and_then(|ws| ws.fullscreen_window.clone());
                 (
                     i,
-                    self.effective_ws(i),
+                    ws_idx,
                     out.size,
                     out.workarea,
                     out.location,
-                    out.fullscreen_window.clone(),
+                    fs,
                 )
             }).collect();
 
@@ -1918,16 +1935,11 @@ impl XdgShellHandler for Gate {
                 }
             }
 
-            // Check fullscreen on all outputs
-            for out in &mut self.outputs {
-                if out.fullscreen_window.as_ref() == Some(&window) {
-                    out.fullscreen_window = None;
-                }
-            }
-
             // Search every per-monitor pool for the destroyed window. Stop
             // at the first hit — a window only lives in one pool/workspace
-            // at a time.
+            // at a time. `Workspace::remove_client` also clears its own
+            // `fullscreen_window` if this was the fullscreened one, so no
+            // separate per-output fullscreen sweep is needed.
             'find_owner: for pool in self.workspaces.iter_mut() {
                 for ws in pool.iter_mut() {
                     if ws.remove_client(&window) {
@@ -2038,8 +2050,17 @@ impl XdgShellHandler for Gate {
         // layout, which is why users couldn't go fullscreen on videos.
         let target = self.find_window_output(&surface);
         if let Some((out_idx, window)) = target {
-            if let Some(out) = self.outputs.get_mut(out_idx) {
-                out.fullscreen_window = Some(window);
+            // Flip the workspace this window lives on into fullscreen
+            // mode. Fullscreen state is workspace-scoped so switching
+            // to another workspace hides the fullscreen window and
+            // switching back restores it — the user's "fullscreen
+            // stays when I come back" expectation.
+            let ws_idx = self.effective_ws(out_idx);
+            if let Some(ws) = self.workspaces
+                .get_mut(out_idx)
+                .and_then(|pool| pool.get_mut(ws_idx))
+            {
+                ws.fullscreen_window = Some(window);
             }
             self.apply_layout();
             self.apply_focus();
@@ -2053,15 +2074,20 @@ impl XdgShellHandler for Gate {
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
         let target = self.find_window_output(&surface);
         if let Some((out_idx, window)) = target {
+            let ws_idx = self.effective_ws(out_idx);
             let was_fs = self
-                .outputs
+                .workspaces
                 .get(out_idx)
-                .and_then(|o| o.fullscreen_window.as_ref())
+                .and_then(|pool| pool.get(ws_idx))
+                .and_then(|ws| ws.fullscreen_window.as_ref())
                 .map(|fs| fs == &window)
                 .unwrap_or(false);
             if was_fs {
-                if let Some(out) = self.outputs.get_mut(out_idx) {
-                    out.fullscreen_window = None;
+                if let Some(ws) = self.workspaces
+                    .get_mut(out_idx)
+                    .and_then(|pool| pool.get_mut(ws_idx))
+                {
+                    ws.fullscreen_window = None;
                 }
                 self.apply_layout();
                 self.apply_focus();
@@ -2129,11 +2155,15 @@ impl Gate {
         self.window_base_positions.retain(|(w, _)| w.alive());
         any |= self.window_base_positions.len() != before_base;
 
-        for out in self.outputs.iter_mut() {
-            if let Some(fs) = &out.fullscreen_window {
-                if !fs.alive() {
-                    out.fullscreen_window = None;
-                    any = true;
+        // Fullscreen markers live on each Workspace now — sweep the
+        // per-monitor pools instead of the per-output slot.
+        for pool in self.workspaces.iter_mut() {
+            for ws in pool.iter_mut() {
+                if let Some(fs) = &ws.fullscreen_window {
+                    if !fs.alive() {
+                        ws.fullscreen_window = None;
+                        any = true;
+                    }
                 }
             }
         }

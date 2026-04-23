@@ -435,7 +435,11 @@ impl Gate {
                     let out_loc = (out.location.x, out.location.y);
                     let out_size = out.size;
 
-                    if let Some(fs_win) = out.fullscreen_window.as_ref() {
+                    // Fullscreen state now lives on Workspace, not
+                    // OutputState — the window whose workspace-level
+                    // marker is set on the currently-effective
+                    // workspace is the one to report.
+                    if let Some(fs_win) = self.effective_fullscreen(out_idx) {
                         let (title, app_id) = title_for(fs_win);
                         windows.push(WindowGeometry {
                             app_id,

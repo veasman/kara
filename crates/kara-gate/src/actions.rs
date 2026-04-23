@@ -40,6 +40,35 @@ pub enum Action {
 
 impl Gate {
     pub fn dispatch_action(&mut self, action: Action) {
+        // Fullscreen gate. When the currently-focused workspace has a
+        // fullscreen window, tile-mutating actions would operate on
+        // invisible windows and would break the "dedicated fullscreen
+        // context" contract. Meta actions (spawn, kill, view_ws,
+        // toggle_fullscreen to exit, show_keybinds, reload, quit,
+        // lock, monitor-focus nav) still work — the user can launch
+        // apps, navigate workspaces, kill the fullscreen app, and
+        // exit fullscreen at any time.
+        if self.focused_workspace_fullscreen() {
+            match &action {
+                Action::FocusNext
+                | Action::FocusPrev
+                | Action::ZoomMaster
+                | Action::ToggleMonocle
+                | Action::ToggleFloat
+                | Action::ToggleScratchpad(_)
+                | Action::DecreaseMfact
+                | Action::IncreaseMfact
+                | Action::SendMonitorNext
+                | Action::SendMonitorPrev
+                | Action::ToggleSync
+                | Action::SendWs(_) => {
+                    tracing::debug!("action {:?} suppressed by fullscreen", action);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match action {
             Action::Spawn(name) => self.spawn_named(&name),
             Action::SpawnRaw(cmd) => self.spawn_raw(&cmd),
@@ -188,30 +217,37 @@ impl Gate {
         }
 
         let out_idx = self.focused_output;
-        let has_fs = self.outputs.get(out_idx)
-            .map(|o| o.fullscreen_window.is_some())
-            .unwrap_or(false);
+        let ws_idx = self.effective_ws(out_idx);
+        let Some(ws) = self
+            .workspaces
+            .get_mut(out_idx)
+            .and_then(|pool| pool.get_mut(ws_idx))
+        else {
+            return;
+        };
 
-        if has_fs {
-            if let Some(out) = self.outputs.get_mut(out_idx) {
-                out.fullscreen_window = None;
-            }
+        if ws.fullscreen_window.is_some() {
+            ws.fullscreen_window = None;
             self.apply_layout();
             self.apply_focus();
             tracing::debug!("exited fullscreen");
-        } else {
-            let ws_idx = self.effective_ws(out_idx);
-            let ws = &self.workspaces[self.focused_output][ws_idx];
-            if let Some(window) = ws.focused() {
-                let window = window.clone();
-                if let Some(out) = self.outputs.get_mut(out_idx) {
-                    out.fullscreen_window = Some(window.clone());
-                }
-                self.apply_layout();
-                self.apply_focus();
-                tracing::debug!("entered fullscreen");
-            }
+        } else if let Some(window) = ws.focused().cloned() {
+            ws.fullscreen_window = Some(window);
+            self.apply_layout();
+            self.apply_focus();
+            tracing::debug!("entered fullscreen");
         }
+    }
+
+    /// Returns true if the currently-focused workspace has a fullscreen
+    /// window. Keybind handlers use this as a short-circuit so actions
+    /// that would mutate hidden tiles (focus_next, zoom, toggle_float,
+    /// toggle_layout, mfact, send_ws, scratchpad, monocle) no-op
+    /// while fullscreen is active. `kill_client`, `view_ws`,
+    /// `toggle_fullscreen`, `spawn`, `lock`, `reload`, and `quit`
+    /// intentionally skip this guard and keep working.
+    fn focused_workspace_fullscreen(&self) -> bool {
+        self.effective_fullscreen(self.focused_output).is_some()
     }
 
     fn do_toggle_float(&mut self) {

@@ -522,9 +522,7 @@ pub fn build_custom_elements(
 ) -> Vec<TextureRenderElement<KaraTexture>> {
     let mut elements: Vec<TextureRenderElement<KaraTexture>> = Vec::new();
 
-    let has_fullscreen = state.outputs.get(output_idx)
-        .map(|o| o.fullscreen_window.is_some())
-        .unwrap_or(false);
+    let has_fullscreen = state.effective_fullscreen(output_idx).is_some();
 
     // Bar (on top of the custom block, hidden during fullscreen).
     if !has_fullscreen {
@@ -1025,9 +1023,7 @@ pub fn build_scratchpad_borders(
     output_idx: usize,
 ) -> Vec<TextureRenderElement<KaraTexture>> {
     let mut elements = Vec::new();
-    let has_fullscreen = state.outputs.get(output_idx)
-        .map(|o| o.fullscreen_window.is_some())
-        .unwrap_or(false);
+    let has_fullscreen = state.effective_fullscreen(output_idx).is_some();
     if !has_fullscreen {
         refresh_border_tile_cache(state);
         let tile = state.border_tile_pixmap.as_ref().map(|(_, pm)| pm);
