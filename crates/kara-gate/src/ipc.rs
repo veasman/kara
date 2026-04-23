@@ -198,6 +198,11 @@ impl Gate {
                             .find(|m| m.name == name)
                             .map(|m| m.primary)
                             .unwrap_or(false);
+                        let focused = self
+                            .outputs
+                            .iter()
+                            .position(|out| out.output.name() == o.output.name())
+                            == Some(self.focused_output);
                         kara_ipc::OutputInfo {
                             name,
                             width: o.size.0,
@@ -205,6 +210,7 @@ impl Gate {
                             x: o.location.x,
                             y: o.location.y,
                             primary,
+                            focused,
                         }
                     })
                     .collect();
@@ -240,6 +246,7 @@ impl Gate {
                             x: 0,
                             y: 0,
                             primary: true,
+                            focused: true,
                         }],
                     }
                 } else {

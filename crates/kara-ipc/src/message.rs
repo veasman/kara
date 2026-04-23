@@ -116,6 +116,13 @@ pub struct OutputInfo {
     /// parse cleanly.
     #[serde(default)]
     pub primary: bool,
+    /// True for the output that currently has keyboard focus. Single-
+    /// monitor tools (kara-glimpse interactive mode) use this to bind
+    /// their overlay to exactly the output the user was just working
+    /// on, so "mod+Shift+s" captures here, not wherever the
+    /// compositor happens to enumerate first.
+    #[serde(default)]
+    pub focused: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

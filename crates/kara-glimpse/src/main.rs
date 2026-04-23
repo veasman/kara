@@ -155,6 +155,51 @@ fn main() {
             .join(", ")
     ));
 
+    // Single-monitor interactive mode: keep only the focused output.
+    // The multi-output path rendered a layer surface on every monitor
+    // and let the user drag a selection across seams, but in practice
+    // it painted "2 selection boxes" whenever the hover target or the
+    // drag rect touched more than one output, and the capture compose
+    // step never lined up cleanly. Collapsing to one surface bound to
+    // the focused output brings back the pre-refactor behavior the
+    // user relied on (drag a box on the monitor you're working on,
+    // get that capture) without pulling every other multi-monitor
+    // concern into the tool.
+    //
+    // Falls back to the first reported output if the compositor
+    // somehow didn't mark anything focused (stub winit backend,
+    // startup race). Windows get filtered to the same output — any
+    // rect that doesn't intersect becomes invisible to the hover
+    // hit-test, so auto-snap only suggests things on *this* monitor.
+    let output_infos: Vec<kara_ipc::OutputInfo> = {
+        let keep: Vec<kara_ipc::OutputInfo> =
+            output_infos.iter().filter(|o| o.focused).cloned().collect();
+        if keep.is_empty() {
+            output_infos.iter().take(1).cloned().collect()
+        } else {
+            keep
+        }
+    };
+    let (bound_x, bound_y, bound_x2, bound_y2) = output_infos
+        .first()
+        .map(|o| (o.x, o.y, o.x + o.width, o.y + o.height))
+        .unwrap_or((0, 0, 1920, 1080));
+    let windows: Vec<kara_ipc::WindowGeometry> = windows
+        .into_iter()
+        .filter(|w| {
+            w.x < bound_x2 && w.x + w.w > bound_x && w.y < bound_y2 && w.y + w.h > bound_y
+        })
+        .collect();
+    log_glimpse(&format!(
+        "kara-glimpse scoped to focused output: {} ({}x{} at {},{}), {} windows remain",
+        output_infos.first().map(|o| o.name.as_str()).unwrap_or("(none)"),
+        bound_x2 - bound_x,
+        bound_y2 - bound_y,
+        bound_x,
+        bound_y,
+        windows.len(),
+    ));
+
     // Compute the desktop bounding box in global coords. SelectionState
     // uses (min_x, min_y, max_x, max_y) to bound hover targets and the
     // fullscreen fallback — single-output setups degenerate to a single
