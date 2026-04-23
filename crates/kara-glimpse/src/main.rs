@@ -63,17 +63,22 @@ fn prune_old_screenshots() {
                 Some(s) => s,
                 None => continue,
             };
-            // Match `kara-screenshot-<epoch>.png` and compare epoch
-            // to "now − 7d". Skip anything that doesn't parse.
+            // Match `kara-screenshot-<epoch_secs>[...].png`. The
+            // compositor stamps paths as either `-<secs>.png` (legacy)
+            // or `-<secs>-<nanos>-<seq>.png` (new — disambiguates
+            // rapid multi-output requests). Parse the leading secs
+            // component either way and drop anything older than
+            // "now − 7d".
             let rest = match name.strip_prefix("kara-screenshot-") {
                 Some(r) => r,
                 None => continue,
             };
-            let digits = match rest.strip_suffix(".png") {
+            let core = match rest.strip_suffix(".png") {
                 Some(d) => d,
                 None => continue,
             };
-            let ts: u64 = match digits.parse() {
+            let head = core.split('-').next().unwrap_or(core);
+            let ts: u64 = match head.parse() {
                 Ok(n) => n,
                 Err(_) => continue,
             };
@@ -127,6 +132,28 @@ fn main() {
         }
         Err(_) => (default_theme(), vec![], vec![]),
     };
+
+    // Log what IPC handed us so "auto-hover doesn't pick up windows"
+    // bugs triage from the log alone. Windows should come back in
+    // global coords spanning every output — if this list is empty or
+    // suspicious, that's the auto-hover bug.
+    log_glimpse(&format!(
+        "kara-glimpse IPC windows ({}): [{}]",
+        windows.len(),
+        windows
+            .iter()
+            .map(|w| format!(
+                "{}@({},{}) {}x{}{}",
+                if w.app_id.is_empty() { "(none)" } else { &w.app_id },
+                w.x,
+                w.y,
+                w.w,
+                w.h,
+                if w.title.is_empty() { String::new() } else { format!(" \"{}\"", w.title) },
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
 
     // Compute the desktop bounding box in global coords. SelectionState
     // uses (min_x, min_y, max_x, max_y) to bound hover targets and the
@@ -885,6 +912,15 @@ impl Glimpse {
         }
         slot.last_highlight = local;
 
+        // Diagnostic: every time a surface's clipped highlight
+        // changes, record what it's about to draw. Triaging "2
+        // selected areas" means seeing which surfaces are painting
+        // non-empty rects simultaneously.
+        log_glimpse(&format!(
+            "draw surface#{surface_idx} origin=({},{}) {}x{} global={:?} → local={:?}",
+            slot.origin_x, slot.origin_y, slot.width, slot.height, global, local,
+        ));
+
         let need_alloc = slot
             .overlay_pixmap
             .as_ref()
@@ -946,6 +982,31 @@ impl Glimpse {
         self.surfaces
             .iter()
             .position(|s| s.layer.wl_surface() == target)
+    }
+}
+
+/// Short one-line description of the current hover target for diagnostic
+/// logs. "Fullscreen" means no window matched the pointer; any other
+/// form points at a specific window rect and makes it easy to see at a
+/// glance whether auto-hover is doing what the user expects.
+fn describe_target(t: &selection::HoverTarget) -> String {
+    match t {
+        selection::HoverTarget::Fullscreen { w, h } => {
+            format!("target=Fullscreen({w}x{h})")
+        }
+        selection::HoverTarget::Window { x, y, w, h, .. } => {
+            format!("target=Window({x},{y} {w}x{h})")
+        }
+    }
+}
+
+/// Same as describe_target but returns a comparable key for "did the
+/// target change" checks during Motion events — we skip the log line
+/// when it didn't.
+fn target_key(t: &selection::HoverTarget) -> String {
+    match t {
+        selection::HoverTarget::Fullscreen { w, h } => format!("FS({w}x{h})"),
+        selection::HoverTarget::Window { x, y, w, h, .. } => format!("W({x},{y},{w},{h})"),
     }
 }
 
@@ -1226,7 +1287,17 @@ impl PointerHandler for Glimpse {
                             lx + slot.origin_x as f64,
                             ly + slot.origin_y as f64,
                         );
+                        let origin = (slot.origin_x, slot.origin_y);
                         self.selection.update_hover(&self.windows);
+                        log_glimpse(&format!(
+                            "pointer Enter surface#{i} origin={:?} local=({:.0},{:.0}) → global=({:.0},{:.0}) {}",
+                            origin,
+                            lx,
+                            ly,
+                            self.selection.pointer.0,
+                            self.selection.pointer.1,
+                            describe_target(&self.selection.target),
+                        ));
                         self.draw_all();
                     }
                 }
@@ -1253,7 +1324,22 @@ impl PointerHandler for Glimpse {
                             lx + slot.origin_x as f64,
                             ly + slot.origin_y as f64,
                         );
+                        let prev_target = target_key(&self.selection.target);
                         self.selection.update_hover(&self.windows);
+                        let new_target = target_key(&self.selection.target);
+                        // Only log when the hover target changes — a
+                        // full Motion log-line per pointer sample would
+                        // drown the log. Target-change events are rare
+                        // enough to surface the bug without the noise.
+                        if prev_target != new_target {
+                            log_glimpse(&format!(
+                                "pointer Motion surface#{i} global=({:.0},{:.0}) target_change: {} → {}",
+                                self.selection.pointer.0,
+                                self.selection.pointer.1,
+                                prev_target,
+                                new_target,
+                            ));
+                        }
                         self.draw_all();
                     }
                 }
