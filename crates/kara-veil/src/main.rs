@@ -417,31 +417,26 @@ fn main() {
         username: resolve_username(),
     };
 
-    let mut event_loop: EventLoop<'static, Veil> =
-        EventLoop::try_new().expect("calloop");
-    let loop_handle = event_loop.handle();
-    conn.roundtrip().ok();
-
-    WaylandSource::new(conn.clone(), event_queue)
-        .insert(loop_handle.clone())
-        .expect("wayland source");
-
-    // Drain pending output advertisements so OutputState sees everyone
-    // before we call `get_lock_surface`.
-    event_loop.dispatch(Some(Duration::from_millis(80)), &mut veil).ok();
-
-    // Wait for SCTK's xdg_output handler to populate `info.name` on
-    // every advertised WlOutput before picking primary. The previous
-    // single short dispatch fired before xdg_output events had
-    // arrived, so the name-based lookup below hit None and fell back
-    // to idx=0 — which is whichever output the compositor advertised
-    // first (usually the leftmost or the AMD primary), NOT the
-    // user-configured primary. That's why the lock was landing on
-    // DP-2 instead of the center 1440p. Spin with short dispatches
-    // until every output has a name, or 500 ms elapses.
+    // Pump the raw event_queue directly BEFORE moving it into
+    // calloop's WaylandSource. SCTK's xdg_output handler only populates
+    // `info.name` after a few round-trips' worth of events (wl_output
+    // done → xdg_output name → xdg_output done), and the earlier
+    // implementation tried to wait for these via
+    // `event_loop.dispatch()` — but calloop doesn't pump a freshly
+    // wrapped WaylandSource with the same eagerness as a direct
+    // blocking_dispatch, so names never arrived, primary_idx fell back
+    // to 0, and the login card rendered on the wrong monitor.
+    //
+    // Mirror the kara-glimpse pattern exactly: blocking_dispatch +
+    // roundtrip + dispatch_pending in a short loop against the raw
+    // event_queue, bail once every advertised output has a name or
+    // 500 ms elapses.
+    let mut event_queue = event_queue;
     let wait_deadline = std::time::Instant::now() + Duration::from_millis(500);
     loop {
-        event_loop.dispatch(Some(Duration::from_millis(25)), &mut veil).ok();
+        event_queue.blocking_dispatch(&mut veil).ok();
+        conn.roundtrip().ok();
+        event_queue.dispatch_pending(&mut veil).ok();
         let outs: Vec<_> = veil.output_state.outputs().collect();
         let have_all_names = !outs.is_empty()
             && outs.iter().all(|wl| {
@@ -519,6 +514,17 @@ fn main() {
             },
         );
     }
+
+    // Now hand the event_queue to calloop for the long-lived main loop.
+    // Everything that needed early output metadata already ran above
+    // against the raw queue; from here on we want calloop's timer
+    // integration for the 1 Hz clock tick.
+    let mut event_loop: EventLoop<'static, Veil> =
+        EventLoop::try_new().expect("calloop");
+    let loop_handle = event_loop.handle();
+    WaylandSource::new(conn.clone(), event_queue)
+        .insert(loop_handle.clone())
+        .expect("wayland source");
 
     // 1 Hz clock tick so `HH:MM` flips on the minute without user input.
     loop_handle
