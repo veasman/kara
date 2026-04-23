@@ -131,55 +131,116 @@ impl PortalSettings {
     }
 }
 
-pub fn spawn_dbus(tx: mpsc::Sender<DbusEvent>) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
-        let conn = match zbus::blocking::Connection::session() {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("kara-whisper: failed to connect to D-Bus: {e}");
-                return;
-            }
-        };
+/// Result of setting up the D-Bus side of whisper. The connection is
+/// returned to the caller so the main thread can emit `ActionInvoked`
+/// / `NotificationClosed` signals when the user clicks an action button
+/// or a notification expires — without those signals, libnotify clients
+/// invoked with `--wait` hang forever waiting for completion.
+pub struct DbusHandle {
+    #[allow(dead_code)]
+    pub thread: std::thread::JoinHandle<()>,
+    pub conn: zbus::blocking::Connection,
+}
 
-        // Register notifications service
-        if let Err(e) = conn
+pub fn spawn_dbus(tx: mpsc::Sender<DbusEvent>) -> Option<DbusHandle> {
+    // Set up the session bus connection and register the notifications
+    // interface on the caller's thread so we can hand the connection
+    // back after `request_name` succeeds. The background thread below
+    // only exists to keep the connection alive (zbus's internal executor
+    // does the actual dispatch work on its own threads).
+    let conn = match zbus::blocking::Connection::session() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("kara-whisper: failed to connect to D-Bus: {e}");
+            return None;
+        }
+    };
+
+    if let Err(e) = conn
+        .object_server()
+        .at("/org/freedesktop/Notifications", NotificationsService { tx })
+    {
+        eprintln!("kara-whisper: failed to register D-Bus object: {e}");
+        return None;
+    }
+
+    if let Err(e) = conn.request_name("org.freedesktop.Notifications") {
+        eprintln!("kara-whisper: failed to acquire D-Bus name (is another notification daemon running?): {e}");
+        return None;
+    }
+
+    // Register portal settings (dark mode) on a separate connection
+    // since it needs a different well-known name.
+    if let Ok(portal_conn) = zbus::blocking::Connection::session() {
+        let settings = PortalSettings { color_scheme: 1 }; // 1 = prefer dark
+        if portal_conn
             .object_server()
-            .at("/org/freedesktop/Notifications", NotificationsService { tx })
+            .at("/org/freedesktop/portal/desktop", settings)
+            .is_ok()
         {
-            eprintln!("kara-whisper: failed to register D-Bus object: {e}");
-            return;
-        }
-
-        if let Err(e) = conn.request_name("org.freedesktop.Notifications") {
-            eprintln!("kara-whisper: failed to acquire D-Bus name (is another notification daemon running?): {e}");
-            return;
-        }
-
-        // Register portal settings (dark mode) on a separate connection
-        // since it needs a different well-known name
-        if let Ok(portal_conn) = zbus::blocking::Connection::session() {
-            let settings = PortalSettings { color_scheme: 1 }; // 1 = prefer dark
             if portal_conn
-                .object_server()
-                .at("/org/freedesktop/portal/desktop", settings)
+                .request_name("org.freedesktop.portal.Desktop")
                 .is_ok()
             {
-                if portal_conn
-                    .request_name("org.freedesktop.portal.Desktop")
-                    .is_ok()
-                {
-                    eprintln!("kara-whisper: portal settings registered (dark mode)");
-                } else {
-                    eprintln!("kara-whisper: portal name taken (xdg-desktop-portal running?)");
-                }
+                eprintln!("kara-whisper: portal settings registered (dark mode)");
+            } else {
+                eprintln!("kara-whisper: portal name taken (xdg-desktop-portal running?)");
             }
         }
+        // Leak the portal connection into its own sleep-forever thread so
+        // zbus keeps it alive while the internal executor routes messages.
+        std::thread::spawn(move || {
+            let _keep_alive = portal_conn;
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            }
+        });
+    }
 
-        eprintln!("kara-whisper: D-Bus services registered");
+    eprintln!("kara-whisper: D-Bus services registered");
 
-        // Keep thread alive — zbus internal executor handles message dispatch
+    // Sleep-forever thread keeps the notifications connection alive.
+    let keep_alive_conn = conn.clone();
+    let thread = std::thread::spawn(move || {
+        let _keep_alive = keep_alive_conn;
         loop {
             std::thread::sleep(std::time::Duration::from_secs(60));
         }
-    })
+    });
+
+    Some(DbusHandle { thread, conn })
+}
+
+/// Emit `org.freedesktop.Notifications.ActionInvoked(id, action_key)`
+/// so libnotify clients know which button the user pressed.
+pub fn emit_action_invoked(
+    conn: &zbus::blocking::Connection,
+    id: u32,
+    action_key: &str,
+) {
+    let _ = conn.emit_signal(
+        None::<&str>,
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications",
+        "ActionInvoked",
+        &(id, action_key),
+    );
+}
+
+/// Emit `org.freedesktop.Notifications.NotificationClosed(id, reason)`.
+///
+/// `reason` per the spec: 1 = expired, 2 = dismissed by user,
+/// 3 = closed by a call to `CloseNotification`, 4 = undefined.
+pub fn emit_notification_closed(
+    conn: &zbus::blocking::Connection,
+    id: u32,
+    reason: u32,
+) {
+    let _ = conn.emit_signal(
+        None::<&str>,
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications",
+        "NotificationClosed",
+        &(id, reason),
+    );
 }

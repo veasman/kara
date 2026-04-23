@@ -70,7 +70,11 @@ impl NotificationQueue {
             if n.urgency == Urgency::Critical {
                 return true; // never auto-expire
             }
-            let timeout_ms = if n.expire_ms < 0 { 5000 } else { n.expire_ms };
+            // Default timeout (server-decides sentinel `-1`) is 8s —
+            // long enough to catch up on a notification you weren't
+            // looking at the moment it fired. Client-specified timeouts
+            // still win, and `0` still means "never auto-expire".
+            let timeout_ms = if n.expire_ms < 0 { 8000 } else { n.expire_ms };
             if timeout_ms == 0 {
                 return true; // 0 = never expire
             }

@@ -18,14 +18,25 @@ const ICON_SIZE: u32 = 60;
 /// Column offset for the text block when the notification carries an
 /// `app_icon` — leaves `ICON_SIZE` + padding of room for the thumbnail.
 const TEXT_X_WITH_ICON: f32 = PADDING + ICON_SIZE as f32 + PADDING * 0.5;
-/// Card background alpha — semi-transparent so wallpaper bleeds
-/// through if the layer surface composits over it.
-const CARD_ALPHA: u8 = 200;
+/// Card background alpha. Kept just shy of fully opaque so there's a
+/// subtle hint that the surface is a floating overlay rather than a
+/// painted-on decal, while still being readable over busy wallpapers.
+/// Earlier the default was 200 (~78%) which bled too much wallpaper
+/// through on dense photos; 240 reads as "glass panel, barely tinted".
+const CARD_ALPHA: u8 = 240;
 
 pub struct NotificationUI {
     text: TextRenderer,
     text_small: TextRenderer,
     theme: ThemeColors,
+    /// Cached decode of the theme's border tile PNG. The path is
+    /// rarely the same string twice in a row (a theme swap updates
+    /// it) but within a theme it stays fixed, so we key the cache on
+    /// the resolved path and only re-decode when the path changes.
+    /// Without this, every `render()` call re-read and re-decoded the
+    /// PNG from disk — whisper redraws on every new notification and
+    /// on the 1 Hz theme poll, so that was a lot of wasted I/O + zlib.
+    border_tile_cache: Option<(String, Pixmap)>,
 }
 
 impl NotificationUI {
@@ -34,6 +45,7 @@ impl NotificationUI {
             text: TextRenderer::new(14.0),
             text_small: TextRenderer::new(11.0),
             theme,
+            border_tile_cache: None,
         }
     }
 
@@ -51,13 +63,14 @@ impl NotificationUI {
         self.theme.accent
     }
 
-    pub fn total_height_for(notifications: &[Notification]) -> u32 {
+    pub fn total_height_for(&self, notifications: &[Notification]) -> u32 {
         if notifications.is_empty() {
             return 1;
         }
+        let border_pad = self.border_pad();
         let mut h = 0u32;
         for (i, n) in notifications.iter().enumerate() {
-            h += Self::card_height(n);
+            h += Self::card_height(n, border_pad);
             if i + 1 < notifications.len() {
                 h += GAP;
             }
@@ -65,35 +78,69 @@ impl NotificationUI {
         h
     }
 
-    fn card_height(n: &Notification) -> u32 {
-        if n.actions.is_empty() {
+    /// Extra vertical breathing room reserved at the bottom of each card
+    /// so its content (especially the action-button row) never gets eaten
+    /// by a thick ornamental border. Matches `stroke_w` in the render loop.
+    fn border_pad(&self) -> u32 {
+        let b = self.theme.border_px.unwrap_or(0).max(0) as f32;
+        let stroke_w = if b > 0.0 { b } else { 2.0 };
+        (stroke_w + 4.0).ceil() as u32
+    }
+
+    fn card_height(n: &Notification, border_pad: u32) -> u32 {
+        let base = if n.actions.is_empty() {
             CARD_BASE_HEIGHT
         } else {
             CARD_BASE_HEIGHT + CARD_ACTION_ROW
-        }
+        };
+        base + border_pad
     }
 
     pub fn card_width() -> u32 {
         CARD_WIDTH
     }
 
-    pub fn render(&mut self, notifications: &[Notification]) -> Option<Pixmap> {
+    /// Render all visible notifications and return the hit regions for
+    /// action buttons and card bodies so the pointer handler can
+    /// resolve a click to either "invoke action N" or "dismiss card N".
+    /// Regions are in pixmap-local coordinates, matching the layer
+    /// surface's buffer space. Action regions are pushed first so the
+    /// hit-test can prefer them over the enclosing card-body region.
+    pub fn render(
+        &mut self,
+        notifications: &[Notification],
+    ) -> (Option<Pixmap>, Vec<HitRegion>) {
+        let mut hits: Vec<HitRegion> = Vec::new();
         if notifications.is_empty() {
-            return None;
+            return (None, hits);
         }
 
-        let height = Self::total_height_for(notifications);
-        let mut pixmap = Pixmap::new(CARD_WIDTH, height)?;
+        let height = self.total_height_for(notifications);
+        let mut pixmap = match Pixmap::new(CARD_WIDTH, height) {
+            Some(p) => p,
+            None => return (None, hits),
+        };
 
-        // Load the theme's window border tile once per render. When
-        // present, every notification card draws the same tiled
-        // pattern around its chrome that kara-gate draws on real
-        // windows — whisper feels like a member of the family.
-        let border_tile = self
-            .theme
-            .border_tile_path
-            .as_deref()
-            .and_then(|p| Pixmap::load_png(p).ok());
+        // Resolve the theme's window border tile to a decoded Pixmap.
+        // Previously we re-decoded the PNG on every render; now the
+        // decode is cached on `NotificationUI` and only rebuilt when
+        // the configured path actually changes.
+        let border_tile = {
+            let want = self.theme.border_tile_path.as_deref();
+            let have = self.border_tile_cache.as_ref().map(|(p, _)| p.as_str());
+            match (want, have) {
+                (Some(w), Some(h)) if w == h => {}
+                (None, None) => {}
+                (None, Some(_)) => {
+                    self.border_tile_cache = None;
+                }
+                (Some(w), _) => {
+                    self.border_tile_cache =
+                        Pixmap::load_png(w).ok().map(|pm| (w.to_string(), pm));
+                }
+            }
+            self.border_tile_cache.as_ref().map(|(_, pm)| pm)
+        };
         let theme_border_px = self.theme.border_px.unwrap_or(0).max(0) as f32;
         let theme_border_radius = self
             .theme
@@ -101,9 +148,10 @@ impl NotificationUI {
             .map(|r| r as f32)
             .unwrap_or(CARD_RADIUS);
 
+        let border_pad = self.border_pad();
         let mut y_off = 0.0f32;
         for (_i, notif) in notifications.iter().enumerate() {
-            let card_h = Self::card_height(notif) as f32;
+            let card_h = Self::card_height(notif, border_pad) as f32;
 
             // Card background — semi-transparent surface fill with
             // rounded corners. The alpha lets the wallpaper bleed
@@ -215,7 +263,12 @@ impl NotificationUI {
                 );
             }
 
-            // Action buttons (below the body, if any)
+            // Action buttons (below the body, if any). Buttons are
+            // uniformly sized and the whole cluster is centered
+            // horizontally — an off-center cluster with a big empty
+            // strip on the right (the old behavior when btn_w was
+            // capped at 120 and bx started at PADDING) was the main
+            // "line up weird" complaint.
             if !notif.actions.is_empty() {
                 let btn_y = base_bottom + 2.0;
                 let btn_h = CARD_ACTION_ROW as f32 - 4.0;
@@ -224,9 +277,10 @@ impl NotificationUI {
                 let total_gap = btn_gap * (n_btns - 1.0).max(0.0);
                 let avail = CARD_WIDTH as f32 - PADDING * 2.0 - total_gap;
                 let btn_w = (avail / n_btns).min(120.0);
+                let cluster_w = btn_w * n_btns + total_gap;
+                let mut bx = (CARD_WIDTH as f32 - cluster_w) / 2.0;
 
-                let mut bx = PADDING;
-                for (_id, label) in &notif.actions {
+                for (id, label) in &notif.actions {
                     fill_rounded_rect(
                         &mut pixmap,
                         bx,
@@ -246,14 +300,67 @@ impl NotificationUI {
                         label_y,
                         self.theme.text,
                     );
+                    hits.push(HitRegion {
+                        notif_id: notif.id,
+                        kind: HitKind::Action { id: id.clone() },
+                        rect: (bx, btn_y, btn_w, btn_h),
+                    });
                     bx += btn_w + btn_gap;
                 }
             }
 
+            // Whole-card dismiss region. Pushed AFTER any action buttons
+            // so the click handler matches action rects first and only
+            // falls back to this envelope when the user clicks elsewhere
+            // on the card. The open_path carries the notification's icon
+            // path when it's an absolute file — glimpse uses this to
+            // turn the capture thumbnail into a one-click viewer.
+            let open_path = if notif.app_icon.starts_with('/')
+                && std::path::Path::new(&notif.app_icon).is_file()
+            {
+                Some(notif.app_icon.clone())
+            } else {
+                None
+            };
+            hits.push(HitRegion {
+                notif_id: notif.id,
+                kind: HitKind::Body { open_path },
+                rect: (0.0, y_off, CARD_WIDTH as f32, card_h),
+            });
+
             y_off += card_h + GAP as f32;
         }
 
-        Some(pixmap)
+        (Some(pixmap), hits)
+    }
+}
+
+/// A clickable rect inside the rendered notification stack. Either an
+/// action button (invoke that action on click) or a card body (dismiss
+/// on click, optionally opening the notification's icon path). Action
+/// regions are pushed first so the hit-test can prefer them over the
+/// enclosing card-body region.
+#[derive(Debug, Clone)]
+pub struct HitRegion {
+    pub notif_id: u32,
+    pub kind: HitKind,
+    pub rect: (f32, f32, f32, f32),
+}
+
+#[derive(Debug, Clone)]
+pub enum HitKind {
+    Action { id: String },
+    /// Click anywhere on the card body. If `open_path` is `Some`, it's
+    /// an absolute filesystem path to hand to xdg-open — glimpse sets
+    /// this via `--icon /tmp/kara-screenshot-…png` so a tap on the card
+    /// opens the capture. Always dismisses the notification regardless.
+    Body { open_path: Option<String> },
+}
+
+impl HitRegion {
+    pub fn contains(&self, x: f64, y: f64) -> bool {
+        let (rx, ry, rw, rh) = self.rect;
+        x >= rx as f64 && x < (rx + rw) as f64 && y >= ry as f64 && y < (ry + rh) as f64
     }
 }
 

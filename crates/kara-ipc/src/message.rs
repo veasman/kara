@@ -28,6 +28,10 @@ pub enum Request {
     // Screenshot
     Screenshot,
     ScreenshotRegion { x: i32, y: i32, w: i32, h: i32 },
+    /// Capture a specific output by connector name (e.g. "DP-2", "DVI-I-1").
+    /// Lets kara-veil capture one pixmap per monitor for its per-output
+    /// blurred lock backdrops without fighting over compositor focus.
+    ScreenshotOutput { name: String },
 
     // Queries
     GetWindowGeometries,
@@ -92,6 +96,16 @@ pub struct OutputInfo {
     pub name: String,
     pub width: i32,
     pub height: i32,
+    /// Global position of this output's top-left corner in the
+    /// compositor's logical coordinate space. Needed by multi-monitor
+    /// tools (glimpse all-monitor screenshots, kara-veil per-output
+    /// lock surfaces) so they can reason about where each output sits.
+    /// `#[serde(default)]` keeps older tools (built before this field)
+    /// parse-compatible — they'll just see (0, 0).
+    #[serde(default)]
+    pub x: i32,
+    #[serde(default)]
+    pub y: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,4 +147,14 @@ pub struct ThemeColors {
     /// color. `None` → solid-color borders.
     #[serde(default)]
     pub border_tile_path: Option<String>,
+
+    // ── Typography ─────────────────────────────────────────────────
+    /// Font family name from `general.font` in kara-gate.conf (or the
+    /// active theme's override). When `None`, consumers fall back to
+    /// their built-in default. Everything that speaks to the user —
+    /// kara-whisper notifications, kara-veil lock prompt, kara-summon
+    /// picker — should pick this up so the session's typography
+    /// matches across tools.
+    #[serde(default)]
+    pub font_family: Option<String>,
 }

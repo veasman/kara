@@ -153,13 +153,44 @@ impl Gate {
             }
 
             Request::GetOutputs => {
-                let (w, h) = self.output_size();
-                Response::Outputs {
-                    outputs: vec![kara_ipc::OutputInfo {
-                        name: "winit".to_string(),
-                        width: w,
-                        height: h,
-                    }],
+                // Report every real output in config-declared navigation
+                // order (matches `self.output_order`) so clients that
+                // care about which monitor is "first" — kara-veil for
+                // primary-output selection, kara-glimpse for compositing
+                // all-monitor captures — agree with the keyboard-focus
+                // ordering the user configured.
+                let order: Vec<usize> = if self.output_order.len() == self.outputs.len() {
+                    self.output_order.clone()
+                } else {
+                    (0..self.outputs.len()).collect()
+                };
+                let outputs: Vec<kara_ipc::OutputInfo> = order
+                    .iter()
+                    .filter_map(|&idx| self.outputs.get(idx))
+                    .map(|o| kara_ipc::OutputInfo {
+                        name: o.output.name(),
+                        width: o.size.0,
+                        height: o.size.1,
+                        x: o.location.x,
+                        y: o.location.y,
+                    })
+                    .collect();
+                if outputs.is_empty() {
+                    // Winit dev backend or no outputs attached — fall
+                    // back to focused-output size under a stub name so
+                    // clients still have something to render against.
+                    let (w, h) = self.output_size();
+                    Response::Outputs {
+                        outputs: vec![kara_ipc::OutputInfo {
+                            name: "winit".to_string(),
+                            width: w,
+                            height: h,
+                            x: 0,
+                            y: 0,
+                        }],
+                    }
+                } else {
+                    Response::Outputs { outputs }
                 }
             }
 
@@ -189,6 +220,11 @@ impl Gate {
                             .border_tile
                             .as_ref()
                             .map(|p| p.to_string_lossy().into_owned()),
+                        // Surface `general.font` so tool UIs (whisper,
+                        // veil, summon) match the session's typography
+                        // instead of whatever cosmic-text picks as a
+                        // generic default.
+                        font_family: Some(g.font.clone()).filter(|s| !s.is_empty()),
                     },
                 }
             }
@@ -261,6 +297,26 @@ impl Gate {
                 self.screenshot_path = Some(path_str.clone());
                 self.screenshot_region = Some((x, y, w, h));
                 Response::ScreenshotDone { path: path_str }
+            }
+
+            Request::ScreenshotOutput { name } => {
+                // Resolve the connector name to an outputs-index; bail if the
+                // caller asked for a monitor kara doesn't know about.
+                match self
+                    .outputs
+                    .iter()
+                    .position(|o| o.output.name() == name)
+                {
+                    Some(idx) => {
+                        let path_str = self.screenshot_output_path();
+                        self.screenshot_path = Some(path_str.clone());
+                        self.screenshot_output_idx = Some(idx);
+                        Response::ScreenshotDone { path: path_str }
+                    }
+                    None => Response::Error {
+                        message: format!("no connected output named '{name}'"),
+                    },
+                }
             }
 
             Request::GetWindowGeometries => {

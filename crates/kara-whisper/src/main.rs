@@ -7,12 +7,15 @@ use std::sync::mpsc;
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_seat,
-    delegate_shm,
+    delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
+    delegate_seat, delegate_shm,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
-    seat::{Capability, SeatHandler, SeatState},
+    seat::{
+        pointer::{PointerEvent, PointerEventKind, PointerHandler},
+        Capability, SeatHandler, SeatState,
+    },
     shell::{
         wlr_layer::{
             Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
@@ -24,14 +27,14 @@ use smithay_client_toolkit::{
 };
 use wayland_client::{
     globals::registry_queue_init,
-    protocol::{wl_output, wl_seat, wl_shm, wl_surface},
+    protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
     Connection, QueueHandle,
 };
 
-use crate::dbus::DbusEvent;
+use crate::dbus::{emit_action_invoked, emit_notification_closed, DbusEvent};
 use crate::notification::{NotificationQueue, Urgency};
 use crate::popover_ipc::PopoverEvent;
-use crate::ui::NotificationUI;
+use crate::ui::{HitRegion, NotificationUI};
 
 fn default_theme() -> kara_ipc::ThemeColors {
     kara_ipc::ThemeColors {
@@ -45,9 +48,10 @@ fn default_theme() -> kara_ipc::ThemeColors {
         border_px: None,
         border_radius: None,
         border_tile_path: None,
-                bar_height: None,
-                bar_background: None,
-                bar_background_alpha: None,
+        bar_height: None,
+        bar_background: None,
+        bar_background_alpha: None,
+        font_family: None,
     }
 }
 
@@ -69,6 +73,18 @@ struct Whisper {
     dbus_rx: mpsc::Receiver<DbusEvent>,
     popover_rx: mpsc::Receiver<PopoverEvent>,
     surface_visible: bool,
+
+    // Pointer / hit-test state — populated on every render so clicks on
+    // action buttons can resolve to (notification id, action id). The
+    // wl_pointer here is held by SCTK once created; we track the current
+    // pointer position relative to the layer surface to match against.
+    pointer: Option<wl_pointer::WlPointer>,
+    pointer_pos: (f64, f64),
+    hit_regions: Vec<HitRegion>,
+
+    // D-Bus connection for emitting ActionInvoked / NotificationClosed
+    // signals. None if the D-Bus session setup failed at startup.
+    dbus_conn: Option<zbus::blocking::Connection>,
 }
 
 impl Whisper {
@@ -101,7 +117,7 @@ impl Whisper {
             return;
         }
 
-        let new_height = NotificationUI::total_height_for(notifications);
+        let new_height = self.ui.total_height_for(notifications);
         let new_width = NotificationUI::card_width();
 
         if new_width != self.width || new_height != self.height {
@@ -111,7 +127,9 @@ impl Whisper {
             self.layer.commit();
         }
 
-        if let Some(pixmap) = self.ui.render(notifications) {
+        let (maybe_pixmap, hits) = self.ui.render(notifications);
+        self.hit_regions = hits;
+        if let Some(pixmap) = maybe_pixmap {
             let stride = self.width as i32 * 4;
             if let Ok((buffer, canvas)) = self.pool.create_buffer(
                 self.width as i32,
@@ -229,21 +247,119 @@ impl SeatHandler for Whisper {
     fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
     fn new_capability(
         &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: wl_seat::WlSeat,
-        _: Capability,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
     ) {
+        // Grab the pointer capability so notification action buttons can
+        // receive clicks. Without this handler nothing drives the button
+        // hit-test and the cards look decorative.
+        if capability == Capability::Pointer && self.pointer.is_none() {
+            match self.seat_state.get_pointer(qh, &seat) {
+                Ok(p) => self.pointer = Some(p),
+                Err(e) => eprintln!("kara-whisper: failed to get pointer: {e}"),
+            }
+        }
     }
     fn remove_capability(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
         _: wl_seat::WlSeat,
-        _: Capability,
+        capability: Capability,
     ) {
+        if capability == Capability::Pointer {
+            if let Some(p) = self.pointer.take() {
+                p.release();
+            }
+        }
     }
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+}
+
+impl PointerHandler for Whisper {
+    fn pointer_frame(
+        &mut self,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        _pointer: &wl_pointer::WlPointer,
+        events: &[PointerEvent],
+    ) {
+        // Snapshot the layer's wl_surface as an owned clone so we can
+        // compare per-event without holding an immutable borrow of
+        // self.layer across the mutable `handle_click` call.
+        let layer_surface = self.layer.wl_surface().clone();
+        for event in events {
+            // Ignore events for unrelated surfaces — SCTK delivers the
+            // full pointer frame regardless of which surface owns it.
+            if event.surface != layer_surface {
+                continue;
+            }
+            match event.kind {
+                PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                    self.pointer_pos = event.position;
+                }
+                PointerEventKind::Leave { .. } => {
+                    self.pointer_pos = (-1.0, -1.0);
+                }
+                PointerEventKind::Press { button, .. } => {
+                    // BTN_LEFT = 0x110.
+                    if button == 0x110 {
+                        self.handle_click(qh);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+impl Whisper {
+    /// Resolve the current pointer position against the latest hit
+    /// regions. Action buttons fire ActionInvoked. Card-body clicks
+    /// dismiss the notification; if the body carries an absolute-path
+    /// icon (e.g. glimpse's saved screenshot), `xdg-open` is spawned so
+    /// tapping the thumbnail opens the capture in the default viewer.
+    /// Both paths emit NotificationClosed(reason=2 dismissed) so
+    /// notify-send --wait clients unblock.
+    fn handle_click(&mut self, qh: &QueueHandle<Self>) {
+        use crate::ui::HitKind;
+
+        let (px, py) = self.pointer_pos;
+        if px < 0.0 || py < 0.0 {
+            return;
+        }
+        let hit = self
+            .hit_regions
+            .iter()
+            .find(|r| r.contains(px, py))
+            .cloned();
+        let Some(hit) = hit else { return };
+
+        match &hit.kind {
+            HitKind::Action { id } => {
+                if let Some(conn) = self.dbus_conn.as_ref() {
+                    emit_action_invoked(conn, hit.notif_id, id);
+                    emit_notification_closed(conn, hit.notif_id, 2);
+                }
+            }
+            HitKind::Body { open_path } => {
+                if let Some(path) = open_path {
+                    let _ = std::process::Command::new("xdg-open")
+                        .arg(path)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn();
+                }
+                if let Some(conn) = self.dbus_conn.as_ref() {
+                    emit_notification_closed(conn, hit.notif_id, 2);
+                }
+            }
+        }
+        self.queue.remove(hit.notif_id);
+        self.update_surface(qh);
+    }
 }
 
 impl ShmHandler for Whisper {
@@ -256,6 +372,7 @@ delegate_compositor!(Whisper);
 delegate_output!(Whisper);
 delegate_shm!(Whisper);
 delegate_seat!(Whisper);
+delegate_pointer!(Whisper);
 delegate_layer!(Whisper);
 delegate_registry!(Whisper);
 
@@ -277,9 +394,12 @@ fn main() {
         _ => default_theme(),
     };
 
-    // Start D-Bus service
+    // Start D-Bus service. Keep the returned connection around so we
+    // can emit ActionInvoked / NotificationClosed signals from the main
+    // thread; without those, notify-send clients invoked with `--wait`
+    // hang forever.
     let (dbus_tx, dbus_rx) = mpsc::channel();
-    let _dbus_handle = dbus::spawn_dbus(dbus_tx);
+    let dbus_conn = dbus::spawn_dbus(dbus_tx).map(|h| h.conn);
 
     // Start popover socket listener. Best-effort — if the socket
     // fails to bind, popovers silently degrade but notifications
@@ -315,7 +435,12 @@ fn main() {
         None,
     );
     layer.set_anchor(Anchor::TOP | Anchor::RIGHT);
-    layer.set_margin(8, 8, 0, 0);
+    // Margin (top, right, bottom, left). The top margin clears a
+    // thick-ornamental bar (fantasy at 40 px); thinner bars just see
+    // a slightly larger gap below them, which reads as breathing room
+    // rather than a mistake. Right margin keeps the card off the
+    // monitor edge and aligned with the bar's pill insets.
+    layer.set_margin(52, 12, 0, 0);
     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
     layer.set_size(NotificationUI::card_width(), 1);
     layer.commit();
@@ -344,6 +469,11 @@ fn main() {
         dbus_rx,
         popover_rx,
         surface_visible: false,
+
+        pointer: None,
+        pointer_pos: (-1.0, -1.0),
+        hit_regions: Vec::new(),
+        dbus_conn,
     };
 
     // Poll the compositor for the live theme every second so notifications
@@ -449,9 +579,16 @@ fn main() {
             }
         }
 
-        // Tick expiration
+        // Tick expiration. Emit NotificationClosed(id, 1=expired) for
+        // each so libnotify clients invoked with `--wait` complete
+        // instead of waiting forever.
         let expired = whisper.queue.tick();
         if !expired.is_empty() {
+            if let Some(conn) = whisper.dbus_conn.as_ref() {
+                for id in &expired {
+                    emit_notification_closed(conn, *id, 1);
+                }
+            }
             changed = true;
         }
 

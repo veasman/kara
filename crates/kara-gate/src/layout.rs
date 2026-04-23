@@ -228,12 +228,25 @@ fn layout_monocle_indexed(
     border_px: i32,
     focused_idx: Option<usize>,
 ) -> Vec<ClientGeometry> {
+    if indices.is_empty() {
+        return vec![];
+    }
+
     let area = Rectangle::new(
         (area.loc.x + outer_gap, area.loc.y + outer_gap).into(),
         (area.size.w - outer_gap * 2, area.size.h - outer_gap * 2).into(),
     );
 
-    let fi = focused_idx.unwrap_or(0);
+    // In monocle, exactly one tiled window is visible at a time. When a float
+    // or popup opens, compositor focus moves to it — but the tile underneath
+    // must stay visible, like a fullscreen window does. Pick the visible tile
+    // from the most recently-focused tiled window, falling back to the first
+    // tile. This makes floats behave as floats (always on top) regardless of
+    // which tiling layout is active.
+    let visible_tile = focused_idx
+        .filter(|fi| indices.contains(fi))
+        .or_else(|| ws.last_focused_idx.filter(|lfi| indices.contains(lfi)))
+        .unwrap_or(indices[0]);
 
     indices
         .iter()
@@ -244,8 +257,8 @@ fn layout_monocle_indexed(
                 window: ws.clients[client_idx].clone(),
                 rect: tile,
                 border_rect: if border_px > 0 { Some(border_rect) } else { None },
-                visible: client_idx == fi,
-                is_focused: client_idx == fi,
+                visible: client_idx == visible_tile,
+                is_focused: focused_idx == Some(client_idx),
             }
         })
         .collect()

@@ -76,6 +76,7 @@ fn convert_action(action: &kara_config::BindAction) -> Action {
         BindAction::Reload => Action::Reload,
         BindAction::Quit => Action::Quit,
         BindAction::ShowKeybinds => Action::ShowKeybinds,
+        BindAction::Lock => Action::Lock,
         BindAction::ViewWs(idx) => Action::ViewWs(*idx),
         BindAction::SendWs(idx) => Action::SendWs(*idx),
     }
@@ -167,11 +168,13 @@ impl Gate {
         // triggers focus_next — stealing focus back to a window
         // behind the picker.
         //
-        // Check before the keybind match so exclusive layers get
-        // a clean key stream while they're open. Non-exclusive
-        // layers (on-screen notifications, top-layer overlays)
-        // don't grab input and keybinds stay active as normal.
-        let skip_keybinds = self.keyboard_focus_is_exclusive_layer();
+        // Same applies while ext-session-lock-v1 is active — the
+        // lock client must receive every keystroke, and compositor
+        // keybinds (focus, workspace nav, kill_client, quit) would
+        // be a security hole while the screen's locked. Gate on
+        // both.
+        let skip_keybinds =
+            self.keyboard_focus_is_exclusive_layer() || self.session_lock.is_some();
 
         let action = keyboard.input(
             self,
@@ -213,6 +216,28 @@ impl Gate {
         smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
         smithay::utils::Point<f64, smithay::utils::Logical>,
     )> {
+        // While the session is locked, pointer events route exclusively
+        // to the lock surface covering whichever output the cursor is
+        // over. Never fall through to the window/layer search below —
+        // that would leak pointer events to the covered desktop.
+        if let Some(lock) = self.session_lock.as_ref() {
+            for out in &self.outputs {
+                let (w, h) = out.size;
+                let x0 = out.location.x as f64;
+                let y0 = out.location.y as f64;
+                if pos.x < x0 || pos.y < y0 || pos.x >= x0 + w as f64 || pos.y >= y0 + h as f64 {
+                    continue;
+                }
+                if let Some(surf) = lock.surfaces.get(&out.output.name()) {
+                    return Some((surf.wl_surface().clone(), pos));
+                }
+                // Cursor is on an output the lock client hasn't painted
+                // yet — still refuse to fall through to the desktop.
+                return None;
+            }
+            return None;
+        }
+
         // Check overlay/top layer surfaces first (kara-summon, kara-glimpse, etc.)
         if let Some(output) = self.outputs.get(self.focused_output) {
             let map = layer_map_for_output(&output.output);
@@ -286,7 +311,8 @@ impl Gate {
         // `output_bounds` lets the cursor escape into dead zones between
         // outputs. Clamp axis-by-axis against the union of real output
         // rects so the cursor always lands on a visible monitor.
-        self.pointer_location = clamp_to_outputs(&self.outputs, old, proposed);
+        self.pointer_location =
+            clamp_to_outputs(&self.outputs, &self.output_order, old, proposed);
         self.update_cursor_idle();
 
         // NOTE: pointer motion no longer updates `focused_output`. The user's
@@ -444,39 +470,111 @@ impl Gate {
     }
 }
 
-/// Clamp a proposed cursor position to the union of output rectangles.
-/// Outputs can be laid out with gaps, mixed sizes, or a portrait mixed
-/// with landscape — simply clipping to a bounding box admits dead zones.
-/// Try the proposed point; if it's off-screen, try sliding along one
-/// axis at a time so edge-skimming movement still works; otherwise hold
-/// the old position.
+/// Clamp a proposed cursor position so it walks monitors in the user's
+/// config-declared order rather than whatever spatial layout happens to
+/// exist.
+///
+/// Horizontal motion is the interesting case: exiting the right edge of
+/// the current monitor warps the cursor to the left edge of the
+/// next-in-config-order monitor, and left-edge exit warps to the right
+/// edge of the previous one. The y coordinate is carried through,
+/// proportionally mapped to the destination's height so the cursor
+/// doesn't end up off-screen when crossing a short→tall boundary.
+///
+/// Vertical motion stays inside the current monitor (clamp to its top
+/// /bottom) — horizontal row layouts are the common case and letting the
+/// cursor fall off top/bottom into nothing or into the wrong output is
+/// confusing. If the user ever configures a vertical stack, the diagonal
+/// / vertical paths still resolve via the destination's y-clamp.
+///
+/// Wrap-around is disabled: past the last monitor, cursor stops at the
+/// edge. Matches Hyprland/sway's default.
 fn clamp_to_outputs(
     outputs: &[crate::state::OutputState],
+    order: &[usize],
     old: smithay::utils::Point<f64, smithay::utils::Logical>,
     new: smithay::utils::Point<f64, smithay::utils::Logical>,
 ) -> smithay::utils::Point<f64, smithay::utils::Logical> {
     if outputs.is_empty() {
         return new;
     }
-    let inside = |p: smithay::utils::Point<f64, smithay::utils::Logical>| -> bool {
-        outputs.iter().any(|o| {
-            let (w, h) = o.size;
-            p.x >= o.location.x as f64
-                && p.x < (o.location.x + w) as f64
-                && p.y >= o.location.y as f64
-                && p.y < (o.location.y + h) as f64
-        })
+
+    let inside = |p: smithay::utils::Point<f64, smithay::utils::Logical>,
+                  idx: usize|
+     -> bool {
+        let o = &outputs[idx];
+        let (w, h) = o.size;
+        p.x >= o.location.x as f64
+            && p.x < (o.location.x + w) as f64
+            && p.y >= o.location.y as f64
+            && p.y < (o.location.y + h) as f64
     };
-    if inside(new) {
+
+    // Which monitor was the cursor on before this motion? Fall back to
+    // the output that contains `new` if `old` is nowhere (startup / race).
+    let cur_idx = (0..outputs.len())
+        .find(|&i| inside(old, i))
+        .or_else(|| (0..outputs.len()).find(|&i| inside(new, i)));
+
+    let Some(cur_idx) = cur_idx else {
+        // No anchor — pick the first configured monitor's top-left as a
+        // safe landing spot.
+        let first = order.first().copied().unwrap_or(0);
+        let o = &outputs[first];
+        return smithay::utils::Point::from((o.location.x as f64, o.location.y as f64));
+    };
+
+    let cur = &outputs[cur_idx];
+    let (cw, ch) = cur.size;
+    let cx0 = cur.location.x as f64;
+    let cy0 = cur.location.y as f64;
+    let cx1 = (cur.location.x + cw) as f64;
+    let cy1 = (cur.location.y + ch) as f64;
+
+    // Still inside the current monitor? Accept.
+    if new.x >= cx0 && new.x < cx1 && new.y >= cy0 && new.y < cy1 {
         return new;
     }
-    let try_x = smithay::utils::Point::from((new.x, old.y));
-    if inside(try_x) {
-        return try_x;
+
+    // Which neighbor in config order gets the cursor?
+    let cur_rank = order.iter().position(|&i| i == cur_idx);
+    let neighbor_in_order = |direction: i32| -> Option<usize> {
+        let rank = cur_rank?;
+        let next_rank = rank as i32 + direction;
+        if next_rank < 0 || next_rank >= order.len() as i32 {
+            return None;
+        }
+        Some(order[next_rank as usize])
+    };
+
+    // Horizontal crossing. Map y proportionally onto the destination so a
+    // short→tall handoff doesn't dump the cursor above/below the panel.
+    let map_y = |dest: &crate::state::OutputState| -> f64 {
+        let frac = ((new.y - cy0) / ch as f64).clamp(0.0, 1.0);
+        let dh = dest.size.1 as f64;
+        let dy0 = dest.location.y as f64;
+        dy0 + frac * (dh - 1.0)
+    };
+
+    if new.x >= cx1 {
+        // Exiting right → next monitor in config order.
+        if let Some(next_idx) = neighbor_in_order(1) {
+            let dest = &outputs[next_idx];
+            return smithay::utils::Point::from((dest.location.x as f64, map_y(dest)));
+        }
+        // No monitor to the right in config order — stop at the edge.
+        return smithay::utils::Point::from((cx1 - 1.0, new.y.clamp(cy0, cy1 - 1.0)));
     }
-    let try_y = smithay::utils::Point::from((old.x, new.y));
-    if inside(try_y) {
-        return try_y;
+    if new.x < cx0 {
+        // Exiting left → previous monitor in config order.
+        if let Some(prev_idx) = neighbor_in_order(-1) {
+            let dest = &outputs[prev_idx];
+            let dest_x = (dest.location.x + dest.size.0) as f64 - 1.0;
+            return smithay::utils::Point::from((dest_x, map_y(dest)));
+        }
+        return smithay::utils::Point::from((cx0, new.y.clamp(cy0, cy1 - 1.0)));
     }
-    old
+
+    // Vertical over-run on the current monitor — clamp to its edge.
+    smithay::utils::Point::from((new.x.clamp(cx0, cx1 - 1.0), new.y.clamp(cy0, cy1 - 1.0)))
 }

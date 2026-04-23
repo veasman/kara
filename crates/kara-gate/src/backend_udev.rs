@@ -178,11 +178,28 @@ struct OutputInstance {
         DrmDeviceFd,
     >,
     output: Output,
+    /// Cached connector name. `Output::name()` locks an internal
+    /// mutex and clones the String on every call; we read it many
+    /// times per frame (error logging, rate limiter) so caching it
+    /// once at construction avoids the per-frame allocation + lock.
+    /// Arc<str> so `render_frame` can clone the handle (ref-count
+    /// bump, no heap alloc) and still mutably borrow the rest of
+    /// `instance` at the same time.
+    cached_name: std::sync::Arc<str>,
     crtc: crtc::Handle,
     /// DRM node that owns this output's CRTC. Vblank routing keys on
     /// `(node, crtc)` so multiple devices don't collide on the same handle.
     node: DrmNode,
     frame_pending: bool,
+    /// True until the first successful queue_frame on this output. Used
+    /// to force an initial commit even when the first render_frame
+    /// reports `is_empty` — without that commit the DRM surface never
+    /// flips off the stale getty buffer, and on lid-closed docked
+    /// boots the user just sees black on the external monitor until
+    /// something happens to force a second render (opening the lid
+    /// being the most common external trigger, since it produces a
+    /// udev hotplug event).
+    needs_initial_commit: bool,
     /// Backlog item #3 diagnostic: count of `render_frame` + `queue_frame`
     /// failures since the output came up. The first error is logged
     /// immediately and every 60th error after that is summarized. When the
@@ -579,25 +596,29 @@ pub fn run(
             }
         }
 
-        // Mode selection — prefer config resolution over preferred mode
-        let drm_mode = if let Some(Some((w, h))) = mon_config.as_ref().map(|mc| mc.resolution) {
-            let refresh = mon_config.as_ref().and_then(|mc| mc.refresh).unwrap_or(0);
-            conn_info.modes().iter()
-                .find(|m| {
-                    let (mw, mh) = m.size();
-                    mw as i32 == w && mh as i32 == h
-                        && (refresh == 0 || m.vrefresh() == refresh)
-                })
-                .or_else(|| conn_info.modes().iter()
-                    .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED)))
-                .copied()
-                .unwrap_or(conn_info.modes()[0])
-        } else {
-            conn_info.modes().iter()
-                .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
-                .copied()
-                .unwrap_or(conn_info.modes()[0])
-        };
+        // Resolve rotation FIRST so mode selection can swap width/height
+        // for portrait-rotated monitors: the config's `resolution` field
+        // is the user-visible (post-rotation) size, but DRM modes are
+        // always physical-panel-oriented.
+        let mon_rotation = mon_config
+            .as_ref()
+            .map(|mc| mc.rotation)
+            .unwrap_or(kara_config::MonitorRotation::Normal);
+        let (transform, two_pass) = resolve_rotation(mon_rotation);
+        let rotated_portrait = matches!(
+            transform,
+            Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270
+        );
+
+        // Mode selection — prefer config resolution over preferred mode.
+        // See `select_mode` for precedence + warning behavior.
+        let drm_mode = select_mode(
+            &output_name,
+            conn_info.modes(),
+            mon_config.as_ref().and_then(|mc| mc.resolution),
+            mon_config.as_ref().and_then(|mc| mc.refresh),
+            rotated_portrait,
+        );
 
         // Find an available CRTC
         let crtc_handle = match find_crtc_for_connector(
@@ -621,24 +642,11 @@ pub fn run(
             refresh: (drm_mode.vrefresh() * 1000) as i32,
         };
 
-        // Resolve the user's rotation config. `transform` is what we hand
-        // to `Output::change_current_state` (drives wl_output advertising
-        // + `Space::output_geometry`). `two_pass` flags whether this
-        // output should render via kara's offscreen two-pass path (which
-        // bypasses smithay's rotated render — see `ROTATION_TWO_PASS`).
-        let mon_rotation = mon_config
-            .as_ref()
-            .map(|mc| mc.rotation)
-            .unwrap_or(kara_config::MonitorRotation::Normal);
-        let (transform, two_pass) = resolve_rotation(mon_rotation);
-
         // For 90°/270° rotations the OUTPUT's logical (user-facing) size is
         // the mode size with width/height swapped — a 1920x1080 panel in
         // portrait reports as 1080x1920 logical, and the workarea/window
         // tile geometry must use the swapped dimensions.
-        let logical_size = if matches!(transform,
-            Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270)
-        {
+        let logical_size = if rotated_portrait {
             (mode_size.1 as i32, mode_size.0 as i32)
         } else {
             (mode_size.0 as i32, mode_size.1 as i32)
@@ -790,12 +798,15 @@ pub fn run(
         };
         let blur_state = crate::blur::BlurState::try_new(&primary_gbm, blur_size);
 
+        let cached_name: std::sync::Arc<str> = std::sync::Arc::from(output.name().as_str());
         output_instances.push(OutputInstance {
             drm_compositor,
             output,
+            cached_name,
             crtc: crtc_handle,
             node: primary_node,
             frame_pending: false,
+            needs_initial_commit: true,
             render_errors: 0,
             queue_errors: 0,
             two_pass: two_pass_state,
@@ -886,36 +897,29 @@ pub fn run(
                 }
             }
 
-            // Mode selection (same logic as primary loop)
-            let drm_mode = if let Some(Some((w, h))) =
-                mon_config.as_ref().map(|mc| mc.resolution)
-            {
-                let refresh = mon_config.as_ref().and_then(|mc| mc.refresh).unwrap_or(0);
-                conn_info
-                    .modes()
-                    .iter()
-                    .find(|m| {
-                        let (mw, mh) = m.size();
-                        mw as i32 == w
-                            && mh as i32 == h
-                            && (refresh == 0 || m.vrefresh() == refresh)
-                    })
-                    .or_else(|| {
-                        conn_info
-                            .modes()
-                            .iter()
-                            .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
-                    })
-                    .copied()
-                    .unwrap_or(conn_info.modes()[0])
-            } else {
-                conn_info
-                    .modes()
-                    .iter()
-                    .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
-                    .copied()
-                    .unwrap_or(conn_info.modes()[0])
-            };
+            // Same rotation handling as the primary loop — resolve first
+            // so select_mode can swap W/H for portrait-config monitors.
+            // Evdi monitors hung off a DisplayLink dock can also be
+            // portrait-rotated and the user's config controls them with
+            // the same `monitor "..." { rotate left }` syntax.
+            let mon_rotation = mon_config
+                .as_ref()
+                .map(|mc| mc.rotation)
+                .unwrap_or(kara_config::MonitorRotation::Normal);
+            let (transform, two_pass) = resolve_rotation(mon_rotation);
+            let rotated_portrait = matches!(
+                transform,
+                Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270
+            );
+
+            // Mode selection (same helper as the primary loop).
+            let drm_mode = select_mode(
+                &output_name,
+                conn_info.modes(),
+                mon_config.as_ref().and_then(|mc| mc.resolution),
+                mon_config.as_ref().and_then(|mc| mc.refresh),
+                rotated_portrait,
+            );
 
             let crtc_handle = match find_crtc_for_connector(
                 evdi_drm,
@@ -940,18 +944,7 @@ pub fn run(
                 refresh: (drm_mode.vrefresh() * 1000) as i32,
             };
 
-            // Same rotation handling as the primary loop — see the matching
-            // block above. Evdi monitors hung off a DisplayLink dock can also
-            // be portrait-rotated and the user's config controls them with
-            // the same `monitor "..." { rotate left }` syntax.
-            let mon_rotation = mon_config
-                .as_ref()
-                .map(|mc| mc.rotation)
-                .unwrap_or(kara_config::MonitorRotation::Normal);
-            let (transform, two_pass) = resolve_rotation(mon_rotation);
-            let logical_size = if matches!(transform,
-                Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270)
-            {
+            let logical_size = if rotated_portrait {
                 (mode_size.1 as i32, mode_size.0 as i32)
             } else {
                 (mode_size.0 as i32, mode_size.1 as i32)
@@ -1132,12 +1125,15 @@ pub fn run(
             };
             let evdi_blur_state = crate::blur::BlurState::try_new(&primary_gbm, evdi_blur_size);
 
+            let cached_name: std::sync::Arc<str> = std::sync::Arc::from(output.name().as_str());
             output_instances.push(OutputInstance {
                 drm_compositor,
                 output,
+                cached_name,
                 crtc: crtc_handle,
                 node: evdi_node,
                 frame_pending: false,
+                needs_initial_commit: true,
                 render_errors: 0,
                 queue_errors: 0,
                 two_pass: evdi_two_pass_state,
@@ -1159,21 +1155,37 @@ pub fn run(
 
     // Sort outputs by their x-coordinate so mod+focus_monitor_next/prev cycles
     // left-to-right deterministically, regardless of the (HashMap-derived)
-    // order kara opened the GPUs in. `state.outputs` and `output_instances`
-    // are parallel vectors — the render loop calls
-    // `state.outputs.get(idx)` where `idx` is the index in `output_instances`
-    // — so they must be sorted in lockstep. Pair, sort, unpair.
+    // order kara opened the GPUs in. `state.outputs`, `output_instances`,
+    // and `state.workspaces` are parallel vectors (the render loop / action
+    // handlers index them all by the same output index) — so they must be
+    // reshuffled in lockstep. Pair, sort, unpair.
     {
-        let mut paired: Vec<_> = state
+        // Build a triple of (output, output_instance, workspace_pool) so
+        // the sort-by-x reshuffles all three in unison.
+        let pools = std::mem::take(&mut state.workspaces);
+        let mut triples: Vec<_> = state
             .outputs
             .drain(..)
             .zip(output_instances.drain(..))
+            .zip(pools.into_iter())
+            .map(|((o, i), w)| (o, i, w))
             .collect();
-        paired.sort_by_key(|(o, _)| (o.location.x, o.location.y));
-        for (o, inst) in paired {
+        triples.sort_by_key(|(o, _, _)| (o.location.x, o.location.y));
+        for (o, inst, pool) in triples {
             state.outputs.push(o);
             output_instances.push(inst);
+            state.workspaces.push(pool);
         }
+        // `output_order` was computed during each `add_output` call (which
+        // happened before this sort). After reshuffling `state.outputs`,
+        // the indices inside `output_order` point at the WRONG outputs —
+        // position 1 still says "the monitor that was index 1 before the
+        // sort", which is no longer the middle monitor. Recompute bounds
+        // (which also recomputes output_order) now that the vectors are
+        // in their final post-sort order. Without this recompute,
+        // `focus_monitor_next/prev` walks monitors in stale order and
+        // `monitor N` in autostart routes to the wrong physical monitor.
+        state.refresh_output_geometry();
     }
 
     // Determine the primary monitor: pick the first MonitorConfig with
@@ -1317,6 +1329,23 @@ pub fn run(
 
     loop_handle
         .insert_source(libinput_backend, |event, _, state: &mut Gate| {
+            // Track keyboard-capable libinput devices so the SeatHandler
+            // `led_state_changed` hook can push caps/num/scroll lock state
+            // back to the hardware. Without tracking here, laptop caps-lock
+            // LEDs never light up regardless of xkb state.
+            match &event {
+                smithay::backend::input::InputEvent::DeviceAdded { device } => {
+                    if device.has_capability(
+                        smithay::reexports::input::DeviceCapability::Keyboard,
+                    ) {
+                        state.libinput_keyboards.push(device.clone());
+                    }
+                }
+                smithay::backend::input::InputEvent::DeviceRemoved { device } => {
+                    state.libinput_keyboards.retain(|d| d != device);
+                }
+                _ => {}
+            }
             state.handle_input_event(event);
         })
         .expect("failed to insert libinput source");
@@ -1326,13 +1355,72 @@ pub fn run(
         .insert_source(
             Timer::from_duration(Duration::from_secs(1)),
             |_deadline, _, state: &mut Gate| {
-                state.status_cache.refresh(false);
-                state.bar_dirty = true;
+                // Skip status + bar work while the session is locked —
+                // the lock render path doesn't draw the bar anyway,
+                // and refreshing wpctl / playerctl / network state in
+                // the background burns CPU for output the user can't
+                // see. Config-change check stays live so a hot-reload
+                // keybind while locked wouldn't get lost.
+                if state.session_lock.is_none() {
+                    state.status_cache.refresh(false);
+                    state.bar_dirty = true;
+                }
                 state.check_config_changed();
                 TimeoutAction::ToDuration(Duration::from_secs(1))
             },
         )
         .expect("failed to insert status timer");
+
+    // Pre-lock-pending watchdog. If the user hit `mod+Shift+x` but
+    // kara-veil never managed to acquire the protocol lock (binary
+    // missing, PAM broken, Wayland connect failed), the blanked
+    // render path would stick forever. Clear the pending flag after
+    // 5 s so the desktop comes back instead of the user being
+    // stranded at a black screen.
+    loop_handle
+        .insert_source(
+            Timer::from_duration(Duration::from_millis(500)),
+            |_deadline, _, state: &mut Gate| {
+                if let Some(started) = state.lock_pending_since {
+                    if state.session_lock.is_none()
+                        && started.elapsed() > Duration::from_secs(5)
+                    {
+                        tracing::warn!(
+                            "lock_pending timed out (kara-veil never acquired lock) — \
+                             restoring desktop"
+                        );
+                        state.lock_pending_since = None;
+                        state.bar_dirty = true;
+                        state.layout_dirty = true;
+                    }
+                }
+                TimeoutAction::ToDuration(Duration::from_millis(500))
+            },
+        )
+        .expect("failed to insert lock-pending watchdog");
+
+    // Dead-window sweep timer. `sweep_dead_windows` walks every
+    // per-monitor workspace pool, scratchpads, and calls
+    // `Space::refresh()` — which is O(windows * outputs) as it emits
+    // wl_surface.enter/leave events. Running it every main-loop
+    // iteration (thousands of times per second when input is flowing)
+    // was pinning a core at idle. A half-second cadence is still
+    // fast enough that a ghost-after-crash (Floorp abnormal exit)
+    // resolves within the time it takes the user to reach for the
+    // mouse to kill it, while keeping the hot loop clean.
+    loop_handle
+        .insert_source(
+            Timer::from_duration(Duration::from_millis(500)),
+            |_deadline, _, state: &mut Gate| {
+                if state.sweep_dead_windows() {
+                    tracing::info!("swept dead windows, re-laying out");
+                    state.apply_layout();
+                    state.apply_focus();
+                }
+                TimeoutAction::ToDuration(Duration::from_millis(500))
+            },
+        )
+        .expect("failed to insert dead-window sweep timer");
 
     // Wallpaper animation tick — reschedules itself based on
     // each frame's per-frame delay so fast GIFs get accurate
@@ -1402,6 +1490,11 @@ pub fn run(
 
         // 2. Housekeeping
         state.poll_ipc();
+        state.popup_manager.cleanup();
+        // Note: dead-window sweep (`sweep_dead_windows`) runs on its
+        // own 500ms timer — it walks every per-monitor pool and calls
+        // `Space::refresh()` (O(windows * outputs)), so doing it per
+        // main-loop iteration pinned a core under input load.
 
         if signal_flag.swap(false, std::sync::atomic::Ordering::Relaxed) {
             state.reload_config();
@@ -1537,6 +1630,23 @@ fn render_frame(
         }
     };
 
+    // ext-session-lock-v1 render path. Two entry points:
+    //   • `session_lock.is_some()`: a lock client (kara-veil) has
+    //     actually acquired the protocol lock; render_frame_locked
+    //     paints blurred wallpaper + the client's lock surface.
+    //   • `lock_pending_since.is_some()`: the `Lock` keybind was
+    //     pressed and kara-veil is still starting up — we hit this
+    //     path IMMEDIATELY so the desktop vanishes this frame, not
+    //     300 ms later when the client finally connects. The lock
+    //     surface HashMap is empty during pre-lock, so the render is
+    //     wallpaper + blur only. As soon as kara-veil's request
+    //     lands, `lock_pending_since` clears and we're on the real
+    //     locked path.
+    if state.session_lock.is_some() || state.lock_pending_since.is_some() {
+        render_frame_locked(instance, &mut renderer, state, output_idx, primary_node);
+        return;
+    }
+
     let custom_elements = build_custom_elements(state, &mut renderer, output_idx);
     let sp_borders = crate::render::build_scratchpad_borders(state, &mut renderer, output_idx);
     let sp_dim = crate::render::build_scratchpad_dim(state, &mut renderer, output_idx);
@@ -1572,8 +1682,12 @@ fn render_frame(
 
     // Pre-compute window classification once instead of O(n²) per-window
     // lookup into scratchpads + workspace pools. Window implements Hash+Eq.
-    let mut window_class: std::collections::HashMap<smithay::desktop::Window, (bool, bool)> =
-        std::collections::HashMap::new();
+    // Reuses a scratch HashMap on Gate so render_frame doesn't allocate a
+    // fresh map per output per frame (was 60 fps × N outputs = hundreds of
+    // transient allocations per second, each growing+rehashing as windows
+    // were inserted).
+    let window_class = &mut state.window_class_scratch;
+    window_class.clear();
     for sp in &state.scratchpads {
         for w in &sp.workspace.clients {
             window_class.insert(w.clone(), (true, false));
@@ -1582,9 +1696,12 @@ fn render_frame(
     for out_pool in &state.workspaces {
         for ws in out_pool {
             for (idx, w) in ws.clients.iter().enumerate() {
-                if !window_class.contains_key(w) {
-                    window_class.insert(w.clone(), (false, ws.is_floating(idx)));
-                }
+                // Single hash lookup — `entry` consumes `w.clone()`
+                // only when the key is vacant, so scratchpad
+                // overrides from the loop above stay authoritative.
+                window_class
+                    .entry(w.clone())
+                    .or_insert((false, ws.is_floating(idx)));
             }
         }
     }
@@ -1764,7 +1881,11 @@ fn render_frame(
     elements.extend(custom_elements.into_iter().map(DrmRenderElement::Texture));
 
     let is_evdi = instance.node != primary_node;
-    let output_name = instance.output.name();
+    // Cached at OutputInstance construction so `render_frame` doesn't
+    // pay a mutex-locked String clone per frame. Arc<str> clone here
+    // is a single ref-count bump; the returned handle is independent
+    // of `instance` so we can freely `&mut instance` below.
+    let output_name = instance.cached_name.clone();
 
     // Scratchpad backdrop blur: if any visible scratchpad on this output
     // has `blur true`, replace the workspace+custom tail of `elements`
@@ -1808,6 +1929,29 @@ fn render_frame(
         }
     }
 
+    // Screenshot capture runs BEFORE run_two_pass so rotated outputs
+    // see the same portrait/logical element list that matches the output
+    // size `capture_screenshot` renders into. After run_two_pass, the
+    // element vec is replaced by a single landscape-sized blit element
+    // (the offscreen portrait texture being rotated back into the
+    // landscape scanout buffer), which no longer lines up with either
+    // the portrait output size or glimpse's region coords — a portrait
+    // monitor would end up with a clipped/wrong crop.
+    // Screenshot trigger. `screenshot_output_idx` takes precedence
+    // (kara-veil uses `ScreenshotOutput` to request a specific
+    // monitor); otherwise we fall back to focused_output for the
+    // plain `Screenshot` / `ScreenshotRegion` paths.
+    let screenshot_target = state
+        .screenshot_output_idx
+        .unwrap_or(state.focused_output);
+    if state.screenshot_path.is_some() && output_idx == screenshot_target {
+        if let Some(path) = state.screenshot_path.take() {
+            let region = state.screenshot_region.take();
+            state.screenshot_output_idx = None;
+            capture_screenshot(&mut renderer, &elements, state, output_idx, &path, region);
+        }
+    }
+
     // Two-pass rotation: render the portrait element vec into the
     // offscreen dmabuf, then replace `elements` with a single
     // landscape-sized TextureRenderElement wrapping that dmabuf (with
@@ -1842,9 +1986,68 @@ fn render_frame(
         FrameFlags::empty(),
     ) {
         Ok(result) => {
-            if !result.is_empty {
+            // Force the initial frame to commit even when smithay reports
+            // "no damage" — on docked boots with the laptop lid closed
+            // there are no windows/layers at first_render time, so
+            // `is_empty` is true; skipping queue_frame then leaves the
+            // DRM surface on the stale getty buffer (which the kernel
+            // tends to render as black after the mode swap). One forced
+            // commit puts our blank-but-correct frame on screen so the
+            // user sees kara's background instead of a frozen terminal.
+            let force = instance.needs_initial_commit;
+            if force {
+                tracing::info!(
+                    "first render: output={} is_empty={} force=true",
+                    output_name,
+                    result.is_empty
+                );
+            }
+            if !result.is_empty || force {
+                // evdi / DisplayLink outputs pull the dmabuf over USB
+                // without honoring GPU implicit sync. If the AMD GPU is
+                // still writing the framebuffer when evdi starts its USB
+                // blit, the user sees vertical tearing / glitch lines.
+                //
+                // We drop an EGLFence at the end of the render stream
+                // and wait on it with SYNC_FLUSH_COMMANDS_BIT set, which
+                // guarantees every GL command issued up to this point
+                // has completed before `queue_frame` schedules the
+                // flip. This is narrower than `glFinish` — the wait
+                // targets a specific sync point instead of draining
+                // every outstanding driver operation — so the main
+                // render thread stalls less while still giving evdi a
+                // fully-written buffer. Falls back to `glFinish` if
+                // EGL_KHR_fence_sync is unavailable. Only runs on evdi
+                // outputs; the native AMD DP monitor pays no cost.
+                if is_evdi {
+                    use smithay::backend::egl::fence::EGLFence;
+                    let gles = renderer.as_mut();
+                    let display = gles.egl_context().display().clone();
+                    let _ = gles.with_context(|gl| {
+                        // `with_context` calls make_current on the
+                        // EGLContext before invoking us, so the fence
+                        // lands in the same stream of GL commands that
+                        // just finished render_frame.
+                        match EGLFence::create(&display) {
+                            Ok(fence) => {
+                                // timeout=None blocks forever; flush=true
+                                // sets SYNC_FLUSH_COMMANDS_BIT so the
+                                // fence is actually submitted to the GPU.
+                                let _ = fence.client_wait(None, true);
+                            }
+                            Err(_) => {
+                                // Extension missing or creation failed.
+                                // glFinish is always available.
+                                unsafe { gl.Finish(); }
+                            }
+                        }
+                    });
+                }
                 match instance.drm_compositor.queue_frame(()) {
-                    Ok(()) => instance.frame_pending = true,
+                    Ok(()) => {
+                        instance.frame_pending = true;
+                        instance.needs_initial_commit = false;
+                    }
                     Err(e) => {
                         log_rate_limited_error(
                             &mut instance.queue_errors,
@@ -1857,22 +2060,178 @@ fn render_frame(
                 }
             }
 
-            // Screenshot capture — render to offscreen and save PNG.
-            // Gate on focused_output: glimpse lives on the focused output
-            // and its region coords are in that output's local space, so
-            // capturing another output here would save the wrong image at
-            // the wrong crop. `take()` only consumes when we actually match.
-            if state.screenshot_path.is_some() && output_idx == state.focused_output {
-                if let Some(path) = state.screenshot_path.take() {
-                    let region = state.screenshot_region.take();
-                    capture_screenshot(&mut renderer, &elements, state, output_idx, &path, region);
+        }
+        Err(err) => {
+            log_rate_limited_error(
+                &mut instance.render_errors,
+                "render_frame",
+                &output_name,
+                is_evdi,
+                &format!("{err:?}"),
+            );
+        }
+    }
+}
+
+/// Lock-mode render path. Called in place of the normal render when
+/// `state.session_lock.is_some()`. Builds a minimal element list from
+/// just the ext-session-lock surface on this output (or an empty list
+/// if the client hasn't created one yet) and queues a black frame.
+///
+/// All the normal-path work (wallpaper, bar, window classification,
+/// scratchpad, borders, two-pass rotation, blur) is skipped — while
+/// the session is locked we must never paint anything that could leak
+/// the desktop, and skipping the heavy pipeline also stops the lock
+/// from costing what the active desktop was costing.
+fn render_frame_locked<'a>(
+    instance: &mut OutputInstance,
+    renderer: &mut KaraRenderer<'a>,
+    state: &mut Gate,
+    output_idx: usize,
+    primary_node: DrmNode,
+) {
+    use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
+    use smithay::backend::renderer::element::Kind;
+
+    let output_name = instance.cached_name.clone();
+    let is_evdi = instance.node != primary_node;
+
+    // Find this output's lock surface if the client has created one yet.
+    let out_name = state
+        .outputs
+        .get(output_idx)
+        .map(|o| o.output.name())
+        .unwrap_or_default();
+
+    // Build the backdrop: wallpaper ONLY (explicitly not the bar, nor
+    // the window-border stack — those would show through the blur as
+    // recognisable horizontal stripes and defeat the "desktop is
+    // hidden" contract of the lock). Wallpaper-only also means
+    // kara-sight's status timer stops driving bar repaints while
+    // we're locked, which was the "bar still renders" artefact.
+    //
+    // On rotated outputs (two_pass) we skip the blur entirely because
+    // the blur offscreen is landscape-sized and the wallpaper is
+    // portrait-rendered — mixing them corrupts the output. Portrait
+    // outputs get a clean dark backdrop via the lock surface's own
+    // fill, which is still an improvement over an opaque flat color.
+    let mut elements: Vec<DrmRenderElement<'_>> = Vec::new();
+    if let Some(wp) = crate::render::build_wallpaper_element(state, renderer, output_idx) {
+        elements.push(DrmRenderElement::Texture(wp));
+    }
+    let backdrop_len = elements.len();
+
+    // Apply strong blur to the backdrop chrome. Reuses the same
+    // BlurState that scratchpads use — it's already allocated at
+    // output construction on non-rotated outputs and knows how to
+    // capture + shader-blur the end-of-vec elements into a single
+    // blurred texture element. We want more passes here than a
+    // scratchpad (3 vs 1) for a frostier glass look.
+    let blur_passes_for_lock: u32 = 3;
+    if backdrop_len > 0 && instance.blur.is_some() && instance.two_pass.is_none() {
+        if let Err(phase) = run_scratchpad_blur(
+            renderer,
+            instance,
+            &mut state.blur_program,
+            &mut elements,
+            backdrop_len,
+            blur_passes_for_lock,
+            &output_name,
+        ) {
+            log_rate_limited_error(
+                &mut instance.render_errors,
+                phase,
+                &output_name,
+                is_evdi,
+                "lock-backdrop blur failed — falling back to plain wallpaper",
+            );
+            // Fall through — elements still contains the unblurred
+            // wallpaper/bar/border stack, which is better than nothing.
+        }
+    }
+
+    // Lock surface goes ON TOP of the blurred backdrop.
+    if let Some(lock) = state.session_lock.as_ref() {
+        if let Some(lock_surf) = lock.surfaces.get(&out_name) {
+            let surface_elements: Vec<WaylandSurfaceRenderElement<KaraRenderer<'a>>> =
+                render_elements_from_surface_tree(
+                    renderer,
+                    lock_surf.wl_surface(),
+                    (0, 0),
+                    1.0,
+                    1.0,
+                    Kind::Unspecified,
+                );
+            // Push surface elements at the FRONT of the vec — kara's
+            // smithay setup renders elements in reverse (first = top),
+            // so the lock UI covers the blurred chrome underneath.
+            let mut new_list: Vec<DrmRenderElement<'_>> = Vec::with_capacity(
+                surface_elements.len() + elements.len(),
+            );
+            for e in surface_elements {
+                new_list.push(DrmRenderElement::Surface(e));
+            }
+            new_list.append(&mut elements);
+            elements = new_list;
+        }
+    }
+
+    // Two-pass rotated outputs still need their rotation applied — the
+    // lock surface client sends a portrait-sized buffer for portrait
+    // outputs because smithay advertised the logical size in the
+    // configure. Route through run_two_pass so the offscreen rotation
+    // still works.
+    if instance.two_pass.is_some() {
+        if let Err(phase) = run_two_pass(
+            renderer,
+            instance,
+            &mut elements,
+            instance.node,
+            &output_name,
+        ) {
+            log_rate_limited_error(
+                &mut instance.render_errors,
+                phase,
+                &output_name,
+                is_evdi,
+                "two-pass lock-render failed",
+            );
+            return;
+        }
+    }
+
+    // Render + queue. Black clear color so the frame is visually
+    // correct even before the client's first commit lands.
+    match instance.drm_compositor.render_frame(
+        renderer,
+        &elements,
+        [0.0, 0.0, 0.0, 1.0],
+        FrameFlags::empty(),
+    ) {
+        Ok(result) => {
+            let force = instance.needs_initial_commit;
+            if !result.is_empty || force {
+                match instance.drm_compositor.queue_frame(()) {
+                    Ok(()) => {
+                        instance.frame_pending = true;
+                        instance.needs_initial_commit = false;
+                    }
+                    Err(e) => {
+                        log_rate_limited_error(
+                            &mut instance.queue_errors,
+                            "queue_frame (lock)",
+                            &output_name,
+                            is_evdi,
+                            &format!("{e:?}"),
+                        );
+                    }
                 }
             }
         }
         Err(err) => {
             log_rate_limited_error(
                 &mut instance.render_errors,
-                "render_frame",
+                "render_frame (lock)",
                 &output_name,
                 is_evdi,
                 &format!("{err:?}"),
@@ -2592,6 +2951,103 @@ fn resolve_rotation(r: kara_config::MonitorRotation) -> (Transform, bool) {
         );
         (Transform::Normal, false)
     }
+}
+
+/// Pick a DRM mode for a connector.
+///
+/// Precedence: exact (w,h,refresh) → same (w,h) at highest available refresh
+/// → PREFERRED from EDID → first mode. Logs a warning whenever the requested
+/// mode isn't available and we fall back, including the full list of modes
+/// the connector/link actually offers.
+///
+/// `requested_is_physical` swaps the requested (W, H) for same-resolution
+/// matching when the monitor is rotated 90/270 — the config's `resolution`
+/// field is the user-visible (logical) size, but DRM modes are always in
+/// physical panel orientation.
+fn select_mode(
+    output_name: &str,
+    modes: &[smithay::reexports::drm::control::Mode],
+    requested: Option<(i32, i32)>,
+    requested_refresh: Option<u32>,
+    rotated_portrait: bool,
+) -> smithay::reexports::drm::control::Mode {
+    let fallback = || {
+        modes
+            .iter()
+            .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
+            .copied()
+            .unwrap_or(modes[0])
+    };
+
+    let Some((req_logical_w, req_logical_h)) = requested else {
+        return fallback();
+    };
+
+    // DRM modes are always physical-panel-oriented: a 1920x1080 panel
+    // rotated right exposes 1920x1080 modes, not 1080x1920. Swap the
+    // comparison dimensions when the user asked for a logical (rotated)
+    // size so portrait-config users still land on their native mode.
+    let (w, h) = if rotated_portrait {
+        (req_logical_h, req_logical_w)
+    } else {
+        (req_logical_w, req_logical_h)
+    };
+
+    let refresh_suffix = |r: Option<u32>| match r {
+        Some(v) => format!("@{v}Hz"),
+        None => String::new(),
+    };
+
+    if let Some(m) = modes.iter().find(|m| {
+        let (mw, mh) = m.size();
+        mw as i32 == w
+            && mh as i32 == h
+            && requested_refresh.map_or(true, |r| m.vrefresh() == r)
+    }) {
+        return *m;
+    }
+
+    if let Some(m) = modes
+        .iter()
+        .filter(|m| {
+            let (mw, mh) = m.size();
+            mw as i32 == w && mh as i32 == h
+        })
+        .max_by_key(|m| m.vrefresh())
+    {
+        tracing::warn!(
+            "{output_name}: requested {w}x{h}{} not available — using {w}x{h}@{}Hz instead",
+            refresh_suffix(requested_refresh),
+            m.vrefresh()
+        );
+        return *m;
+    }
+
+    let mut dedup: Vec<(i32, i32, u32)> = modes
+        .iter()
+        .map(|m| {
+            let (mw, mh) = m.size();
+            (mw as i32, mh as i32, m.vrefresh())
+        })
+        .collect();
+    dedup.sort();
+    dedup.dedup();
+    let available: Vec<String> = dedup
+        .into_iter()
+        .map(|(mw, mh, r)| format!("{mw}x{mh}@{r}Hz"))
+        .collect();
+    let picked = fallback();
+    let (pw, ph) = picked.size();
+    tracing::warn!(
+        "{output_name}: requested {w}x{h}{} not offered by EDID/link \
+         (cable/dock may be bandwidth-limited — the EDID can still claim \
+         the resolution while the link filter hides it). Available modes: \
+         [{}]. Falling back to {pw}x{ph}@{}Hz.",
+        refresh_suffix(requested_refresh),
+        available.join(", "),
+        picked.vrefresh(),
+    );
+    picked
 }
 
 /// Canonical `<iface>-<id>` name for a DRM connector (e.g. `DP-2`, `DVI-I-1`).

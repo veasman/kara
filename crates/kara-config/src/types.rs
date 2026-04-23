@@ -455,6 +455,9 @@ pub enum BindAction {
     ShowKeybinds,
     ViewWs(usize),
     SendWs(usize),
+    /// Built-in session lock. Blanks rendering immediately and
+    /// spawns kara-veil.
+    Lock,
 }
 
 #[derive(Debug, Clone)]

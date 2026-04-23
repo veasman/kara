@@ -598,6 +598,33 @@ pub fn build_custom_elements(
     elements
 }
 
+/// Build just the wallpaper element for an output — nothing else. Used
+/// by kara-gate's session-lock render path as the bottom of the blurred
+/// backdrop. The normal `build_custom_elements` pulls in the bar and
+/// border stack, both of which we want invisible while the screen is
+/// locked. Broken out so the lock path doesn't have to open-code
+/// wallpaper handling or post-filter the output of a heavier builder.
+pub fn build_wallpaper_element(
+    state: &mut Gate,
+    renderer: &mut KaraRenderer<'_>,
+    output_idx: usize,
+) -> Option<TextureRenderElement<KaraTexture>> {
+    let wp = state.wallpaper.as_mut()?;
+    let out = state.outputs.get(output_idx)?;
+    let (out_w, out_h) = out.size;
+    let (src_w, src_h) = wp.dimensions();
+    let tex_buf = wp.texture(renderer)?;
+    let src_rect = center_crop_src_rect(src_w, src_h, out_w, out_h);
+    Some(TextureRenderElement::from_texture_buffer(
+        Point::from((0.0, 0.0)),
+        tex_buf,
+        None,
+        Some(src_rect),
+        Some(smithay::utils::Size::from((out_w, out_h))),
+        Kind::Unspecified,
+    ))
+}
+
 /// CPU-side bar blur — crop the wallpaper to the bar rect, apply
 /// iterated box blur, upload as a TextureRenderElement at the bar
 /// position. Sits behind the bar surface (which has background_alpha
@@ -1385,7 +1412,7 @@ fn build_keybind_groups(
             | Action::SendMonitorPrev
             | Action::ToggleSync => &mut monitors,
             Action::Spawn(_) | Action::SpawnRaw(_) => &mut launch,
-            Action::ShowKeybinds | Action::Reload | Action::Quit => &mut session,
+            Action::ShowKeybinds | Action::Reload | Action::Quit | Action::Lock => &mut session,
         };
 
         bucket.push((combo, label));
@@ -1466,5 +1493,6 @@ fn format_action_label(action: &crate::actions::Action) -> String {
         Action::ShowKeybinds     => "Show keybinds (this menu)".into(),
         Action::Reload           => "Reload config".into(),
         Action::Quit             => "Quit kara".into(),
+        Action::Lock             => "Lock screen".into(),
     }
 }

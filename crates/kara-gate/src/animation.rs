@@ -120,11 +120,25 @@ impl ActiveAnimation {
 
 pub struct AnimationManager {
     pub active: Vec<ActiveAnimation>,
+    /// `true` after a `tick()` where at least one animation ended,
+    /// cleared on the next `tick()` that produces no completions.
+    /// Lets `process_completed_animations` skip its snap-back loop
+    /// when no animation just ended — that loop re-maps every
+    /// window every frame otherwise, which at idle is pure churn.
+    had_completion: bool,
 }
 
 impl AnimationManager {
     pub fn new() -> Self {
-        Self { active: Vec::new() }
+        Self { active: Vec::new(), had_completion: false }
+    }
+
+    /// Whether the most recent `tick()` ended an animation, meaning
+    /// any prior-frame positional offsets may still be staged in the
+    /// Space and the caller needs to re-map windows to their base
+    /// positions.
+    pub fn had_completion(&self) -> bool {
+        self.had_completion
     }
 
     /// Start a "window in" animation (spawn, receive from ws, unscratchpad).
@@ -201,7 +215,16 @@ impl AnimationManager {
     }
 
     /// Tick: remove completed animations. Returns windows that need unmapping.
+    ///
+    /// Fast-path early exit when nothing is animating — called every loop
+    /// iteration, so skipping the empty-Vec allocation when there's no
+    /// work matters under idle load.
     pub fn tick(&mut self) -> Vec<Window> {
+        if self.active.is_empty() {
+            self.had_completion = false;
+            return Vec::new();
+        }
+        let before = self.active.len();
         let mut to_unmap = Vec::new();
         self.active.retain(|a| {
             if a.is_complete() {
@@ -213,6 +236,7 @@ impl AnimationManager {
                 true
             }
         });
+        self.had_completion = self.active.len() != before;
         to_unmap
     }
 

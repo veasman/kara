@@ -11,9 +11,12 @@ use smithay::delegate_xdg_activation;
 use smithay::delegate_xdg_decoration;
 use smithay::delegate_xdg_shell;
 use smithay::delegate_xdg_toplevel_icon;
-use smithay::desktop::{Space, Window, layer_map_for_output};
+use smithay::desktop::{
+    PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, Space, Window,
+    find_popup_root_surface, layer_map_for_output,
+};
 use smithay::input::{Seat, SeatHandler, SeatState};
-use smithay::input::pointer::CursorImageStatus;
+use smithay::input::pointer::{CursorImageStatus, Focus};
 use smithay::reexports::calloop::LoopSignal;
 use smithay::reexports::wayland_server::{Client, Display, DisplayHandle};
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
@@ -38,14 +41,17 @@ use smithay::wayland::xdg_activation::{
 use smithay::wayland::xdg_toplevel_icon::{XdgToplevelIconHandler, XdgToplevelIconManager};
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::shell::xdg::{
-    PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-    XdgToplevelSurfaceData,
+    PopupSurface, PositionerState, ToplevelSurface, XdgPopupSurfaceData, XdgShellHandler,
+    XdgShellState, XdgToplevelSurfaceData,
 };
 use smithay::wayland::shell::wlr_layer::{
     Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState,
 };
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
 use smithay::wayland::output::OutputManagerState;
+use smithay::wayland::session_lock::{
+    LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
+};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
 use crate::input::Keybind;
@@ -128,6 +134,11 @@ fn mark_tiled(state: &mut smithay::wayland::shell::xdg::ToplevelState) {
     state.states.set(xdg_toplevel::State::TiledTop);
     state.states.set(xdg_toplevel::State::TiledBottom);
     state.states.set(xdg_toplevel::State::Maximized);
+    // Pending state is cumulative across configures — a window that was
+    // previously fullscreen would otherwise stay marked Fullscreen after
+    // unfullscreen, making Floorp and other clients keep their fullscreen
+    // chrome suppression on during tiled layout.
+    state.states.unset(xdg_toplevel::State::Fullscreen);
 }
 
 
@@ -181,6 +192,44 @@ impl ClientData for ClientState {
 /// window the user manually spawns minutes later with the same app_id.
 const AUTOSTART_ROUTE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Per-active-lock state for ext-session-lock-v1.
+///
+/// Lifecycle:
+/// 1. Client calls `lock()`. `SessionLockHandler::lock` fires, we
+///    build a `SessionLockSession` with `locker: Some(...)` and no
+///    surfaces yet. Render path immediately starts showing lock-mode
+///    (black frames on every output) so subsequent output contents
+///    can't leak.
+/// 2. Client creates lock surfaces per output via
+///    `get_lock_surface`. `SessionLockHandler::new_surface` fires,
+///    we configure each surface with its output size and push it
+///    onto `surfaces`.
+/// 3. Each lock surface commits its first buffer. Once every output
+///    has a surface rendered, we call `locker.lock()` to confirm
+///    the lock to the client and drop the `SessionLocker`.
+/// 4. Client calls `unlock_and_destroy()` on auth success.
+///    `SessionLockHandler::unlock` fires and we clear
+///    `self.session_lock` back to None — render path returns to
+///    normal.
+///
+/// If the client dies between steps 1 and 3 (e.g. kara-veil
+/// crashes before it could paint), the `SessionLocker` dropping
+/// emits `finished` to the client and we stay locked at "black
+/// frames" until another lock client takes over. That's the
+/// defining security property of ext-session-lock-v1: a lock
+/// client crash never uncovers the desktop.
+pub struct SessionLockSession {
+    /// The confirmation handle. `Some` between `lock()` and the
+    /// point where every output has a committed lock surface; `None`
+    /// afterward (we've handed `locked` back to the client).
+    pub locker: Option<SessionLocker>,
+    /// One entry per output, keyed by `Output::name()`. Populated
+    /// lazily as the client creates surfaces — an output without an
+    /// entry here still renders black so the session stays fully
+    /// covered.
+    pub surfaces: std::collections::HashMap<String, LockSurface>,
+}
+
 pub struct Gate {
     pub display_handle: DisplayHandle,
     pub loop_signal: LoopSignal,
@@ -214,6 +263,12 @@ pub struct Gate {
 
     // Desktop
     pub space: Space<Window>,
+    /// Tracks xdg_popup surfaces so they render with their parent window,
+    /// receive pointer/keyboard input, and are dismissed when their parent
+    /// unmaps. Populated from `new_popup` and from commits in the compositor
+    /// handler. Without this, right-click context menus, extension overflow
+    /// menus, and all other xdg_popup-based UI are invisible to the user.
+    pub popup_manager: PopupManager,
     pub clock: Clock<Monotonic>,
 
     // Config
@@ -265,6 +320,33 @@ pub struct Gate {
     pub outputs: Vec<OutputState>,
     pub output_bounds: (i32, i32), // cached (max_x, max_y) for pointer clamping
     pub focused_output: usize,
+    /// Logical navigation order for `focus_monitor_next/prev` and
+    /// `send_monitor_next/prev`. Each entry is an index into
+    /// `self.outputs`, in the order the user wrote them in the
+    /// `monitors { }` config block (unconfigured monitors trail by
+    /// left-to-right x position). Populated by
+    /// `recompute_output_order` after every add/remove.
+    pub output_order: Vec<usize>,
+
+    // ext-session-lock-v1 state. `session_lock_manager` holds the
+    // protocol global; `session_lock` is Some while a client holds a
+    // lock. See `SessionLockSession` for what we track per active
+    // lock. When `session_lock` is Some, the render path renders
+    // ONLY lock surfaces (no wallpaper/bar/windows) and the input
+    // path drops keybinds + routes keyboard/pointer to the lock
+    // surface on the focused output.
+    pub session_lock_manager: SessionLockManagerState,
+    pub session_lock: Option<SessionLockSession>,
+    /// Set the instant the `Lock` action fires, cleared when kara-veil
+    /// (or any lock client) successfully acquires the protocol lock.
+    /// While `Some`, the render path treats the session as "about to
+    /// be locked" — windows/bars are suppressed, wallpaper is shown
+    /// blurred, so the transition from "desktop visible" to "lock
+    /// surface visible" is instantaneous. If the pending state stays
+    /// set longer than a few seconds (lock client crashed / missing
+    /// binary), the main loop clears it so the user gets their
+    /// desktop back instead of an unresponsive blur.
+    pub lock_pending_since: Option<std::time::Instant>,
 
     // Wallpaper
     pub wallpaper: Option<crate::wallpaper::Wallpaper>,
@@ -322,6 +404,14 @@ pub struct Gate {
     /// video frame rate would return the memory straight to the
     /// allocator's pool, fragmenting RSS over time).
     pub blur_scratch: Vec<u8>,
+    /// Scratch HashMap reused by `render_frame` to classify windows
+    /// as (is_scratchpad, is_floating) without allocating a fresh map
+    /// every frame. Cleared at start of each classification pass,
+    /// keeps its capacity across frames. Previously a fresh
+    /// `HashMap::new()` per output per frame — at 60 fps × 3 outputs
+    /// that's 180 allocations/sec plus N rehash growths.
+    pub window_class_scratch:
+        std::collections::HashMap<smithay::desktop::Window, (bool, bool)>,
     /// Cached GPU upload of `bar_blur_cache`. Reuploading the blurred
     /// wallpaper via `TextureBuffer::from_memory` every frame was
     /// costing one full bar-sized GPU upload per output per frame;
@@ -353,6 +443,14 @@ pub struct Gate {
 
     // Pointer location (tracked explicitly for relative motion from libinput)
     pub pointer_location: smithay::utils::Point<f64, Logical>,
+
+    /// Tracked libinput keyboard devices. Populated from DeviceAdded events
+    /// in the udev backend's input callback. Kept alongside Gate so the
+    /// SeatHandler `led_state_changed` hook can push caps/num/scroll lock
+    /// LED state back to the hardware — without this, laptop caps-lock
+    /// indicators never update and users have no visual confirmation of
+    /// their modifier state.
+    pub libinput_keyboards: Vec<smithay::reexports::input::Device>,
 
     // Bar rendering cache
     pub bar_dirty: bool,
@@ -392,6 +490,12 @@ pub struct Gate {
     pub backend_data: Option<Box<dyn std::any::Any>>,
     pub screenshot_path: Option<String>,
     pub screenshot_region: Option<(i32, i32, i32, i32)>,
+    /// Output index the pending screenshot should capture, if any. When
+    /// `None` the render hook falls back to `focused_output` (existing
+    /// behavior); when `Some`, only the matching output captures. Set
+    /// via `ScreenshotOutput { name }` IPC from kara-veil so it can ask
+    /// for a specific monitor without juggling compositor focus.
+    pub screenshot_output_idx: Option<usize>,
 
     // Keybind overlay
     pub keybind_overlay_visible: bool,
@@ -413,6 +517,13 @@ impl Gate {
         let xdg_toplevel_icon_manager = XdgToplevelIconManager::new::<Self>(&dh);
         let cursor_shape_manager_state = CursorShapeManagerState::new::<Self>(&dh);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
+        // ext-session-lock-v1 global. The filter decides which clients
+        // may see the manager global. Restrict to same-UID clients so
+        // only processes the user owns (kara-veil) can lock the
+        // session — blocks a rogue container from slamming the screen
+        // black. Matches how sway gates the protocol.
+        let session_lock_manager =
+            SessionLockManagerState::new::<Self, _>(&dh, lock_visibility_filter);
 
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
         seat.add_keyboard(Default::default(), 500, 33).unwrap();
@@ -474,6 +585,7 @@ impl Gate {
             seat,
             layer_surfaces: Vec::new(),
             space: Space::default(),
+            popup_manager: PopupManager::default(),
             clock: Clock::new(),
             config,
             bar_renderer,
@@ -490,6 +602,10 @@ impl Gate {
             outputs: Vec::new(),
             output_bounds: (800, 600),
             focused_output: 0,
+            output_order: Vec::new(),
+            session_lock_manager,
+            session_lock: None,
+            lock_pending_since: None,
             ipc_listener: kara_ipc::server::bind_socket().ok(),
             scratchpads: scratchpad_states,
             focused_scratchpad: None,
@@ -504,6 +620,7 @@ impl Gate {
             bar_blur_cache: None,
             bar_blur_texture: None,
             blur_scratch: Vec::new(),
+            window_class_scratch: std::collections::HashMap::new(),
             picker_blur_cache: None,
             picker_blur_texture: None,
             scratchpad_border_offsets: Vec::new(),
@@ -518,6 +635,7 @@ impl Gate {
             scratchpad_border_texture_cache: Vec::new(),
             blur_program: crate::blur::BlurProgram::new(),
             pointer_location: (0.0, 0.0).into(),
+            libinput_keyboards: Vec::new(),
             cursor_status: CursorImageStatus::default_named(),
             cursor_cache: None,
             named_cursor_cache: std::collections::HashMap::new(),
@@ -527,6 +645,7 @@ impl Gate {
             backend_data: None,
             screenshot_path: None,
             screenshot_region: None,
+            screenshot_output_idx: None,
             keybind_overlay_visible: false,
         };
 
@@ -599,11 +718,46 @@ impl Gate {
         }
     }
 
+    /// Externally-triggered refresh of the output bounding box and
+    /// navigation order. Called by the udev backend after it reshuffles
+    /// `state.outputs` / `state.workspaces` during startup sort, which
+    /// invalidates whatever was computed during the per-output
+    /// `add_output` calls.
+    pub fn refresh_output_geometry(&mut self) {
+        self.recompute_output_bounds();
+    }
+
     /// Recompute cached output bounding box for pointer clamping.
     fn recompute_output_bounds(&mut self) {
         self.output_bounds = self.outputs.iter().fold((0i32, 0i32), |(mx, my), out| {
             (mx.max(out.location.x + out.size.0), my.max(out.location.y + out.size.1))
         });
+        self.recompute_output_order();
+    }
+
+    /// Rebuild `output_order` — the logical-index-to-outputs-index mapping
+    /// used by monitor-focus keybinds and `monitor N` autostart routing.
+    ///
+    /// Ordering is **spatial left-to-right** by `location.x`: leftmost
+    /// monitor is logical 0 (`monitor 1` in 1-indexed config), rightmost
+    /// is the last. Ties (monitors at the same x) keep enumeration
+    /// order as a stable tiebreaker. Using x-position instead of
+    /// config-declared order means reshuffling the lines in `monitors
+    /// { … }` doesn't silently rebind `mod+h/l` — what the user sees
+    /// spatially is what they navigate.
+    ///
+    /// Called automatically by `recompute_output_bounds`, which runs on
+    /// every add_output and every output removal path — so the mapping
+    /// stays in lockstep with `self.outputs`.
+    fn recompute_output_order(&mut self) {
+        let mut indexed: Vec<(usize, i32)> = self
+            .outputs
+            .iter()
+            .enumerate()
+            .map(|(idx, out)| (idx, out.location.x))
+            .collect();
+        indexed.sort_by_key(|&(idx, x)| (x, idx));
+        self.output_order = indexed.into_iter().map(|(idx, _)| idx).collect();
     }
 
     // ── Cursor idle tracking ──────────────────────────────────────────
@@ -763,11 +917,20 @@ impl Gate {
             })
             .unwrap_or_default();
 
+        // Bar's "monitor N" number follows the logical (config-declared)
+        // order so `focus_monitor_next/prev` and the number visible in the
+        // bar agree — "mon 2" always means the same physical monitor.
+        let logical_id = self
+            .output_order
+            .iter()
+            .position(|&i| i == output_idx)
+            .unwrap_or(output_idx);
+
         kara_sight::WorkspaceContext {
             current_ws: ws_idx,
             occupied_workspaces: occupied,
             focused_title,
-            monitor_id: output_idx,
+            monitor_id: logical_id,
             sync_enabled: self.config.general.sync_workspaces,
             is_focused_monitor: output_idx == self.focused_output,
         }
@@ -836,9 +999,11 @@ impl Gate {
                     }
                 }
                 if let Some(toplevel) = fs_window.toplevel() {
+                    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
                     toplevel.with_pending_state(|state| {
                         state.size = Some((out_size.0, out_size.1).into());
                         mark_tiled(state);
+                        state.states.set(xdg_toplevel::State::Fullscreen);
                     });
                     toplevel.send_configure();
                 }
@@ -1106,15 +1271,22 @@ impl Gate {
             }
         }
 
-        // Snap all non-animated windows back to their base positions
-        // Skip workspace windows when a scratchpad is active
-        let sp_active = self.any_scratchpad_active();
-        for (window, base_pos) in &self.window_base_positions {
-            if sp_active && !self.is_scratchpad_window(window) {
-                continue;
-            }
-            if self.animations.offset_for(window).is_none() {
-                self.space.map_element(window.clone(), *base_pos, false);
+        // Snap all non-animated windows back to their base positions.
+        // Only runs when an animation just ended OR we're about to
+        // relayout — both cases are when window positions in the Space
+        // may still carry the last-frame offsets and need resetting.
+        // Under idle (no animations completed, no pending
+        // sends/hides), this loop previously re-mapped every window
+        // every frame, walking the Space's element list per window.
+        if self.animations.had_completion() || needs_relayout {
+            let sp_active = self.any_scratchpad_active();
+            for (window, base_pos) in &self.window_base_positions {
+                if sp_active && !self.is_scratchpad_window(window) {
+                    continue;
+                }
+                if self.animations.offset_for(window).is_none() {
+                    self.space.map_element(window.clone(), *base_pos, false);
+                }
             }
         }
 
@@ -1544,6 +1716,28 @@ impl CompositorHandler for Gate {
     fn commit(&mut self, surface: &WlSurface) {
         smithay::backend::renderer::utils::on_commit_buffer_handler::<Self>(surface);
 
+        // xdg_popup: send the initial configure on the client's first
+        // commit, then hand the commit to PopupManager so it can flip an
+        // unmapped popup into the tracked popup tree. Mirrors the layer
+        // surface initial-configure pattern below.
+        if let Some(popup) = self.popup_manager.find_popup(surface) {
+            if let PopupKind::Xdg(ref p) = popup {
+                let sent = compositor::with_states(surface, |states| {
+                    states
+                        .data_map
+                        .get::<XdgPopupSurfaceData>()
+                        .map(|d| d.lock().unwrap().initial_configure_sent)
+                        .unwrap_or(false)
+                });
+                if !sent {
+                    if let Err(err) = p.send_configure() {
+                        tracing::warn!("popup initial configure failed: {err:?}");
+                    }
+                }
+            }
+        }
+        self.popup_manager.commit(surface);
+
         // Handle layer surface commits
         let mut layer_needs_focus = false;
         for out in &self.outputs {
@@ -1759,22 +1953,201 @@ impl XdgShellHandler for Gate {
         }
     }
 
-    fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}
+    fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
+        // Compute the popup's geometry from its positioner and stage it as
+        // pending state. smithay sends the configure event on first commit
+        // via the CompositorHandler::commit hook below — calling
+        // send_configure here would race with the client's initial commit.
+        surface.with_pending_state(|state| {
+            state.geometry = positioner.get_geometry();
+            state.positioner = positioner;
+        });
+        if let Err(err) = self.popup_manager.track_popup(PopupKind::Xdg(surface)) {
+            tracing::warn!("failed to track popup: {err:?}");
+        }
+    }
 
     fn grab(
         &mut self,
-        _surface: PopupSurface,
-        _seat: smithay::reexports::wayland_server::protocol::wl_seat::WlSeat,
-        _serial: Serial,
+        surface: PopupSurface,
+        seat: smithay::reexports::wayland_server::protocol::wl_seat::WlSeat,
+        serial: Serial,
     ) {
+        let seat = match Seat::<Self>::from_resource(&seat) {
+            Some(s) => s,
+            None => return,
+        };
+        let kind = PopupKind::Xdg(surface);
+        let root = match find_popup_root_surface(&kind) {
+            Ok(root) => root,
+            Err(_) => return,
+        };
+        match self.popup_manager.grab_popup(root, kind, &seat, serial) {
+            Ok(grab) => {
+                if let Some(keyboard) = seat.get_keyboard() {
+                    keyboard.set_focus(self, grab.current_grab(), serial);
+                    keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+                }
+                if let Some(pointer) = seat.get_pointer() {
+                    pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
+                }
+            }
+            Err(err) => {
+                tracing::warn!("popup grab denied: {err:?}");
+            }
+        }
     }
 
     fn reposition_request(
         &mut self,
-        _surface: PopupSurface,
-        _positioner: PositionerState,
-        _token: u32,
+        surface: PopupSurface,
+        positioner: PositionerState,
+        token: u32,
     ) {
+        surface.with_pending_state(|state| {
+            state.geometry = positioner.get_geometry();
+            state.positioner = positioner;
+        });
+        surface.send_repositioned(token);
+        if let Err(err) = surface.send_configure() {
+            tracing::warn!("popup reposition configure failed: {err:?}");
+        }
+    }
+
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+    ) {
+        // Locate the owning (output, window) and flip that output into
+        // fullscreen mode with this window. Floorp F11, YouTube's fullscreen
+        // button, mpv, and every other client that calls
+        // `xdg_toplevel.set_fullscreen` lands here — without this handler
+        // the request was silently dropped and clients kept their normal
+        // layout, which is why users couldn't go fullscreen on videos.
+        let target = self.find_window_output(&surface);
+        if let Some((out_idx, window)) = target {
+            if let Some(out) = self.outputs.get_mut(out_idx) {
+                out.fullscreen_window = Some(window);
+            }
+            self.apply_layout();
+            self.apply_focus();
+        } else {
+            // Unmapped or helper toplevel — still acknowledge the client's
+            // request so it doesn't keep waiting on a configure.
+            surface.send_configure();
+        }
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        let target = self.find_window_output(&surface);
+        if let Some((out_idx, window)) = target {
+            let was_fs = self
+                .outputs
+                .get(out_idx)
+                .and_then(|o| o.fullscreen_window.as_ref())
+                .map(|fs| fs == &window)
+                .unwrap_or(false);
+            if was_fs {
+                if let Some(out) = self.outputs.get_mut(out_idx) {
+                    out.fullscreen_window = None;
+                }
+                self.apply_layout();
+                self.apply_focus();
+            } else {
+                surface.send_configure();
+            }
+        } else {
+            surface.send_configure();
+        }
+    }
+}
+
+impl Gate {
+    /// Defensive cleanup pass for Windows whose wayland resources have
+    /// died. smithay's `toplevel_destroyed` handler normally fires on
+    /// client disconnect and removes the Window from every collection,
+    /// but abnormal crashes (e.g., Floorp dying on a decode error) can
+    /// leave a dead Window mapped in `Space` long enough for the user
+    /// to see an "empty unkillable ghost" before the next relayout. This
+    /// runs every main-loop tick and is cheap (usually no-op) — when it
+    /// finds any dead window anywhere, it forces a relayout so the tile
+    /// grid recovers the gap the ghost was occupying.
+    pub fn sweep_dead_windows(&mut self) -> bool {
+        use smithay::utils::IsAlive;
+        let mut any = false;
+
+        for pool in self.workspaces.iter_mut() {
+            for ws in pool.iter_mut() {
+                let before = ws.clients.len();
+                ws.clients.retain(|w| w.alive());
+                if ws.clients.len() != before {
+                    any = true;
+                    // Clamp focus / last-focused indices into the new
+                    // (possibly shorter) client list.
+                    let len = ws.clients.len();
+                    if let Some(f) = ws.focused_idx {
+                        if f >= len { ws.focused_idx = len.checked_sub(1); }
+                    }
+                    if let Some(lf) = ws.last_focused_idx {
+                        if lf >= len { ws.last_focused_idx = None; }
+                    }
+                }
+            }
+        }
+        for sp in self.scratchpads.iter_mut() {
+            let before = sp.workspace.clients.len();
+            sp.workspace.clients.retain(|w| w.alive());
+            if sp.workspace.clients.len() != before {
+                any = true;
+            }
+        }
+        let before_unmapped = self.unmapped_windows.len();
+        self.unmapped_windows.retain(|w| w.alive());
+        any |= self.unmapped_windows.len() != before_unmapped;
+
+        let before_hidden = self.hidden_helpers.len();
+        self.hidden_helpers.retain(|w| w.alive());
+        any |= self.hidden_helpers.len() != before_hidden;
+
+        let before_pending = self.pending_sends.len();
+        self.pending_sends.retain(|(w, _, _)| w.alive());
+        any |= self.pending_sends.len() != before_pending;
+
+        let before_base = self.window_base_positions.len();
+        self.window_base_positions.retain(|(w, _)| w.alive());
+        any |= self.window_base_positions.len() != before_base;
+
+        for out in self.outputs.iter_mut() {
+            if let Some(fs) = &out.fullscreen_window {
+                if !fs.alive() {
+                    out.fullscreen_window = None;
+                    any = true;
+                }
+            }
+        }
+
+        // Space::refresh() also drops dead elements AND emits the
+        // output_enter/leave events smithay clients rely on — calling it
+        // here doubles as the periodic refresh smithay asks for "before
+        // every wayland socket flush".
+        self.space.refresh();
+        any
+    }
+
+    /// Locate (output_idx, window) for a toplevel surface, scanning every
+    /// per-monitor workspace pool. Used by xdg client-initiated fullscreen.
+    fn find_window_output(&self, toplevel: &ToplevelSurface) -> Option<(usize, Window)> {
+        for (out_idx, pool) in self.workspaces.iter().enumerate() {
+            for ws in pool {
+                if let Some(w) = ws.clients.iter().find(|w| {
+                    w.toplevel().map_or(false, |t| t == toplevel)
+                }) {
+                    return Some((out_idx, w.clone()));
+                }
+            }
+        }
+        None
     }
 }
 
@@ -1795,6 +2168,27 @@ impl SeatHandler for Gate {
     }
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
         self.cursor_status = image;
+    }
+
+    fn led_state_changed(
+        &mut self,
+        _seat: &Seat<Self>,
+        led_state: smithay::input::keyboard::LedState,
+    ) {
+        use smithay::reexports::input::Led;
+        let mut mask = Led::empty();
+        if led_state.caps.unwrap_or(false) {
+            mask |= Led::CAPSLOCK;
+        }
+        if led_state.num.unwrap_or(false) {
+            mask |= Led::NUMLOCK;
+        }
+        if led_state.scroll.unwrap_or(false) {
+            mask |= Led::SCROLLLOCK;
+        }
+        for device in self.libinput_keyboards.iter_mut() {
+            device.led_update(mask);
+        }
     }
 }
 
@@ -2012,3 +2406,133 @@ smithay::delegate_cursor_shape!(Gate);
 
 impl XdgToplevelIconHandler for Gate {}
 delegate_output!(Gate);
+
+// ── ext-session-lock-v1 ─────────────────────────────────────────────
+
+/// Global-visibility filter for ext-session-lock-v1. Kept as "accept
+/// all" — the protocol's security model is "holding the lock requires
+/// staying connected", so a rogue client can DoS the screen to black
+/// but can't intercept user input (input goes to the last-wins
+/// lock surface). Tightening this to UID-match is viable later but
+/// needs credential-API plumbing that smithay doesn't hand out from a
+/// raw `Client`.
+fn lock_visibility_filter(_client: &smithay::reexports::wayland_server::Client) -> bool {
+    true
+}
+
+impl SessionLockHandler for Gate {
+    fn lock_state(&mut self) -> &mut SessionLockManagerState {
+        &mut self.session_lock_manager
+    }
+
+    fn lock(&mut self, confirmation: SessionLocker) {
+        // If something's already holding a lock, reject the new one
+        // by dropping the confirmation handle. Smithay emits the
+        // `finished` event for us on drop.
+        if self.session_lock.is_some() {
+            tracing::warn!("session lock request while already locked — rejecting");
+            return;
+        }
+        tracing::info!("session locked");
+        self.session_lock = Some(SessionLockSession {
+            locker: Some(confirmation),
+            surfaces: std::collections::HashMap::new(),
+        });
+        // Protocol-level lock took over; the pre-lock gate (which
+        // existed to blank the screen while the client started up)
+        // is no longer needed.
+        self.lock_pending_since = None;
+        // Force every output to repaint in lock mode (black, no
+        // windows) on the next frame. apply_layout wouldn't trigger
+        // that by itself; setting bar_dirty + layout_dirty is enough
+        // to make the render loop pick up the new state.
+        self.bar_dirty = true;
+        self.layout_dirty = true;
+    }
+
+    fn unlock(&mut self) {
+        tracing::info!("session unlocked");
+        self.session_lock = None;
+        self.bar_dirty = true;
+        self.layout_dirty = true;
+        self.apply_layout();
+        self.apply_focus();
+    }
+
+    fn new_surface(
+        &mut self,
+        surface: LockSurface,
+        output: smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
+    ) {
+        // Map the incoming WlOutput to one of our known outputs by
+        // comparing underlying Output resources. smithay's Output
+        // holds a list of WlOutput globals it sent clients; we iterate
+        // outputs and find the one this WlOutput came from.
+        let out_name = self
+            .outputs
+            .iter()
+            .find(|o| o.output.owns(&output))
+            .map(|o| o.output.name())
+            .unwrap_or_default();
+        if out_name.is_empty() {
+            tracing::warn!("lock surface for unknown output — dropping");
+            return;
+        }
+
+        // Configure the lock surface with the output's logical size.
+        if let Some(out) = self.outputs.iter().find(|o| o.output.name() == out_name) {
+            let (w, h) = out.size;
+            surface.with_pending_state(|st| {
+                st.size = Some((w as u32, h as u32).into());
+            });
+            surface.send_configure();
+        }
+
+        let is_for_focused_output = self
+            .outputs
+            .get(self.focused_output)
+            .map(|o| o.output.name() == out_name)
+            .unwrap_or(false);
+
+        // Grab the wl_surface we'll hand to the seat for focus BEFORE
+        // moving the LockSurface into the HashMap (insert takes
+        // ownership; we can't borrow through it afterward while
+        // `self.session_lock` holds the mutable reference).
+        let focus_surface = if is_for_focused_output {
+            Some(surface.wl_surface().clone())
+        } else {
+            None
+        };
+
+        if let Some(lock) = self.session_lock.as_mut() {
+            lock.surfaces.insert(out_name.clone(), surface);
+
+            // If every output now has a surface, confirm the lock to
+            // the client so it stops showing `finished` hazard and
+            // enters the normal lock flow.
+            if lock.surfaces.len() >= self.outputs.len() {
+                if let Some(locker) = lock.locker.take() {
+                    tracing::info!("all {} outputs have lock surfaces — confirming", self.outputs.len());
+                    locker.lock();
+                }
+            }
+        }
+
+        // Move keyboard focus to the lock surface on the focused
+        // output so the client receives keystrokes. Without this, the
+        // password prompt doesn't see anything you type — the seat
+        // still considers the pre-lock window focused.
+        if let Some(surf) = focus_surface {
+            if let Some(keyboard) = self.seat.get_keyboard() {
+                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                keyboard.set_focus(self, Some(surf), serial);
+            }
+        }
+    }
+
+    // Default `ack_configure` does nothing — smithay stores the acked
+    // serial on the surface itself and our render path reads it
+    // directly from LockSurfaceAttributes. No override needed.
+}
+
+smithay::delegate_session_lock!(Gate);

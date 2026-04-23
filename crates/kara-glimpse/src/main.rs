@@ -30,6 +30,60 @@ use wayland_client::{
 
 use selection::SelectionState;
 
+/// Best-effort cleanup of stale `kara-screenshot-*.png` files older
+/// than a week in both `/tmp` and the system picture directory.
+/// These temporaries are left behind by earlier builds of kara-gate
+/// that wrote to `/tmp`, and by every quick-capture that the user
+/// never manually deleted. At 500 KB–1 MB each, 100+ captures
+/// accumulate to nontrivial disk use — the file names carry a
+/// unix-epoch timestamp so we can prune by age without stat calls
+/// on the slow path.
+fn prune_old_screenshots() {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    const WEEK_SECS: u64 = 7 * 24 * 3600;
+    let mut dirs: Vec<std::path::PathBuf> = vec![std::path::PathBuf::from("/tmp")];
+    // Resolve the user's picture dir without pulling in the `dirs`
+    // crate — follow the XDG_PICTURES_DIR / HOME/Pictures convention.
+    if let Ok(p) = std::env::var("XDG_PICTURES_DIR") {
+        dirs.push(std::path::PathBuf::from(p));
+    } else if let Ok(home) = std::env::var("HOME") {
+        dirs.push(std::path::PathBuf::from(home).join("Pictures"));
+    }
+    for dir in dirs {
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        for entry in rd.flatten() {
+            let name = entry.file_name();
+            let name = match name.to_str() {
+                Some(s) => s,
+                None => continue,
+            };
+            // Match `kara-screenshot-<epoch>.png` and compare epoch
+            // to "now − 7d". Skip anything that doesn't parse.
+            let rest = match name.strip_prefix("kara-screenshot-") {
+                Some(r) => r,
+                None => continue,
+            };
+            let digits = match rest.strip_suffix(".png") {
+                Some(d) => d,
+                None => continue,
+            };
+            let ts: u64 = match digits.parse() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            if now_secs.saturating_sub(ts) > WEEK_SECS {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let quick = args.iter().any(|a| a == "-q" || a == "--quick");
@@ -38,6 +92,9 @@ fn main() {
         .position(|a| a == "-o" || a == "--output")
         .and_then(|i| args.get(i + 1))
         .cloned();
+
+    // Prune stale captures before we add another one.
+    prune_old_screenshots();
 
     if quick {
         quick_capture(save_path);
@@ -162,9 +219,10 @@ fn default_theme() -> kara_ipc::ThemeColors {
         border_px: None,
         border_radius: None,
         border_tile_path: None,
-                bar_height: None,
-                bar_background: None,
-                bar_background_alpha: None,
+        bar_height: None,
+        bar_background: None,
+        bar_background_alpha: None,
+        font_family: None,
     }
 }
 
@@ -176,6 +234,125 @@ fn quick_capture(save_path: Option<String>) {
             std::process::exit(1);
         }
     };
+
+    // Multi-monitor quick capture. We ask kara-gate for every active
+    // output, request one ScreenshotOutput per output, wait for the
+    // PNGs to land, then compose them into one desktop-sized PNG at
+    // the global coordinate bounds (using each output's x/y as the
+    // paste origin). Clipboard + save-path flow from there matches
+    // the single-output path. Single-output setups fall back cleanly
+    // because the bounding rect collapses to one output's rect.
+    let outputs = match client.request(&kara_ipc::Request::GetOutputs) {
+        Ok(kara_ipc::Response::Outputs { outputs }) => outputs,
+        _ => {
+            // Fallback: old compositor or IPC down. Use single-output
+            // Screenshot so `kara-glimpse --quick` still does *something*.
+            return legacy_single_output_capture(&mut client, save_path);
+        }
+    };
+    if outputs.is_empty() {
+        return legacy_single_output_capture(&mut client, save_path);
+    }
+
+    // Desktop bounding box — union of every output's global rect.
+    let mut min_x = i32::MAX;
+    let mut min_y = i32::MAX;
+    let mut max_x = i32::MIN;
+    let mut max_y = i32::MIN;
+    for o in &outputs {
+        min_x = min_x.min(o.x);
+        min_y = min_y.min(o.y);
+        max_x = max_x.max(o.x + o.width);
+        max_y = max_y.max(o.y + o.height);
+    }
+    let canvas_w = (max_x - min_x).max(1);
+    let canvas_h = (max_y - min_y).max(1);
+
+    // Kick off one screenshot request per output and remember the
+    // expected file path + paste origin (output.x - min_x, output.y -
+    // min_y).
+    let mut pending: Vec<(String, i32, i32)> = Vec::new();
+    for o in &outputs {
+        let req = kara_ipc::Request::ScreenshotOutput { name: o.name.clone() };
+        match client.request(&req) {
+            Ok(kara_ipc::Response::ScreenshotDone { path }) => {
+                pending.push((path, o.x - min_x, o.y - min_y));
+            }
+            Ok(kara_ipc::Response::Error { message }) => {
+                eprintln!("kara-glimpse: compositor error for {}: {message}", o.name);
+            }
+            _ => {}
+        }
+    }
+    if pending.is_empty() {
+        eprintln!("kara-glimpse: no outputs captured");
+        std::process::exit(1);
+    }
+
+    // Wait for all screenshot files to land.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+    loop {
+        let missing = pending
+            .iter()
+            .any(|(p, _, _)| !std::path::Path::new(p).exists());
+        if !missing {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+
+    // Compose into one pixmap in global coords.
+    let Some(mut canvas) = tiny_skia::Pixmap::new(canvas_w as u32, canvas_h as u32) else {
+        eprintln!("kara-glimpse: canvas allocation failed ({canvas_w}x{canvas_h})");
+        std::process::exit(1);
+    };
+    for (path, dx, dy) in &pending {
+        if !std::path::Path::new(path).exists() {
+            eprintln!("kara-glimpse: missing capture piece {path}");
+            continue;
+        }
+        let Ok(pm) = tiny_skia::Pixmap::load_png(path) else {
+            eprintln!("kara-glimpse: failed to load capture piece {path}");
+            continue;
+        };
+        canvas.draw_pixmap(
+            *dx,
+            *dy,
+            pm.as_ref(),
+            &tiny_skia::PixmapPaint::default(),
+            tiny_skia::Transform::identity(),
+            None,
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    // Save composed PNG to a stable /tmp path and route through the
+    // usual wait_and_copy flow so wl-copy + notify-send behavior
+    // matches the single-output path.
+    let composed_path = format!(
+        "/tmp/kara-screenshot-{}.png",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    );
+    if let Err(e) = canvas.save_png(&composed_path) {
+        eprintln!("kara-glimpse: failed to write composed PNG: {e}");
+        std::process::exit(1);
+    }
+    wait_and_copy(&composed_path, save_path);
+}
+
+/// Backstop for the rare case where GetOutputs fails or returns empty.
+/// Mirrors the pre-multi-monitor behaviour: plain `Screenshot` IPC,
+/// single focused-output capture.
+fn legacy_single_output_capture(
+    client: &mut kara_ipc::IpcClient,
+    save_path: Option<String>,
+) {
     let response = match client.request(&kara_ipc::Request::Screenshot) {
         Ok(r) => r,
         Err(e) => {

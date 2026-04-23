@@ -100,6 +100,7 @@ fn main() {
                 bar_height: None,
                 bar_background: None,
                 bar_background_alpha: None,
+                font_family: None,
             }
         }
     };

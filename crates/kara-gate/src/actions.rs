@@ -29,6 +29,13 @@ pub enum Action {
     ShowKeybinds,
     Reload,
     Quit,
+    /// Built-in session lock. Blanks the render path BEFORE spawning
+    /// kara-veil so the desktop is never visible during the
+    /// client's startup (Wayland connect + IPC + lock-surface setup).
+    /// The protocol-level lock takes over once kara-veil's lock
+    /// request arrives; if kara-veil fails to show up within a few
+    /// seconds, the pre-lock clears so the user isn't stranded.
+    Lock,
 }
 
 impl Gate {
@@ -62,7 +69,25 @@ impl Gate {
                 self.running = false;
                 self.loop_signal.stop();
             }
+            Action::Lock => self.do_lock(),
         }
+    }
+
+    /// Session lock: flip the render path to "locked" immediately so
+    /// the desktop vanishes this frame, then spawn kara-veil. When
+    /// kara-veil's ext-session-lock request lands, the protocol-level
+    /// lock takes over and `lock_pending_since` is cleared. If kara-
+    /// veil never shows up (crashed, missing binary), a timer in the
+    /// main loop clears `lock_pending_since` after 5 s so the user
+    /// isn't stuck staring at their wallpaper with no prompt.
+    fn do_lock(&mut self) {
+        if self.session_lock.is_some() {
+            return; // already locked, nothing to do
+        }
+        self.lock_pending_since = Some(std::time::Instant::now());
+        self.layout_dirty = true;
+        self.bar_dirty = true;
+        self.spawn_raw("kara-veil");
     }
 
     /// Spawn a named command from the config commands map.
@@ -484,8 +509,10 @@ impl Gate {
         if self.outputs.len() <= 1 {
             return;
         }
-        let count = self.outputs.len() as i32;
-        let new_idx = ((self.focused_output as i32 + direction).rem_euclid(count)) as usize;
+        let new_idx = match step_output(&self.output_order, self.focused_output, direction) {
+            Some(i) => i,
+            None => return,
+        };
         self.focused_output = new_idx;
 
         // Mouse stays where it is. The user explicitly wants keyboard focus
@@ -508,8 +535,10 @@ impl Gate {
         if self.outputs.len() <= 1 {
             return;
         }
-        let count = self.outputs.len() as i32;
-        let target = ((self.focused_output as i32 + direction).rem_euclid(count)) as usize;
+        let target = match step_output(&self.output_order, self.focused_output, direction) {
+            Some(i) => i,
+            None => return,
+        };
 
         let src_out = self.focused_output;
         let src_ws = self.effective_ws(src_out);
@@ -710,8 +739,14 @@ impl Gate {
             // beat us to the map handler (rare but possible on fast spawns).
             if let Some(app_id) = entry.app_id.as_ref() {
                 if entry.monitor.is_some() || entry.workspace.is_some() {
+                    // `entry.monitor` is 0-based per the config parser but
+                    // means "the Nth monitor in the user's config-declared
+                    // order". Map through `output_order` so it always points
+                    // to the same physical monitor the user wrote down,
+                    // regardless of DRM enumeration order.
                     let target_out = entry
                         .monitor
+                        .and_then(|m| self.output_order.get(m).copied())
                         .filter(|m| *m < self.outputs.len())
                         .unwrap_or(self.focused_output);
                     let target_ws = entry.workspace.unwrap_or_else(|| self.effective_ws(target_out));
@@ -776,4 +811,18 @@ impl Gate {
         }
         None
     }
+}
+
+/// Move `focused_output` by ±1 step through the config-declared monitor
+/// order. Returns the new outputs-index, or `None` if the current focus
+/// isn't in the order vec yet (e.g. mid-hot-plug, between
+/// `add_output` and `recompute_output_order`).
+fn step_output(order: &[usize], current: usize, direction: i32) -> Option<usize> {
+    if order.is_empty() {
+        return None;
+    }
+    let pos = order.iter().position(|&i| i == current)?;
+    let count = order.len() as i32;
+    let next = ((pos as i32 + direction).rem_euclid(count)) as usize;
+    Some(order[next])
 }
