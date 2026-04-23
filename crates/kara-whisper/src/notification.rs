@@ -101,11 +101,14 @@ impl NotificationQueue {
             if n.urgency == Urgency::Critical {
                 return true; // never auto-expire
             }
-            // Default timeout (server-decides sentinel `-1`) is 8s —
-            // long enough to catch up on a notification you weren't
-            // looking at the moment it fired. Client-specified timeouts
-            // still win, and `0` still means "never auto-expire".
-            let timeout_ms = if n.expire_ms < 0 { 8000 } else { n.expire_ms };
+            // Default timeout (server-decides sentinel `-1`) is 15s —
+            // long enough to actually read a multi-line notification
+            // without chasing it with the pointer. Client-specified
+            // timeouts still win, and `0` still means "never
+            // auto-expire". Earlier this was 8s; in practice emails
+            // and build results flashed past before the user could
+            // finish reading the subject line.
+            let timeout_ms = if n.expire_ms < 0 { 15_000 } else { n.expire_ms };
             if timeout_ms == 0 {
                 return true; // 0 = never expire
             }

@@ -18,12 +18,19 @@ const ICON_SIZE: u32 = 60;
 /// Column offset for the text block when the notification carries an
 /// `app_icon` — leaves `ICON_SIZE` + padding of room for the thumbnail.
 const TEXT_X_WITH_ICON: f32 = PADDING + ICON_SIZE as f32 + PADDING * 0.5;
-/// Card background alpha. Kept just shy of fully opaque so there's a
-/// subtle hint that the surface is a floating overlay rather than a
-/// painted-on decal, while still being readable over busy wallpapers.
-/// Earlier the default was 200 (~78%) which bled too much wallpaper
-/// through on dense photos; 240 reads as "glass panel, barely tinted".
-const CARD_ALPHA: u8 = 240;
+/// Card background alpha. Near-opaque so notifications punch through
+/// whatever the wallpaper is doing underneath — earlier values (200,
+/// 240) read as glass panels and disappeared against bright photos.
+/// 250 keeps the faintest hint of transparency so the overlay still
+/// feels like it's floating, not pasted on.
+const CARD_ALPHA: u8 = 250;
+
+/// Width of the left-edge accent stripe — a solid vertical bar on
+/// every card in the theme's accent color (or the brighter
+/// urgency-critical variant). Reads as a "priority tag" and gives the
+/// card a strong visual anchor even on busy wallpapers, without the
+/// card itself needing to scream for attention.
+const ACCENT_STRIPE_WIDTH: f32 = 4.0;
 
 pub struct NotificationUI {
     text: TextRenderer,
@@ -172,6 +179,32 @@ impl NotificationUI {
                 card_radius,
                 tiny_skia::Color::from_rgba8(bg_r, bg_g, bg_b, CARD_ALPHA),
             );
+
+            // Accent stripe — a capsule along the left edge in the
+            // theme's accent color. Brighter for critical urgency.
+            // Drops in between the card fill and the border stroke so
+            // a themed ornamental tile still frames it cleanly. Inset
+            // from top/bottom by the card's corner radius + a few
+            // extra pixels of breathing room so the stripe can be
+            // clearly capsule-shaped even on themes with tight radii.
+            let stripe_inset = (card_radius + 2.0).min(card_h * 0.5);
+            let stripe_h = (card_h - stripe_inset * 2.0).max(0.0);
+            if stripe_h > 0.0 {
+                let stripe_color = if notif.urgency == Urgency::Critical {
+                    self.theme.accent
+                } else {
+                    self.theme.accent_soft
+                };
+                fill_rounded_rect(
+                    &mut pixmap,
+                    PADDING * 0.25,
+                    y_off + stripe_inset,
+                    ACCENT_STRIPE_WIDTH,
+                    stripe_h,
+                    ACCENT_STRIPE_WIDTH * 0.5,
+                    color_from_u32(stripe_color),
+                );
+            }
 
             // Border chrome — tile pattern when available (matches
             // compositor window borders), accent stroke fallback.
