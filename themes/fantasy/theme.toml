@@ -106,14 +106,14 @@ height = 40
 pill = true
 hide_center = false
 # Fantasy overrides the module layout: monitor stays on the left,
-# workspaces move to the center with the badge style (filled
-# numbered circles, autohiding unused workspaces). When this field
-# is present the generated include emits a `bar { modules { ... } }`
-# block that replaces the user's base modules at parse time —
-# themes without `modules` leave the user's layout untouched.
+# workspaces move to the center as hexagonal medallions (autohiding
+# unused workspaces). When this field is present the generated include
+# emits a `bar { modules { ... } }` block that replaces the user's base
+# modules at parse time — themes without `modules` leave the user's
+# layout untouched.
 modules = [
     "left monitor group:nav",
-    "center workspaces badges",
+    "center workspaces hex",
     "right memory group:spec",
     "right cpu group:spec",
     "right battery group:sys",
@@ -125,7 +125,7 @@ edge_padding_x = 16
 edge_padding_y = 4
 module_gap = 14
 module_padding_x = 16
-module_padding_y = 12
+module_padding_y = 2
 module_rounded = 0
 font_family = "3270 Nerd Font Mono"
 font_size = 16

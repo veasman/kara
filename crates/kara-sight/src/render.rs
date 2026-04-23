@@ -6,7 +6,10 @@
 use tiny_skia::{Color, Pixmap};
 
 use kara_config::{Bar as BarConfig, BarModuleKind, BarModule, BarSection, Theme};
-use kara_ui::canvas::{color_from_u32, fill_circle, fill_rounded_rect, stroke_rounded_rect};
+use kara_ui::canvas::{
+    color_from_u32, fill_circle, fill_hexagon, fill_rounded_rect, stroke_hexagon,
+    stroke_rounded_rect,
+};
 use kara_ui::TextRenderer;
 
 /// Build a tiny-skia `Color` from a 0xRRGGBB u32 plus an explicit 0-255 alpha.
@@ -341,6 +344,22 @@ impl BarRenderer {
         module: &BarModule,
         ws_ctx: &WorkspaceContext,
     ) -> u32 {
+        if workspaces_is_hex(module) {
+            // Hex badges (fantasy): a numbered hexagonal medallion per
+            // visible workspace. Slot width sized to comfortably hold a
+            // single digit plus hex geometry. Skips unoccupied workspaces
+            // so the module shrinks to just what's in use.
+            let slot = hex_slot_width(self.text.font_size);
+            let gap = self.text.font_size * 0.35;
+            let count = (0..9)
+                .filter(|i| *i == ws_ctx.current_ws || ws_ctx.occupied_workspaces[*i])
+                .count();
+            if count == 0 {
+                return 0;
+            }
+            return (slot * count as f32 + gap * (count.saturating_sub(1)) as f32)
+                .ceil() as u32;
+        }
         if workspaces_is_badges(module) {
             // Badges: a filled dot per visible workspace. Skip empty,
             // unused workspaces so the module shrinks to just what's
@@ -404,7 +423,9 @@ impl BarRenderer {
 
         // Special: Workspaces
         if module.kind == BarModuleKind::Workspaces {
-            if workspaces_is_badges(module) {
+            if workspaces_is_hex(module) {
+                self.draw_workspaces_hex(pixmap, x, center_y, theme, ws_ctx);
+            } else if workspaces_is_badges(module) {
                 self.draw_workspaces_badges(pixmap, x, center_y, ctx, theme, ws_ctx);
             } else {
                 self.draw_workspaces(pixmap, x, center_y, ctx, theme, ws_ctx);
@@ -542,6 +563,102 @@ impl BarRenderer {
             }
         }
     }
+
+    /// Hex badge style (fantasy): a numbered flat-top hexagonal medallion
+    /// per visible workspace. Matches the dark-crimson / bright-red-outline
+    /// / light-numeral look from the gaming-HUD reference. Every badge
+    /// shares the same accent outline so the module reads as a row of
+    /// matching medallions — the current workspace is emphasised by a
+    /// brighter digit and a slightly heavier stroke, not a different
+    /// palette. Unoccupied workspaces are hidden so the module shrinks
+    /// with use.
+    fn draw_workspaces_hex(
+        &mut self,
+        pixmap: &mut Pixmap,
+        x: i32,
+        center_y: f32,
+        theme: &Theme,
+        ws_ctx: &WorkspaceContext,
+    ) {
+        let base_font = self.text.font_size;
+        let slot = hex_slot_width(base_font);
+        let r = hex_radius(base_font);
+        let gap = base_font * 0.25;
+        let stroke_base = (base_font * 0.09).max(1.0);
+        let digit_font = base_font * 0.8;
+
+        let visible: Vec<usize> = (0..9)
+            .filter(|i| *i == ws_ctx.current_ws || ws_ctx.occupied_workspaces[*i])
+            .collect();
+
+        // Draw all medallions first under the base font, then flip to
+        // digit_font once to draw every number, and restore the base
+        // font at the end. Flipping font size inside the per-badge loop
+        // was doing two cosmic-text size swaps per visible workspace
+        // per repaint — and though `center_y_offset` is memoized,
+        // `measure`/`draw` each rebuild a fresh cosmic-text Buffer
+        // which is real work at even 1 Hz when every bar across every
+        // output rebuilds.
+        let mut cx = x as f32;
+        let n = visible.len();
+        for (idx, &i) in visible.iter().enumerate() {
+            let is_current = i == ws_ctx.current_ws;
+            let center_x = cx + slot * 0.5;
+            let fill = theme.accent_soft;
+            let outline = theme.accent;
+            let stroke_w = if is_current { stroke_base * 1.6 } else { stroke_base };
+            fill_hexagon(pixmap, center_x, center_y, r, color_from_u32(fill));
+            stroke_hexagon(pixmap, center_x, center_y, r, color_from_u32(outline), stroke_w);
+
+            cx += slot;
+            if idx + 1 < n {
+                cx += gap;
+            }
+        }
+
+        // Second pass: centered digits. One font-size swap for the
+        // whole row instead of 2*n.
+        self.text.set_font_size(digit_font);
+        let digit_y = self.text.center_y_offset(center_y);
+        let mut cx = x as f32;
+        for (idx, &i) in visible.iter().enumerate() {
+            let is_current = i == ws_ctx.current_ws;
+            let center_x = cx + slot * 0.5;
+            let digit_color = if is_current { theme.text } else { theme.text_muted };
+            let digit = format!("{}", i + 1);
+            let digit_w = self.text.measure(&digit) as f32;
+            let digit_x = center_x - digit_w * 0.5;
+            self.text.draw(pixmap, &digit, digit_x, digit_y, digit_color);
+
+            cx += slot;
+            if idx + 1 < n {
+                cx += gap;
+            }
+        }
+        self.text.set_font_size(base_font);
+    }
+}
+
+/// Width of one hex-badge slot including a little horizontal breathing
+/// room on either side of the medallion. Flat-top hexagon width = 2r.
+fn hex_slot_width(font_size: f32) -> f32 {
+    hex_radius(font_size) * 2.0 + font_size * 0.15
+}
+
+/// Circumradius for a workspace hex badge. Scaled to the bar font so
+/// the medallion shrinks/grows with the rest of the bar. Flat-top, so
+/// width = 2r (wider than tall).
+fn hex_radius(font_size: f32) -> f32 {
+    font_size * 0.95
+}
+
+/// True when the workspaces module uses the hex medallion style
+/// (fantasy). Opt-in via `workspaces hex`.
+fn workspaces_is_hex(module: &BarModule) -> bool {
+    module
+        .args
+        .iter()
+        .any(|a| a.eq_ignore_ascii_case("hex") || a.eq_ignore_ascii_case("hexagon"))
 }
 
 /// True when the workspaces module has opted into the badge style

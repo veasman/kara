@@ -169,6 +169,57 @@ pub fn fill_circle(pixmap: &mut Pixmap, cx: f32, cy: f32, radius: f32, color: Co
     }
 }
 
+/// Build a regular flat-top hexagon path centered at (cx, cy).
+/// `r` is the circumradius — the distance from center to a vertex at
+/// the 3/9 o'clock corners. Width = 2r, height = r*sqrt(3). Flat-top
+/// matches the "gaming HUD medallion" silhouette used by fantasy: flat
+/// edges on the top and bottom, points left and right.
+pub fn hexagon_path(cx: f32, cy: f32, r: f32) -> Option<tiny_skia::Path> {
+    if r <= 0.0 {
+        return None;
+    }
+    let hx = r * 0.5;
+    let sy = r * 0.8660254; // sqrt(3)/2
+    let mut pb = PathBuilder::new();
+    pb.move_to(cx - r, cy);
+    pb.line_to(cx - hx, cy - sy);
+    pb.line_to(cx + hx, cy - sy);
+    pb.line_to(cx + r, cy);
+    pb.line_to(cx + hx, cy + sy);
+    pb.line_to(cx - hx, cy + sy);
+    pb.close();
+    pb.finish()
+}
+
+/// Fill a flat-top hexagon on a pixmap.
+pub fn fill_hexagon(pixmap: &mut Pixmap, cx: f32, cy: f32, r: f32, color: Color) {
+    let Some(path) = hexagon_path(cx, cy, r) else { return };
+    let mut paint = Paint::default();
+    paint.set_color(color);
+    paint.anti_alias = true;
+    pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+}
+
+/// Stroke a flat-top hexagon outline on a pixmap.
+pub fn stroke_hexagon(
+    pixmap: &mut Pixmap,
+    cx: f32,
+    cy: f32,
+    r: f32,
+    color: Color,
+    width: f32,
+) {
+    let Some(path) = hexagon_path(cx, cy, r) else { return };
+    let mut paint = Paint::default();
+    paint.set_color(color);
+    paint.anti_alias = true;
+    let stroke = tiny_skia::Stroke {
+        width,
+        ..Default::default()
+    };
+    pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+}
+
 /// Blit a grayscale glyph mask onto a pixmap with the given color.
 pub fn blit_mask(
     pixmap: &mut Pixmap,
