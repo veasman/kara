@@ -191,6 +191,25 @@ impl Gate {
                         }
                     })
                     .collect();
+                // Diagnostic: surface exactly what GetOutputs is
+                // returning so "lock lands on wrong monitor" bugs are
+                // easy to triage from the log alone.
+                tracing::info!(
+                    "ipc GetOutputs: {}",
+                    outputs
+                        .iter()
+                        .map(|o| format!(
+                            "{}@({},{}) {}x{}{}",
+                            o.name,
+                            o.x,
+                            o.y,
+                            o.width,
+                            o.height,
+                            if o.primary { " PRIMARY" } else { "" }
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                );
                 if outputs.is_empty() {
                     // Winit dev backend or no outputs attached — fall
                     // back to focused-output size under a stub name so

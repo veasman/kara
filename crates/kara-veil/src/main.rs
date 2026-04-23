@@ -472,12 +472,28 @@ fn main() {
             })
         })
         .unwrap_or(0);
-    eprintln!(
-        "kara-veil: {} output(s), primary_name={:?}, primary_idx={}",
-        wl_outputs.len(),
+    // Write diagnostics to /tmp/kara-veil.log so the user can triage
+    // "lock on wrong monitor" without Ctrl+Alt+F<N> to whatever TTY
+    // kara-gate was launched from — the lock keybind blanks every
+    // output and whatever kara-veil prints to stderr is inaccessible
+    // while the lock is up.
+    let wl_names: Vec<String> = wl_outputs
+        .iter()
+        .map(|wl| {
+            veil.output_state
+                .info(wl)
+                .and_then(|i| i.name)
+                .unwrap_or_else(|| "(no-name)".into())
+        })
+        .collect();
+    log_veil(&format!(
+        "kara-veil start: IPC primary_name={:?}, {} wl_outputs=[{}], primary_idx={} → {:?}",
         primary_name,
+        wl_outputs.len(),
+        wl_names.join(", "),
         primary_idx,
-    );
+        wl_names.get(primary_idx).cloned().unwrap_or_default(),
+    ));
 
     // Second pass: create surfaces.
     for (idx, wl) in wl_outputs.iter().enumerate() {
@@ -553,6 +569,21 @@ unsafe fn libc_getuid() -> u32 {
         fn getuid() -> u32;
     }
     unsafe { getuid() }
+}
+
+/// Append a diagnostic line to /tmp/kara-veil.log. kara-veil is spawned
+/// by kara-gate's lock action via a detached child, so stderr is buried
+/// on whatever TTY kara-gate was started from — and the lock keybind
+/// blanks every output while it's up, so the TTY is unreachable anyway.
+/// A file log lets the user just `cat /tmp/kara-veil.log` after a test
+/// run to see what primary was picked, what outputs SCTK saw, etc.
+fn log_veil(line: &str) {
+    use std::io::Write;
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/kara-veil.log")
+        .and_then(|mut f| writeln!(f, "{line}"));
 }
 
 fn default_theme() -> kara_ipc::ThemeColors {

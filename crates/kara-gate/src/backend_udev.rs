@@ -2130,26 +2130,22 @@ fn render_frame_locked<'a>(
     // hidden" contract of the lock). Wallpaper-only also means
     // kara-sight's status timer stops driving bar repaints while
     // we're locked, which was the "bar still renders" artefact.
-    //
-    // On rotated outputs (two_pass) we skip the blur entirely because
-    // the blur offscreen is landscape-sized and the wallpaper is
-    // portrait-rendered — mixing them corrupts the output. Portrait
-    // outputs get a clean dark backdrop via the lock surface's own
-    // fill, which is still an improvement over an opaque flat color.
     let mut elements: Vec<DrmRenderElement<'_>> = Vec::new();
     if let Some(wp) = crate::render::build_wallpaper_element(state, renderer, output_idx) {
         elements.push(DrmRenderElement::Texture(wp));
     }
     let backdrop_len = elements.len();
 
-    // Apply strong blur to the backdrop chrome. Reuses the same
-    // BlurState that scratchpads use — it's already allocated at
-    // output construction on non-rotated outputs and knows how to
-    // capture + shader-blur the end-of-vec elements into a single
-    // blurred texture element. We want more passes here than a
-    // scratchpad (3 vs 1) for a frostier glass look.
+    // Apply strong blur to the backdrop. Reuses the same BlurState
+    // that scratchpads use — allocated at output construction at the
+    // output's LOGICAL size (portrait for rotated outputs, landscape
+    // otherwise), which matches the coordinate space the wallpaper
+    // element uses, so the blur runs correctly on rotated outputs too.
+    // The two-pass rotation runs AFTER the blur (below), rotating the
+    // already-blurred portrait content into the landscape scanout.
+    // More passes than a scratchpad (3 vs 1) for a frostier look.
     let blur_passes_for_lock: u32 = 3;
-    if backdrop_len > 0 && instance.blur.is_some() && instance.two_pass.is_none() {
+    if backdrop_len > 0 && instance.blur.is_some() {
         if let Err(phase) = run_scratchpad_blur(
             renderer,
             instance,

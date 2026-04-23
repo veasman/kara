@@ -234,8 +234,8 @@ fn main() {
     // OutputInfo for. Pair by name — SCTK's OutputInfo.name carries
     // the connector name via xdg_output once it's been populated.
     let wl_outputs: Vec<wl_output::WlOutput> = glimpse.output_state.outputs().collect();
-    eprintln!(
-        "kara-glimpse: IPC outputs=[{}], wayland outputs={}",
+    log_glimpse(&format!(
+        "kara-glimpse start: IPC outputs=[{}], {} wayland outputs",
         output_infos
             .iter()
             .map(|o| format!(
@@ -250,7 +250,7 @@ fn main() {
             .collect::<Vec<_>>()
             .join(", "),
         wl_outputs.len(),
-    );
+    ));
     for wl in wl_outputs.iter() {
         let info_name = glimpse
             .output_state
@@ -261,15 +261,15 @@ fn main() {
         // outputs we don't have IPC data for so we don't paint a
         // rogue surface we can't position.
         let Some(info) = output_infos.iter().find(|o| o.name == info_name) else {
-            eprintln!(
-                "kara-glimpse: skipping wayland output {info_name:?} — no IPC match"
-            );
+            log_glimpse(&format!(
+                "  skipping wayland output {info_name:?} — no IPC match"
+            ));
             continue;
         };
-        eprintln!(
-            "kara-glimpse: surface for {} at origin ({}, {})",
+        log_glimpse(&format!(
+            "  surface for {} at origin ({}, {})",
             info.name, info.x, info.y
-        );
+        ));
 
         let surface = compositor.create_surface(&qh);
         let layer = layer_shell.create_layer_surface(
@@ -367,6 +367,19 @@ fn main() {
         // to the global selection rect.
         do_capture_region(x, y, w, h, &outputs_for_capture, save_path_for_capture);
     }
+}
+
+/// Append a diagnostic line to /tmp/kara-glimpse.log. kara-glimpse is
+/// launched by a keybind inside kara, so its stderr goes to whichever
+/// TTY kara-gate was started from — a file log avoids a VT switch to
+/// see what happened on a failed capture.
+fn log_glimpse(line: &str) {
+    use std::io::Write;
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/kara-glimpse.log")
+        .and_then(|mut f| writeln!(f, "{line}"));
 }
 
 fn default_theme() -> kara_ipc::ThemeColors {
@@ -590,6 +603,10 @@ fn do_capture_region(
         return;
     }
 
+    log_glimpse(&format!(
+        "kara-glimpse capture: selection=({x},{y},{w},{h}), {} outputs",
+        outputs.len()
+    ));
     // Which outputs does the selection rect intersect?
     let sel_x2 = x + w;
     let sel_y2 = y + h;
@@ -602,9 +619,17 @@ fn do_capture_region(
             o.x < sel_x2 && ox2 > x && o.y < sel_y2 && oy2 > y
         })
         .collect();
+    log_glimpse(&format!(
+        "  touched: [{}]",
+        touched
+            .iter()
+            .map(|o| o.name.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
 
     if touched.is_empty() {
-        eprintln!("kara-glimpse: selection doesn't touch any output — aborting");
+        log_glimpse("  selection doesn't touch any output — aborting");
         std::process::exit(1);
     }
 
@@ -622,20 +647,24 @@ fn do_capture_region(
     for o in &touched {
         match client.request(&kara_ipc::Request::ScreenshotOutput { name: o.name.clone() }) {
             Ok(kara_ipc::Response::ScreenshotDone { path }) => {
-                // Paste at (o.x - x, o.y - y) in the selection-local
-                // canvas. We'll blit from the captured output-local
-                // PNG into this location, then the canvas's bounds
-                // (the selection rect) are the final crop.
+                log_glimpse(&format!(
+                    "  queued ScreenshotOutput {}: path={path}, paste=({}, {})",
+                    o.name,
+                    o.x - x,
+                    o.y - y
+                ));
                 pending.push((path, o.x - x, o.y - y, o.width, o.height));
             }
             Ok(kara_ipc::Response::Error { message }) => {
-                eprintln!("kara-glimpse: compositor error for {}: {message}", o.name);
+                log_glimpse(&format!("  compositor error for {}: {message}", o.name));
             }
-            _ => {}
+            other => {
+                log_glimpse(&format!("  unexpected response for {}: {other:?}", o.name));
+            }
         }
     }
     if pending.is_empty() {
-        eprintln!("kara-glimpse: no outputs captured");
+        log_glimpse("  no outputs captured — aborting");
         std::process::exit(1);
     }
 
@@ -661,13 +690,21 @@ fn do_capture_region(
     };
     for (path, dx, dy, _ow, _oh) in &pending {
         if !std::path::Path::new(path).exists() {
-            eprintln!("kara-glimpse: missing capture piece {path}");
+            log_glimpse(&format!("  missing capture piece {path}"));
             continue;
         }
         let Ok(pm) = tiny_skia::Pixmap::load_png(path) else {
-            eprintln!("kara-glimpse: failed to load capture piece {path}");
+            log_glimpse(&format!("  failed to load capture piece {path}"));
             continue;
         };
+        log_glimpse(&format!(
+            "  composing {} ({}x{}) at canvas ({}, {})",
+            path,
+            pm.width(),
+            pm.height(),
+            dx,
+            dy
+        ));
         canvas.draw_pixmap(
             *dx,
             *dy,
