@@ -200,11 +200,35 @@ fn main() {
     // full desktop extent, not a single output.
     glimpse.selection.pointer = (global_min_x as f64, global_min_y as f64);
 
-    // Drain the first batch of output advertisements so `output_state`
-    // has every WlOutput by the time we iterate to create surfaces.
-    event_queue.blocking_dispatch(&mut glimpse).ok();
-    conn.roundtrip().ok();
-    event_queue.dispatch_pending(&mut glimpse).ok();
+    // Wait for SCTK's xdg_output events to populate `info.name` on
+    // every advertised WlOutput before we try to pair them with our
+    // IPC OutputInfo list. A single short dispatch isn't enough in
+    // practice — when it races, `info.name` is None, our per-output
+    // loop skips every surface, and we fall through to the single
+    // fallback surface with origin (0, 0). That puts the pointer
+    // translation in the wrong global space, the hover never matches
+    // a real window, and SelectionState fills in the full-desktop
+    // fullscreen-fallback rect — which is the "weird auto-highlight
+    // region that doesn't exist" the user sees. Spin short dispatches
+    // until every output has a name, or 500 ms elapses.
+    let wait_deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        event_queue.blocking_dispatch(&mut glimpse).ok();
+        conn.roundtrip().ok();
+        event_queue.dispatch_pending(&mut glimpse).ok();
+        let outs: Vec<_> = glimpse.output_state.outputs().collect();
+        let have_all_names = !outs.is_empty()
+            && outs.iter().all(|wl| {
+                glimpse
+                    .output_state
+                    .info(wl)
+                    .and_then(|i| i.name)
+                    .is_some()
+            });
+        if have_all_names || std::time::Instant::now() >= wait_deadline {
+            break;
+        }
+    }
 
     // Create one layer surface per WlOutput that we have a matching
     // OutputInfo for. Pair by name — SCTK's OutputInfo.name carries

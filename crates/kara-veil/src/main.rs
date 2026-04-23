@@ -430,21 +430,35 @@ fn main() {
     // before we call `get_lock_surface`.
     event_loop.dispatch(Some(Duration::from_millis(80)), &mut veil).ok();
 
-    // Drain the initial burst of output + xdg_output events so
-    // `info().name` is actually populated when we try to pick the
-    // primary surface. One short dispatch after the roundtrip is
-    // enough in practice — SCTK publishes both the registry globals
-    // and the xdg_output name attributes in the first pending batch.
-    // Previous 5×30 ms loop (150 ms floor) was the biggest source
-    // of the "blur flashes, then panel pops up" gap the user was
-    // seeing after pressing the lock keybind.
-    event_loop.dispatch(Some(Duration::from_millis(15)), &mut veil).ok();
+    // Wait for SCTK's xdg_output handler to populate `info.name` on
+    // every advertised WlOutput before picking primary. The previous
+    // single short dispatch fired before xdg_output events had
+    // arrived, so the name-based lookup below hit None and fell back
+    // to idx=0 — which is whichever output the compositor advertised
+    // first (usually the leftmost or the AMD primary), NOT the
+    // user-configured primary. That's why the lock was landing on
+    // DP-2 instead of the center 1440p. Spin with short dispatches
+    // until every output has a name, or 500 ms elapses.
+    let wait_deadline = std::time::Instant::now() + Duration::from_millis(500);
+    loop {
+        event_loop.dispatch(Some(Duration::from_millis(25)), &mut veil).ok();
+        let outs: Vec<_> = veil.output_state.outputs().collect();
+        let have_all_names = !outs.is_empty()
+            && outs.iter().all(|wl| {
+                veil.output_state
+                    .info(wl)
+                    .and_then(|i| i.name)
+                    .is_some()
+            });
+        if have_all_names || std::time::Instant::now() >= wait_deadline {
+            break;
+        }
+    }
 
-    // First pass: figure out which output is primary. We prefer a
-    // name match against the compositor's primary announcement; if
-    // that fails (xdg_output name still missing, or we can't reach
-    // IPC) we fall back to index 0 so *some* output gets the login
-    // panel no matter what.
+    // First pass: figure out which output is primary. Prefer a name
+    // match against the compositor's primary announcement; fall back
+    // to idx=0 only if the name lookup genuinely fails (e.g. IPC
+    // unreachable, or xdg_output never fired within 500 ms).
     let wl_outputs: Vec<wl_output::WlOutput> = veil.output_state.outputs().collect();
     let primary_idx = primary_name
         .as_deref()
