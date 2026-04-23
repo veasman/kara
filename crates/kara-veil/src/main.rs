@@ -526,13 +526,18 @@ fn main() {
         .insert(loop_handle.clone())
         .expect("wayland source");
 
-    // 1 Hz clock tick so `HH:MM` flips on the minute without user input.
+    // 500 ms redraw tick. Two jobs: flip `HH:MM` on the minute without
+    // user input, AND blink the password-field caret at 1 Hz (on for
+    // 500 ms, off for 500 ms) so the lock screen visibly hums and the
+    // user can tell the field is live even before they've typed. Two
+    // redraws/sec on a mostly-static pixmap is cheap; tiny-skia plus
+    // the per-output SlotPool handles it with headroom.
     loop_handle
         .insert_source(
-            Timer::from_duration(Duration::from_secs(1)),
+            Timer::from_duration(Duration::from_millis(500)),
             |_, _, veil: &mut Veil| {
                 veil.redraw_all();
-                calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(1))
+                calloop::timer::TimeoutAction::ToDuration(Duration::from_millis(500))
             },
         )
         .ok();

@@ -14,10 +14,18 @@
 use chrono::Local;
 use kara_ipc::ThemeColors;
 use kara_ui::canvas::{
-    color_from_u32, fill_rounded_rect, stroke_rounded_rect_with_pattern,
+    color_from_u32, fill_rounded_rect, stroke_rounded_rect, stroke_rounded_rect_with_pattern,
 };
 use kara_ui::text::TextRenderer;
 use tiny_skia::Pixmap;
+
+/// Error tint for "wrong password" feedback. Fixed rather than derived
+/// from `theme.accent` because fantasy's accent is already pink-ish —
+/// using it here would blur the difference between "you've entered
+/// characters" (which tints bullets) and "that was wrong" (which
+/// should read as unambiguous alarm). A muted crimson reads as alert
+/// on every palette we ship without clashing with them.
+const ERROR_TINT: u32 = 0xD45050;
 
 /// Card width at 1080p — scales up for larger monitors via the same
 /// linear factor as font sizes. Height is **derived** from content +
@@ -312,11 +320,43 @@ impl LockUi {
             tiny_skia::Color::from_rgba8(bgr, bgg, bgb, 220),
         );
 
-        // Bullets per password character.
+        // Field outline. Three states, each a distinct cue:
+        //   busy       → muted grey (input disabled while PAM checks)
+        //   error      → crimson (wrong password)
+        //   otherwise  → soft accent (the field is focused and live —
+        //                the user isn't guessing whether keystrokes
+        //                land; the ring says "typing goes here")
+        let (ring_color, ring_width) = if busy {
+            let (r, g, b) = split_rgb(self.theme.text_muted);
+            (tiny_skia::Color::from_rgba8(r, g, b, 150), 1.5 * scale)
+        } else if error.is_some() {
+            let (r, g, b) = split_rgb(ERROR_TINT);
+            (tiny_skia::Color::from_rgba8(r, g, b, 220), 1.75 * scale)
+        } else {
+            let (r, g, b) = split_rgb(self.theme.accent);
+            (tiny_skia::Color::from_rgba8(r, g, b, 180), 1.5 * scale)
+        };
+        stroke_rounded_rect(
+            pm,
+            card_x + pad_x + ring_width * 0.5,
+            field_y + ring_width * 0.5,
+            field_w - ring_width,
+            field_h - ring_width,
+            (FIELD_RADIUS - ring_width * 0.5).max(0.0),
+            ring_color,
+            ring_width,
+        );
+
+        // Bullets per password character. Tint: normal theme.text while
+        // idle/typing, muted while busy, error-tint when the last
+        // attempt failed so the visible entry itself flags the mistake
+        // (not just the status line below).
         let bullet_r = BULLET_RADIUS * scale;
         let bullet_gap = BULLET_GAP * scale;
         let bullet_color = color_from_u32(if busy {
             self.theme.text_muted
+        } else if error.is_some() {
+            ERROR_TINT
         } else {
             self.theme.text
         });
@@ -331,6 +371,56 @@ impl LockUi {
             kara_ui::canvas::fill_circle(pm, cx, bullets_cy, bullet_r, bullet_color);
         }
 
+        // Caret. Blinks at 1 Hz (on for 500 ms, off for 500 ms) so the
+        // field visually "hums" — users can see the lock is awake and
+        // ready to take input even when nothing's been typed yet. The
+        // caret rides after the last bullet so it also tracks typing
+        // progress. Hidden while the PAM check is in flight (the
+        // muted ring carries the disabled cue on its own).
+        if !busy {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let visible_caret = (now_ms / 500) % 2 == 0;
+            if visible_caret {
+                let caret_x = bullets_origin_x
+                    + if visible == 0 {
+                        // No bullets yet — caret sits at the leftmost
+                        // text position.
+                        0.0
+                    } else {
+                        // One gap past the last bullet's right edge.
+                        visible as f32 * (bullet_r * 2.0 + bullet_gap)
+                    };
+                let caret_h = field_h * 0.5;
+                let caret_w = (1.5 * scale).max(1.25);
+                let caret_color = if error.is_some() {
+                    let (r, g, b) = split_rgb(ERROR_TINT);
+                    tiny_skia::Color::from_rgba8(r, g, b, 230)
+                } else {
+                    let (r, g, b) = split_rgb(self.theme.accent);
+                    tiny_skia::Color::from_rgba8(r, g, b, 230)
+                };
+                if let Some(rect) = tiny_skia::Rect::from_xywh(
+                    caret_x,
+                    bullets_cy - caret_h * 0.5,
+                    caret_w,
+                    caret_h,
+                ) {
+                    pm.fill_rect(
+                        rect,
+                        &tiny_skia::Paint {
+                            shader: tiny_skia::Shader::SolidColor(caret_color),
+                            ..Default::default()
+                        },
+                        tiny_skia::Transform::identity(),
+                        None,
+                    );
+                }
+            }
+        }
+
         cursor += field_h + field_to_status;
 
         // Status line. Kept at the same left inset as the field
@@ -342,7 +432,7 @@ impl LockUi {
         let (status_text, status_color) = if busy {
             ("checking…", self.theme.text)
         } else if let Some(e) = error {
-            (e, self.theme.accent)
+            (e, ERROR_TINT)
         } else {
             ("enter password  ↵", self.theme.text)
         };
