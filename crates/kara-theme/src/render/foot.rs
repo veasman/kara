@@ -139,8 +139,22 @@ pub fn render_foot_osc_sequences(theme: &ResolvedTheme) -> String {
     fn osc(out: &mut String, code: u32, val: String) {
         out.push_str(&format!("\x1b]{code};{val}\x1b\\"));
     }
+    // Foot accepts #rrggbbaa on OSC 10/11/17/19 and applies the alpha
+    // to the window surface. Without the alpha byte, foot interprets
+    // the color as fully opaque and wipes whatever `alpha=` the user
+    // set in foot.ini — broadcasting a theme swap would silently
+    // destroy window transparency. Append the alpha on the background
+    // color so it keeps the configured transparency across live
+    // theme updates. Foreground / selection / palette don't carry a
+    // window-alpha meaning in foot, so they stay 6-digit.
+    let bg_alpha_u8 = (theme.style.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let bg_with_alpha = {
+        let hex6 = c.bg0.to_hex();
+        let hex6 = hex6.trim_start_matches('#');
+        format!("#{hex6}{bg_alpha_u8:02x}")
+    };
     osc(&mut out, 10, c.fg0.to_hex());         // fg
-    osc(&mut out, 11, c.bg0.to_hex());         // bg
+    osc(&mut out, 11, bg_with_alpha);          // bg (+ alpha so transparency survives)
     osc(&mut out, 12, c.accent.to_hex());      // cursor
     osc(&mut out, 17, c.selection_bg.to_hex()); // selection bg
     osc(&mut out, 19, c.selection_fg.to_hex()); // selection fg
