@@ -16,12 +16,29 @@ depends=(
 	# so a user session D-Bus is always present even on OpenRC/runit.
 	'dbus'
 	# kara ships /usr/share/xdg-desktop-portal/kara-portals.conf routing
-	# the Settings interface through the GTK backend, which is what
-	# delivers live color-scheme updates to Firefox / GTK apps on
-	# kara-beautify theme switch. Without this the portal has no impl
-	# for the kara desktop and live dark/light flip silently no-ops.
+	# the Settings interface through the GTK backend (live color-scheme
+	# updates for Firefox / GTK apps on kara-beautify theme switch) and
+	# the FileChooser interface through termfilechooser (yazi everywhere,
+	# including browser Attach dialogs). Without these the portal has
+	# no impl for the kara desktop and both flows silently no-op.
 	'xdg-desktop-portal'
 	'xdg-desktop-portal-gtk'
+	# AUR: TUI file-chooser portal. kara's default FileChooser routing
+	# points here — paru / yay will resolve from AUR. Users who'd
+	# rather use the GTK dialog can override per-user (see comment in
+	# /usr/share/xdg-desktop-portal/kara-portals.conf).
+	'xdg-desktop-portal-termfilechooser-hunkyburrito-git'
+	# Terminal file manager surfaced by `mod+e`, xdg-open on
+	# directories, and every browser file-picker via termfilechooser.
+	'yazi'
+	# xdg-mime / xdg-open for the MIME handler binding + generic
+	# "open path" calls that route to yazi-open.desktop.
+	'xdg-utils'
+	# kara-veil authenticates against local PAM (libpam.so at runtime
+	# via dlopen). pam is already in core on Arch/Artix but listing it
+	# explicitly keeps the lock screen from silently degrading to "no
+	# way to unlock" on minimal installs.
+	'pam'
 	# Video wallpaper decode via gstreamer appsink. kara-gate and
 	# kara-summon (thumbnails) both link against gstreamer + the
 	# app/video libraries. gst-plugins-{base,good,bad} + gst-libav
@@ -62,6 +79,7 @@ provides=(
 	'kara-glimpse'
 	'kara-whisper'
 	'kara-beautify'
+	'kara-veil'
 )
 conflicts=('kara' 'kara-gate')
 source=("git+https://github.com/veasman/kara.git")
