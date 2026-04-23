@@ -264,7 +264,7 @@ fn main() {
         theme,
         windows,
         output_infos: output_infos.clone(),
-        selection: SelectionState::new(global_w, global_h),
+        selection: SelectionState::new(global_min_x, global_min_y, global_w, global_h),
         save_path,
     };
     // Anchor SelectionState to global-coord space. pointer events land
@@ -1036,8 +1036,8 @@ impl Glimpse {
 /// glance whether auto-hover is doing what the user expects.
 fn describe_target(t: &selection::HoverTarget) -> String {
     match t {
-        selection::HoverTarget::Fullscreen { w, h } => {
-            format!("target=Fullscreen({w}x{h})")
+        selection::HoverTarget::Fullscreen { x, y, w, h } => {
+            format!("target=Fullscreen({x},{y} {w}x{h})")
         }
         selection::HoverTarget::Window { x, y, w, h, .. } => {
             format!("target=Window({x},{y} {w}x{h})")
@@ -1050,8 +1050,12 @@ fn describe_target(t: &selection::HoverTarget) -> String {
 /// when it didn't.
 fn target_key(t: &selection::HoverTarget) -> String {
     match t {
-        selection::HoverTarget::Fullscreen { w, h } => format!("FS({w}x{h})"),
-        selection::HoverTarget::Window { x, y, w, h, .. } => format!("W({x},{y},{w},{h})"),
+        selection::HoverTarget::Fullscreen { x, y, w, h } => {
+            format!("FS({x},{y},{w},{h})")
+        }
+        selection::HoverTarget::Window { x, y, w, h, .. } => {
+            format!("W({x},{y},{w},{h})")
+        }
     }
 }
 

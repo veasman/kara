@@ -1,7 +1,18 @@
 use kara_ipc::WindowGeometry;
 
 pub enum HoverTarget {
-    Fullscreen { w: i32, h: i32 },
+    /// "No window under the pointer" — full-monitor preview. Carries
+    /// the focused output's global-coord top-left corner so the
+    /// highlight rect lands on the right monitor when the desktop
+    /// spans multiple outputs. A plain `(w, h)` would anchor at global
+    /// `(0, 0)` and slide the preview off the left edge of anything
+    /// that isn't the leftmost monitor.
+    Fullscreen {
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    },
     Window {
         /// Index into the window geometry vec from the compositor. Held
         /// so a future "capture this specific window by ID" IPC can
@@ -24,19 +35,28 @@ pub struct SelectionState {
     pub target: HoverTarget,
     pub mode: Mode,
     pub pointer: (f64, f64),
+    /// Top-left of the "fullscreen" rect in global coords — equals the
+    /// focused output's origin. Paired with screen_w/h to drive the
+    /// `Fullscreen` hover target.
+    pub screen_x: i32,
+    pub screen_y: i32,
     pub screen_w: i32,
     pub screen_h: i32,
 }
 
 impl SelectionState {
-    pub fn new(screen_w: i32, screen_h: i32) -> Self {
+    pub fn new(screen_x: i32, screen_y: i32, screen_w: i32, screen_h: i32) -> Self {
         Self {
             target: HoverTarget::Fullscreen {
+                x: screen_x,
+                y: screen_y,
                 w: screen_w,
                 h: screen_h,
             },
             mode: Mode::Hover,
             pointer: (0.0, 0.0),
+            screen_x,
+            screen_y,
             screen_w,
             screen_h,
         }
@@ -60,6 +80,8 @@ impl SelectionState {
         }
 
         self.target = HoverTarget::Fullscreen {
+            x: self.screen_x,
+            y: self.screen_y,
             w: self.screen_w,
             h: self.screen_h,
         };
@@ -96,7 +118,7 @@ impl SelectionState {
     fn hover_rect(&self) -> (i32, i32, i32, i32) {
         match &self.target {
             HoverTarget::Window { x, y, w, h, .. } => (*x, *y, *w, *h),
-            HoverTarget::Fullscreen { w, h } => (0, 0, *w, *h),
+            HoverTarget::Fullscreen { x, y, w, h } => (*x, *y, *w, *h),
         }
     }
 
