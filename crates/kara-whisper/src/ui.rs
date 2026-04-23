@@ -88,10 +88,10 @@ impl NotificationUI {
     }
 
     fn card_height(n: &Notification, border_pad: u32) -> u32 {
-        let base = if n.actions.is_empty() {
-            CARD_BASE_HEIGHT
-        } else {
+        let base = if n.has_button_actions() {
             CARD_BASE_HEIGHT + CARD_ACTION_ROW
+        } else {
+            CARD_BASE_HEIGHT
         };
         base + border_pad
     }
@@ -269,18 +269,27 @@ impl NotificationUI {
             // strip on the right (the old behavior when btn_w was
             // capped at 120 and bx started at PADDING) was the main
             // "line up weird" complaint.
-            if !notif.actions.is_empty() {
+            //
+            // The `default` action is excluded from the button row
+            // per freedesktop spec — it's the implicit click target
+            // and body-click handles it. Apps like Thunderbird ship
+            // a `("default", "Activate")` pair; rendering it here
+            // produced a redundant "Activate" button whose behaviour
+            // was identical to tapping the card itself.
+            let button_actions: Vec<&(String, String)> =
+                notif.button_actions().collect();
+            if !button_actions.is_empty() {
                 let btn_y = base_bottom + 2.0;
                 let btn_h = CARD_ACTION_ROW as f32 - 4.0;
                 let btn_gap = 6.0f32;
-                let n_btns = notif.actions.len() as f32;
+                let n_btns = button_actions.len() as f32;
                 let total_gap = btn_gap * (n_btns - 1.0).max(0.0);
                 let avail = CARD_WIDTH as f32 - PADDING * 2.0 - total_gap;
                 let btn_w = (avail / n_btns).min(120.0);
                 let cluster_w = btn_w * n_btns + total_gap;
                 let mut bx = (CARD_WIDTH as f32 - cluster_w) / 2.0;
 
-                for (id, label) in &notif.actions {
+                for (id, label) in button_actions {
                     fill_rounded_rect(
                         &mut pixmap,
                         bx,

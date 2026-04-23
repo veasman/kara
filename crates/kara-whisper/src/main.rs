@@ -352,7 +352,22 @@ impl Whisper {
                         .stderr(std::process::Stdio::null())
                         .spawn();
                 }
+                // If the sender provided an implicit `default` action
+                // (freedesktop spec — the click-anywhere target),
+                // invoke it on body-click so apps like Thunderbird
+                // still see "user activated this mail alert" instead
+                // of a silent dismissal. The action button itself is
+                // hidden from the card (see `Notification::button_actions`)
+                // so this is the only surface that reaches the sender.
                 if let Some(conn) = self.dbus_conn.as_ref() {
+                    let default_id = self
+                        .queue
+                        .find(hit.notif_id)
+                        .and_then(|n| n.default_action_id())
+                        .map(|s| s.to_string());
+                    if let Some(id) = default_id {
+                        emit_action_invoked(conn, hit.notif_id, &id);
+                    }
                     emit_notification_closed(conn, hit.notif_id, 2);
                 }
             }

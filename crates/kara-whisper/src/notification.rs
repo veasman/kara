@@ -19,6 +19,37 @@ pub struct Notification {
     pub created_at: Instant,
 }
 
+impl Notification {
+    /// Actions that should render as visible buttons on the card.
+    ///
+    /// The freedesktop Notifications spec carves out a special action
+    /// key "default" as the implicit click-target — clicking anywhere
+    /// on the notification body should invoke it. Per the spec,
+    /// "default" must NOT appear in the button row. Apps that don't
+    /// follow that convention (Thunderbird ships `("default",
+    /// "Activate")` on every mail alert) ended up rendering a button
+    /// labeled "Activate" that duplicated body-click behavior — the
+    /// "weird wording" the user flagged. Hide it. Body click still
+    /// fires the action (see `Whisper::handle_click`).
+    pub fn button_actions(&self) -> impl Iterator<Item = &(String, String)> {
+        self.actions.iter().filter(|(id, _)| id != "default")
+    }
+
+    pub fn has_button_actions(&self) -> bool {
+        self.button_actions().next().is_some()
+    }
+
+    /// The implicit default-action id for this notification, if the
+    /// app sent one. Used by body-click so `Activate on mail`, `Open`
+    /// on browser notifications, etc. still reach the sender.
+    pub fn default_action_id(&self) -> Option<&str> {
+        self.actions
+            .iter()
+            .find(|(id, _)| id == "default")
+            .map(|(id, _)| id.as_str())
+    }
+}
+
 pub struct NotificationQueue {
     notifications: Vec<Notification>,
     next_id: u32,
@@ -91,6 +122,13 @@ impl NotificationQueue {
 
     pub fn visible(&self) -> &[Notification] {
         &self.notifications
+    }
+
+    /// Look up a notification by id. Used on body-click to read the
+    /// sender's `default` action so the daemon can emit ActionInvoked
+    /// before closing the card.
+    pub fn find(&self, id: u32) -> Option<&Notification> {
+        self.notifications.iter().find(|n| n.id == id)
     }
 
     /// Used by the idle-hide branch once added; keeping the method live
