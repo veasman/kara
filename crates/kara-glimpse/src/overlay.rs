@@ -40,10 +40,21 @@ pub fn render_overlay(
     let dim = tiny_skia::Color::from_rgba8(0, 0, 0, 128);
     pixmap.fill(dim);
 
+    // Empty-rect sentinel from the multi-monitor caller ("selection
+    // doesn't touch this surface"). Dim only — no border, no clear,
+    // no frame. Returning here is correct whether glimpse passed
+    // (0,0,0,0) explicitly or we clamped to an empty rect below.
+    if hw <= 0 || hh <= 0 {
+        return true;
+    }
+
     let hx = hx.max(0) as u32;
     let hy = hy.max(0) as u32;
     let hw = (hw as i32).min((width as i32 - hx as i32).max(0)) as u32;
     let hh = (hh as i32).min((height as i32 - hy as i32).max(0)) as u32;
+    if hw == 0 || hh == 0 {
+        return true;
+    }
 
     let border_px = theme.border_px.unwrap_or(2).max(1) as f32;
     let radius = theme.border_radius.unwrap_or(0) as f32;

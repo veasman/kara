@@ -102,8 +102,10 @@ fn main() {
     }
 
     // Interactive mode
-    // 1. Get theme + window geometries from compositor
-    let (theme, windows) = match kara_ipc::IpcClient::connect() {
+    // 1. Get theme + outputs + window geometries from compositor.
+    //    Windows now come back in GLOBAL coords spanning every output,
+    //    so we can hover-hit them consistently across monitors.
+    let (theme, windows, output_infos) = match kara_ipc::IpcClient::connect() {
         Ok(mut c) => {
             let theme = match c.request(&kara_ipc::Request::GetTheme) {
                 Ok(kara_ipc::Response::Theme { colors }) => colors,
@@ -115,9 +117,37 @@ fn main() {
                 Ok(kara_ipc::Response::WindowGeometries { windows }) => windows,
                 _ => vec![],
             };
-            (theme, windows)
+            let outputs = match kara_ipc::IpcClient::connect()
+                .and_then(|mut c2| c2.request(&kara_ipc::Request::GetOutputs))
+            {
+                Ok(kara_ipc::Response::Outputs { outputs }) => outputs,
+                _ => vec![],
+            };
+            (theme, windows, outputs)
         }
-        Err(_) => (default_theme(), vec![]),
+        Err(_) => (default_theme(), vec![], vec![]),
+    };
+
+    // Compute the desktop bounding box in global coords. SelectionState
+    // uses (min_x, min_y, max_x, max_y) to bound hover targets and the
+    // fullscreen fallback — single-output setups degenerate to a single
+    // output's rect, which matches the pre-refactor behaviour.
+    let (global_min_x, global_min_y, global_w, global_h) = if output_infos.is_empty() {
+        (0, 0, 1920, 1080)
+    } else {
+        let min_x = output_infos.iter().map(|o| o.x).min().unwrap_or(0);
+        let min_y = output_infos.iter().map(|o| o.y).min().unwrap_or(0);
+        let max_x = output_infos
+            .iter()
+            .map(|o| o.x + o.width)
+            .max()
+            .unwrap_or(0);
+        let max_y = output_infos
+            .iter()
+            .map(|o| o.y + o.height)
+            .max()
+            .unwrap_or(0);
+        (min_x, min_y, (max_x - min_x).max(1), (max_y - min_y).max(1))
     };
 
     // 2. Connect to Wayland
@@ -138,22 +168,11 @@ fn main() {
     let layer_shell = LayerShell::bind(&globals, &qh).expect("layer shell not available");
     let shm = Shm::bind(&globals, &qh).expect("wl_shm not available");
 
-    // 3. Create fullscreen layer surface
-    let surface = compositor.create_surface(&qh);
-    let layer = layer_shell.create_layer_surface(
-        &qh,
-        surface,
-        Layer::Overlay,
-        Some("kara-glimpse"),
-        None,
-    );
-    layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
-    layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-    layer.set_exclusive_zone(-1);
-    layer.commit();
-
-    let pool = SlotPool::new(1920 * 1080 * 4, &shm).expect("failed to create SHM pool");
-
+    // 3. Seed Glimpse with the empty surface list; populate after we've
+    //    let SCTK's OutputState receive the initial output globals so
+    //    WlOutput → OutputInfo name pairing lines up. SelectionState
+    //    uses the global bounding rect size so its hover-target math is
+    //    in the same coordinate space as incoming pointer events.
     let mut glimpse = Glimpse {
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
@@ -162,23 +181,112 @@ fn main() {
         exit: false,
         confirmed: false,
         first_configure: true,
-        pool,
-        width: 0,
-        height: 0,
-        layer,
+        surfaces: Vec::new(),
+        pointer_surface: None,
         keyboard: None,
         pointer: None,
         border_tile_cache: theme
             .border_tile_path
             .as_deref()
             .and_then(|p| tiny_skia::Pixmap::load_png(p).ok()),
-        overlay_pixmap: None,
-        last_highlight: (-1, -1, -1, -1),
         theme,
         windows,
-        selection: SelectionState::new(0, 0),
+        output_infos: output_infos.clone(),
+        selection: SelectionState::new(global_w, global_h),
         save_path,
     };
+    // Anchor SelectionState to global-coord space. pointer events land
+    // in compositor-global coords, so "screen_w/h" has to match the
+    // full desktop extent, not a single output.
+    glimpse.selection.pointer = (global_min_x as f64, global_min_y as f64);
+
+    // Drain the first batch of output advertisements so `output_state`
+    // has every WlOutput by the time we iterate to create surfaces.
+    event_queue.blocking_dispatch(&mut glimpse).ok();
+    conn.roundtrip().ok();
+    event_queue.dispatch_pending(&mut glimpse).ok();
+
+    // Create one layer surface per WlOutput that we have a matching
+    // OutputInfo for. Pair by name — SCTK's OutputInfo.name carries
+    // the connector name via xdg_output once it's been populated.
+    let wl_outputs: Vec<wl_output::WlOutput> = glimpse.output_state.outputs().collect();
+    for wl in wl_outputs.iter() {
+        let info_name = glimpse
+            .output_state
+            .info(wl)
+            .and_then(|i| i.name)
+            .unwrap_or_default();
+        // Find the OutputInfo with this connector name; skip
+        // outputs we don't have IPC data for so we don't paint a
+        // rogue surface we can't position.
+        let Some(info) = output_infos.iter().find(|o| o.name == info_name) else {
+            continue;
+        };
+
+        let surface = compositor.create_surface(&qh);
+        let layer = layer_shell.create_layer_surface(
+            &qh,
+            surface,
+            Layer::Overlay,
+            Some("kara-glimpse"),
+            Some(wl),
+        );
+        layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_exclusive_zone(-1);
+        layer.commit();
+
+        // Pool sized for the per-output surface. create_buffer calls
+        // will grow it if the configure comes back larger than the
+        // advertised info.width/height (shouldn't, but safe).
+        let pool = SlotPool::new(
+            info.width as usize * info.height as usize * 4,
+            &glimpse.shm,
+        )
+        .expect("failed to create SHM pool");
+
+        glimpse.surfaces.push(GlimpseSurface {
+            layer,
+            pool,
+            width: 0,
+            height: 0,
+            origin_x: info.x,
+            origin_y: info.y,
+            configured: false,
+            overlay_pixmap: None,
+            last_highlight: (-1, -1, -1, -1),
+        });
+    }
+
+    // Single-monitor compositors / winit dev backends may not have
+    // advertised a WlOutput we could pair — fall through to a single
+    // surface without output binding so the tool still works.
+    if glimpse.surfaces.is_empty() {
+        let surface = compositor.create_surface(&qh);
+        let layer = layer_shell.create_layer_surface(
+            &qh,
+            surface,
+            Layer::Overlay,
+            Some("kara-glimpse"),
+            None,
+        );
+        layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_exclusive_zone(-1);
+        layer.commit();
+        let pool = SlotPool::new(1920 * 1080 * 4, &glimpse.shm).expect("SHM pool");
+        glimpse.surfaces.push(GlimpseSurface {
+            layer,
+            pool,
+            width: 0,
+            height: 0,
+            origin_x: 0,
+            origin_y: 0,
+            configured: false,
+            overlay_pixmap: None,
+            last_highlight: (-1, -1, -1, -1),
+        });
+    }
 
     loop {
         event_queue.blocking_dispatch(&mut glimpse).unwrap();
@@ -187,23 +295,29 @@ fn main() {
         }
     }
 
-    // If confirmed, capture the selected region
+    // If confirmed, capture the selected region (in compositor-global
+    // coords). Unmap every overlay surface and round-trip first so the
+    // compositor processes the destroys before we ask for screenshots
+    // — otherwise our overlay gets baked into the captured frame.
     if glimpse.confirmed {
         let (x, y, w, h) = glimpse.selection.end_press();
         let save_path_for_capture = glimpse.save_path.clone();
+        let outputs_for_capture = glimpse.output_infos.clone();
 
-        // Unmap the overlay and round-trip so the compositor processes the
-        // destroy before we ask it for a screenshot. If we just drop glimpse,
-        // the destroy request sits in the outgoing buffer and the overlay ends
-        // up baked into the captured frame (and the overlay stays on screen
-        // until the next unrelated render).
-        glimpse.layer.wl_surface().attach(None, 0, 0);
-        glimpse.layer.wl_surface().commit();
+        for slot in &glimpse.surfaces {
+            slot.layer.wl_surface().attach(None, 0, 0);
+            slot.layer.wl_surface().commit();
+        }
         let _ = event_queue.roundtrip(&mut glimpse);
-
         drop(glimpse);
 
-        do_capture(x, y, w, h, save_path_for_capture);
+        // Route through the multi-output compose + crop path. For
+        // selections that fit on a single output this collapses to
+        // one ScreenshotOutput + crop, matching pre-refactor latency
+        // on single-monitor setups. For selections spanning outputs
+        // it composes each touched output into a canvas, then crops
+        // to the global selection rect.
+        do_capture_region(x, y, w, h, &outputs_for_capture, save_path_for_capture);
     }
 }
 
@@ -403,6 +517,134 @@ fn do_capture(x: i32, y: i32, w: i32, h: i32, save_path: Option<String>) {
     wait_and_copy(&capture_path, save_path);
 }
 
+/// Multi-output region capture. Computes which outputs the selection
+/// rect overlaps, requests a ScreenshotOutput per affected output,
+/// composes them into a canvas sized to the OUTPUT BOUNDING BOX of the
+/// selection, then crops to the selection rect.
+///
+/// For selections that fit on a single output this collapses into one
+/// ScreenshotOutput + crop — same latency as the legacy single-output
+/// path, just routed through the compose helper so we only have one
+/// capture-shape to maintain.
+fn do_capture_region(
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    outputs: &[kara_ipc::OutputInfo],
+    save_path: Option<String>,
+) {
+    // Degenerate case: no output list from IPC (winit / disconnected
+    // compositor). Fall through to the pre-refactor ScreenshotRegion
+    // request so single-output dev setups still work.
+    if outputs.is_empty() {
+        do_capture(x, y, w, h, save_path);
+        return;
+    }
+
+    // Which outputs does the selection rect intersect?
+    let sel_x2 = x + w;
+    let sel_y2 = y + h;
+    let touched: Vec<&kara_ipc::OutputInfo> = outputs
+        .iter()
+        .filter(|o| {
+            let ox2 = o.x + o.width;
+            let oy2 = o.y + o.height;
+            // Non-empty intersection test.
+            o.x < sel_x2 && ox2 > x && o.y < sel_y2 && oy2 > y
+        })
+        .collect();
+
+    if touched.is_empty() {
+        eprintln!("kara-glimpse: selection doesn't touch any output — aborting");
+        std::process::exit(1);
+    }
+
+    let mut client = match kara_ipc::IpcClient::connect() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("kara-glimpse: failed to connect to compositor: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Kick off one ScreenshotOutput request per affected output, note
+    // where each piece should paste relative to the selection origin.
+    let mut pending: Vec<(String, i32, i32, i32, i32)> = Vec::new();
+    for o in &touched {
+        match client.request(&kara_ipc::Request::ScreenshotOutput { name: o.name.clone() }) {
+            Ok(kara_ipc::Response::ScreenshotDone { path }) => {
+                // Paste at (o.x - x, o.y - y) in the selection-local
+                // canvas. We'll blit from the captured output-local
+                // PNG into this location, then the canvas's bounds
+                // (the selection rect) are the final crop.
+                pending.push((path, o.x - x, o.y - y, o.width, o.height));
+            }
+            Ok(kara_ipc::Response::Error { message }) => {
+                eprintln!("kara-glimpse: compositor error for {}: {message}", o.name);
+            }
+            _ => {}
+        }
+    }
+    if pending.is_empty() {
+        eprintln!("kara-glimpse: no outputs captured");
+        std::process::exit(1);
+    }
+
+    // Wait for each PNG to land.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+    loop {
+        let missing = pending
+            .iter()
+            .any(|(p, _, _, _, _)| !std::path::Path::new(p).exists());
+        if !missing || std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+
+    // Canvas is exactly the selection rect — compositing into
+    // selection-local coords means the paste offsets already
+    // position each output's pixels correctly, and no separate
+    // crop pass is needed afterward.
+    let Some(mut canvas) = tiny_skia::Pixmap::new(w.max(1) as u32, h.max(1) as u32) else {
+        eprintln!("kara-glimpse: canvas allocation failed ({w}x{h})");
+        std::process::exit(1);
+    };
+    for (path, dx, dy, _ow, _oh) in &pending {
+        if !std::path::Path::new(path).exists() {
+            eprintln!("kara-glimpse: missing capture piece {path}");
+            continue;
+        }
+        let Ok(pm) = tiny_skia::Pixmap::load_png(path) else {
+            eprintln!("kara-glimpse: failed to load capture piece {path}");
+            continue;
+        };
+        canvas.draw_pixmap(
+            *dx,
+            *dy,
+            pm.as_ref(),
+            &tiny_skia::PixmapPaint::default(),
+            tiny_skia::Transform::identity(),
+            None,
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    let composed_path = format!(
+        "/tmp/kara-screenshot-{}.png",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    );
+    if let Err(e) = canvas.save_png(&composed_path) {
+        eprintln!("kara-glimpse: failed to write composed PNG: {e}");
+        std::process::exit(1);
+    }
+    wait_and_copy(&composed_path, save_path);
+}
+
 fn wait_and_copy(capture_path: &str, save_path: Option<String>) {
     for _ in 0..50 {
         if std::path::Path::new(capture_path).exists() {
@@ -471,6 +713,30 @@ fn notify_captured(path: &str) {
         .spawn();
 }
 
+/// One layer surface per connected output — glimpse's interactive
+/// region selector needs to paint + read pointer events on every
+/// monitor at once, not just the focused one. Each surface owns its
+/// own SHM pool + scratch pixmap and knows where it sits in the
+/// global coordinate space so pointer events can be translated from
+/// surface-local into the `Glimpse.selection` global frame.
+struct GlimpseSurface {
+    layer: LayerSurface,
+    pool: SlotPool,
+    width: u32,
+    height: u32,
+    /// Global position of this surface's (0, 0) — equals the
+    /// compositor output's `location`. Used both to translate
+    /// incoming pointer events into global coords and to clip the
+    /// global selection rect back into local coords at draw time.
+    origin_x: i32,
+    origin_y: i32,
+    configured: bool,
+    overlay_pixmap: Option<tiny_skia::Pixmap>,
+    /// Last rendered highlight rect for THIS surface, in local
+    /// coords. Skip redraw when unchanged.
+    last_highlight: (i32, i32, i32, i32),
+}
+
 struct Glimpse {
     registry_state: RegistryState,
     seat_state: SeatState,
@@ -480,80 +746,93 @@ struct Glimpse {
     exit: bool,
     confirmed: bool,
     first_configure: bool,
-    pool: SlotPool,
-    width: u32,
-    height: u32,
-    layer: LayerSurface,
+    surfaces: Vec<GlimpseSurface>,
+    /// Index in `surfaces` the pointer is currently on. Set on
+    /// Enter, cleared on Leave. Motion events reuse it — pointer
+    /// enter/leave is tied to a specific surface in the layer-shell
+    /// flow so we never need to guess.
+    pointer_surface: Option<usize>,
+
     keyboard: Option<wl_keyboard::WlKeyboard>,
     pointer: Option<wl_pointer::WlPointer>,
 
     theme: kara_ipc::ThemeColors,
     windows: Vec<kara_ipc::WindowGeometry>,
+    /// Snapshot of the compositor's output list at startup. Kept
+    /// around so the capture-confirmation path can compose
+    /// multi-output screenshots by name + origin.
+    output_infos: Vec<kara_ipc::OutputInfo>,
     selection: SelectionState,
     save_path: Option<String>,
     /// Cached decoded border tile pixmap — loaded once at init from
     /// `theme.border_tile_path`, not per-frame.
     border_tile_cache: Option<tiny_skia::Pixmap>,
-    /// Pre-allocated overlay pixmap — reused every frame to avoid
-    /// the cost of allocating + zeroing a full-screen RGBA buffer
-    /// on every hover move.
-    overlay_pixmap: Option<tiny_skia::Pixmap>,
-    /// Last rendered highlight rect — skip redraw when unchanged.
-    last_highlight: (i32, i32, i32, i32),
 }
 
 impl Glimpse {
-    fn draw(&mut self, _qh: &QueueHandle<Self>) {
-        if self.width == 0 || self.height == 0 {
+    /// Redraw a single surface. The global selection rect is clipped
+    /// to this surface's local frame so each output only paints the
+    /// portion of the highlight that actually lives on it.
+    fn draw(&mut self, surface_idx: usize) {
+        let Some(slot) = self.surfaces.get_mut(surface_idx) else { return };
+        if !slot.configured || slot.width == 0 || slot.height == 0 {
             return;
         }
 
-        let highlight = self.selection.highlight_rect();
+        // Global selection rect → local. A selection outside this
+        // surface entirely becomes a (0, 0, 0, 0) rect which
+        // `render_overlay` treats as "nothing selected" — the
+        // overlay paints just the dim backdrop, no highlight.
+        let global = self.selection.highlight_rect();
+        let local = clip_global_to_local(
+            global,
+            slot.origin_x,
+            slot.origin_y,
+            slot.width as i32,
+            slot.height as i32,
+        );
 
-        // Skip redraw when the highlight hasn't moved — avoids the
-        // full overlay re-render + shm copy on every pointer micro-
-        // motion within the same window/fullscreen zone.
-        if highlight == self.last_highlight {
+        // Short-circuit when this surface's local view of the
+        // selection hasn't changed — saves a full-screen pixmap
+        // re-render on every pointer micro-move within one zone.
+        if local == slot.last_highlight {
             return;
         }
-        self.last_highlight = highlight;
+        slot.last_highlight = local;
 
-        // Lazily allocate (or re-allocate on resize) the overlay pixmap.
-        let need_alloc = self
+        let need_alloc = slot
             .overlay_pixmap
             .as_ref()
-            .map(|pm| pm.width() != self.width || pm.height() != self.height)
+            .map(|pm| pm.width() != slot.width || pm.height() != slot.height)
             .unwrap_or(true);
         if need_alloc {
-            self.overlay_pixmap = tiny_skia::Pixmap::new(self.width, self.height);
+            slot.overlay_pixmap = tiny_skia::Pixmap::new(slot.width, slot.height);
         }
-        let pixmap = match self.overlay_pixmap.as_mut() {
+        let pixmap = match slot.overlay_pixmap.as_mut() {
             Some(pm) => pm,
             None => return,
         };
         if !overlay::render_overlay(
             pixmap,
-            self.width,
-            self.height,
-            highlight,
+            slot.width,
+            slot.height,
+            local,
             &self.theme,
             self.border_tile_cache.as_ref(),
         ) {
             return;
         }
 
-        let stride = self.width as i32 * 4;
-        let (buffer, canvas) = self
-            .pool
-            .create_buffer(
-                self.width as i32,
-                self.height as i32,
-                stride,
-                wl_shm::Format::Argb8888,
-            )
-            .expect("create buffer");
+        let stride = slot.width as i32 * 4;
+        let Ok((buffer, canvas)) = slot.pool.create_buffer(
+            slot.width as i32,
+            slot.height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) else {
+            return;
+        };
 
-        // RGBA -> BGRA swizzle
         let src = pixmap.data();
         for (dst, src) in canvas.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
             dst[0] = src[2];
@@ -562,14 +841,53 @@ impl Glimpse {
             dst[3] = src[3];
         }
 
-        self.layer
+        slot.layer
             .wl_surface()
-            .damage_buffer(0, 0, self.width as i32, self.height as i32);
-        buffer
-            .attach_to(self.layer.wl_surface())
-            .expect("buffer attach");
-        self.layer.commit();
+            .damage_buffer(0, 0, slot.width as i32, slot.height as i32);
+        let _ = buffer.attach_to(slot.layer.wl_surface());
+        slot.layer.commit();
     }
+
+    /// Repaint every configured surface. Used after any selection
+    /// change (pointer motion, press/release, hover target swap).
+    fn draw_all(&mut self) {
+        for i in 0..self.surfaces.len() {
+            self.draw(i);
+        }
+    }
+
+    /// Find which surface this wl_surface belongs to, if any.
+    fn find_surface(&self, target: &wl_surface::WlSurface) -> Option<usize> {
+        self.surfaces
+            .iter()
+            .position(|s| s.layer.wl_surface() == target)
+    }
+}
+
+/// Clip a global-coord rect to a surface's local frame. Returns the
+/// (x, y, w, h) in local coords, or (0, 0, 0, 0) when the rect
+/// doesn't touch this surface.
+fn clip_global_to_local(
+    rect: (i32, i32, i32, i32),
+    ox: i32,
+    oy: i32,
+    lw: i32,
+    lh: i32,
+) -> (i32, i32, i32, i32) {
+    let (gx, gy, gw, gh) = rect;
+    // Empty rect sentinel.
+    if gw <= 0 || gh <= 0 {
+        return (0, 0, 0, 0);
+    }
+    // Global rect bounds, clamped to this surface's global extent.
+    let x0 = gx.max(ox);
+    let y0 = gy.max(oy);
+    let x1 = (gx + gw).min(ox + lw);
+    let y1 = (gy + gh).min(oy + lh);
+    if x1 <= x0 || y1 <= y0 {
+        return (0, 0, 0, 0);
+    }
+    (x0 - ox, y0 - oy, x1 - x0, y1 - y0)
 }
 
 // ── SCTK trait implementations ─────────────────────────────────────
@@ -594,11 +912,14 @@ impl CompositorHandler for Glimpse {
     fn frame(
         &mut self,
         _: &Connection,
-        qh: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
+        _qh: &QueueHandle<Self>,
+        surface: &wl_surface::WlSurface,
         _: u32,
     ) {
-        self.draw(qh);
+        // Only the surface that got the frame callback needs to redraw.
+        if let Some(idx) = self.find_surface(surface) {
+            self.draw(idx);
+        }
     }
     fn surface_enter(
         &mut self,
@@ -653,25 +974,41 @@ impl LayerShellHandler for Glimpse {
     fn configure(
         &mut self,
         _: &Connection,
-        qh: &QueueHandle<Self>,
-        _: &LayerSurface,
+        _qh: &QueueHandle<Self>,
+        layer: &LayerSurface,
         configure: LayerSurfaceConfigure,
         _: u32,
     ) {
+        let Some(idx) = self
+            .surfaces
+            .iter()
+            .position(|s| s.layer.wl_surface() == layer.wl_surface())
+        else {
+            return;
+        };
         if configure.new_size.0 > 0 && configure.new_size.1 > 0 {
-            self.width = configure.new_size.0;
-            self.height = configure.new_size.1;
-            self.selection = SelectionState::new(self.width as i32, self.height as i32);
-            // Resize pool if needed
-            let needed = self.width as usize * self.height as usize * 4;
-            if self.pool.len() < needed {
-                self.pool.resize(needed).ok();
+            let slot = &mut self.surfaces[idx];
+            slot.width = configure.new_size.0;
+            slot.height = configure.new_size.1;
+            let needed = slot.width as usize * slot.height as usize * 4;
+            if slot.pool.len() < needed {
+                slot.pool.resize(needed).ok();
             }
+            slot.configured = true;
         }
-        if self.first_configure {
+        // Once every surface has been configured at least once, flip
+        // first_configure off and do the initial draw across all of
+        // them — at that point SelectionState is usable against the
+        // global desktop rect (set during main() before surfaces were
+        // created).
+        let all_configured = self.surfaces.iter().all(|s| s.configured);
+        if self.first_configure && all_configured {
             self.first_configure = false;
             self.selection.update_hover(&self.windows);
-            self.draw(qh);
+            self.draw_all();
+        } else if !self.first_configure {
+            // Redraw just the surface whose configure we got.
+            self.draw(idx);
         }
     }
 }
@@ -785,35 +1122,66 @@ impl PointerHandler for Glimpse {
     fn pointer_frame(
         &mut self,
         _: &Connection,
-        qh: &QueueHandle<Self>,
+        _qh: &QueueHandle<Self>,
         _: &wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
         for event in events {
             match event.kind {
                 PointerEventKind::Enter { .. } => {
-                    self.selection.pointer = (event.position.0, event.position.1);
-                    self.selection.update_hover(&self.windows);
-                    self.draw(qh);
+                    // Figure out which surface we just entered and
+                    // remember it so subsequent Motion events can map
+                    // back to the right output's origin.
+                    let idx = self.find_surface(&event.surface);
+                    self.pointer_surface = idx;
+                    if let Some(i) = idx {
+                        let (lx, ly) = event.position;
+                        let slot = &self.surfaces[i];
+                        self.selection.pointer = (
+                            lx + slot.origin_x as f64,
+                            ly + slot.origin_y as f64,
+                        );
+                        self.selection.update_hover(&self.windows);
+                        self.draw_all();
+                    }
+                }
+                PointerEventKind::Leave { .. } => {
+                    // Don't drop the cursor position — the user might
+                    // still be mid-drag. Just forget which surface
+                    // we're on so a Motion that sneaks in after Leave
+                    // doesn't mis-translate through a stale origin.
+                    self.pointer_surface = None;
                 }
                 PointerEventKind::Motion { .. } => {
-                    self.selection.pointer = (event.position.0, event.position.1);
-                    self.selection.update_hover(&self.windows);
-                    self.draw(qh);
+                    // Motion events target whichever surface we
+                    // currently believe we're on. If the event's
+                    // own surface disagrees (rare, but possible when
+                    // the compositor issues Motion before Enter for
+                    // a new surface), trust the event's surface.
+                    let idx = self
+                        .find_surface(&event.surface)
+                        .or(self.pointer_surface);
+                    if let Some(i) = idx {
+                        let (lx, ly) = event.position;
+                        let slot = &self.surfaces[i];
+                        self.selection.pointer = (
+                            lx + slot.origin_x as f64,
+                            ly + slot.origin_y as f64,
+                        );
+                        self.selection.update_hover(&self.windows);
+                        self.draw_all();
+                    }
                 }
                 PointerEventKind::Press { button, .. } => {
                     if button == 0x110 {
-                        // BTN_LEFT
                         self.selection.start_press();
                     }
                 }
                 PointerEventKind::Release { button, .. } => {
                     if button == 0x110 {
-                        // BTN_LEFT — confirm
                         self.confirmed = true;
                         self.exit = true;
                     } else if button == 0x111 {
-                        // BTN_RIGHT — cancel
                         self.exit = true;
                     }
                 }

@@ -337,22 +337,11 @@ impl Gate {
             }
 
             Request::GetWindowGeometries => {
-                // Glimpse's overlay is a layer surface on the focused output,
-                // so it compares its surface-local pointer against the rects
-                // we return. Send them in output-local coords by subtracting
-                // the output's location from the global workspace rects.
-                let out_idx = self.focused_output;
-                let out_loc = self
-                    .outputs
-                    .get(out_idx)
-                    .map(|o| (o.location.x, o.location.y))
-                    .unwrap_or((0, 0));
-                let out_size = self
-                    .outputs
-                    .get(out_idx)
-                    .map(|o| o.size)
-                    .unwrap_or((0, 0));
-
+                // Glimpse now runs per-output layer surfaces for interactive
+                // region selection and operates in GLOBAL coordinates — all
+                // windows across all outputs are candidates. Return geometries
+                // in compositor-global coords (no per-output subtraction) so
+                // hover/snap targeting works across the full desktop.
                 let title_for = |w: &smithay::desktop::Window| -> (String, String) {
                     w.toplevel()
                         .map(|t| {
@@ -374,66 +363,70 @@ impl Gate {
 
                 let mut windows: Vec<WindowGeometry> = Vec::new();
 
-                // Fullscreen occludes everything else on the output — if one
-                // is active, that's the only thing glimpse should be able to
-                // quick-select.
-                if let Some(fs_win) = self
-                    .outputs
-                    .get(out_idx)
-                    .and_then(|o| o.fullscreen_window.as_ref())
-                {
-                    let (title, app_id) = title_for(fs_win);
-                    windows.push(WindowGeometry {
-                        app_id,
-                        title,
-                        x: 0,
-                        y: 0,
-                        w: out_size.0,
-                        h: out_size.1,
-                    });
-                    return Response::WindowGeometries { windows };
-                }
+                // Walk every output. A fullscreen window on any output is
+                // the ONLY candidate on that output; otherwise use the
+                // tiled/floating layout of that output's effective workspace.
+                for out_idx in 0..self.outputs.len() {
+                    let out = match self.outputs.get(out_idx) {
+                        Some(o) => o,
+                        None => continue,
+                    };
+                    let out_loc = (out.location.x, out.location.y);
+                    let out_size = out.size;
 
-                let ws_idx = self.effective_ws(out_idx);
-                if let Some(ws) = self.workspaces.get(out_idx).and_then(|pool| pool.get(ws_idx)) {
-                    let area = self.workarea();
-                    let geos = crate::layout::layout_workspace(
-                        ws,
-                        area,
-                        self.config.general.border_px,
-                    );
-                    for g in geos.iter().filter(|g| g.visible) {
-                        let (title, app_id) = title_for(&g.window);
+                    if let Some(fs_win) = out.fullscreen_window.as_ref() {
+                        let (title, app_id) = title_for(fs_win);
                         windows.push(WindowGeometry {
                             app_id,
                             title,
-                            x: g.rect.loc.x - out_loc.0,
-                            y: g.rect.loc.y - out_loc.1,
-                            w: g.rect.size.w,
-                            h: g.rect.size.h,
+                            x: out_loc.0,
+                            y: out_loc.1,
+                            w: out_size.0,
+                            h: out_size.1,
                         });
+                        continue;
                     }
-                }
 
-                // Include currently-visible scratchpad windows on this output
-                // so they can be quick-selected while open; skip hidden ones.
-                for sp in self
-                    .scratchpads
-                    .iter()
-                    .filter(|sp| sp.visible && !sp.hiding && sp.output_idx == out_idx)
-                {
-                    for client in sp.workspace.clients.iter() {
-                        let geo = client.geometry();
-                        if let Some(loc) = self.space.element_location(client) {
-                            let (title, app_id) = title_for(client);
+                    let ws_idx = self.effective_ws(out_idx);
+                    if let Some(ws) = self.workspaces.get(out_idx).and_then(|pool| pool.get(ws_idx)) {
+                        let area = out.workarea;
+                        let geos = crate::layout::layout_workspace(
+                            ws,
+                            area,
+                            self.config.general.border_px,
+                        );
+                        for g in geos.iter().filter(|g| g.visible) {
+                            let (title, app_id) = title_for(&g.window);
                             windows.push(WindowGeometry {
                                 app_id,
                                 title,
-                                x: loc.x - out_loc.0,
-                                y: loc.y - out_loc.1,
-                                w: geo.size.w,
-                                h: geo.size.h,
+                                x: g.rect.loc.x,
+                                y: g.rect.loc.y,
+                                w: g.rect.size.w,
+                                h: g.rect.size.h,
                             });
+                        }
+                    }
+
+                    // Currently-visible scratchpad windows on this output.
+                    for sp in self
+                        .scratchpads
+                        .iter()
+                        .filter(|sp| sp.visible && !sp.hiding && sp.output_idx == out_idx)
+                    {
+                        for client in sp.workspace.clients.iter() {
+                            let geo = client.geometry();
+                            if let Some(loc) = self.space.element_location(client) {
+                                let (title, app_id) = title_for(client);
+                                windows.push(WindowGeometry {
+                                    app_id,
+                                    title,
+                                    x: loc.x,
+                                    y: loc.y,
+                                    w: geo.size.w,
+                                    h: geo.size.h,
+                                });
+                            }
                         }
                     }
                 }
