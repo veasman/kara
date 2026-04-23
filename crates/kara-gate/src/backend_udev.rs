@@ -2865,9 +2865,31 @@ fn capture_screenshot<'a>(
                         } else {
                             img
                         };
-                        match final_img.save(path) {
-                            Ok(()) => tracing::info!("screenshot saved: {path}"),
-                            Err(e) => tracing::error!("screenshot save failed: {e}"),
+                        // Write to a sibling temp path first and rename
+                        // into place. kara-glimpse polls `exists()` to
+                        // know when the PNG is ready — but a naive
+                        // `save(path)` creates the file empty, then
+                        // streams bytes in, leaving a window where
+                        // glimpse sees the file, tries to load it, and
+                        // hits an EOF in the PNG decoder. POSIX rename
+                        // is atomic: glimpse either doesn't see the
+                        // path yet or sees the fully-written file.
+                        let tmp = format!("{path}.tmp");
+                        match final_img.save(&tmp) {
+                            Ok(()) => {
+                                if let Err(e) = std::fs::rename(&tmp, path) {
+                                    tracing::error!(
+                                        "screenshot rename {tmp} -> {path} failed: {e}"
+                                    );
+                                    let _ = std::fs::remove_file(&tmp);
+                                } else {
+                                    tracing::info!("screenshot saved: {path}");
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!("screenshot save failed: {e}");
+                                let _ = std::fs::remove_file(&tmp);
+                            }
                         }
                     }
                 }

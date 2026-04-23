@@ -13,14 +13,31 @@ use crate::state::Gate;
 
 impl Gate {
     fn screenshot_output_path(&self) -> String {
+        // Multi-output region captures fire several ScreenshotOutput
+        // requests back-to-back. Second-granularity timestamps let two
+        // requests collide on the same path — the second render
+        // overwrites the first, glimpse loads the file mid-write, and
+        // the whole compose step falls apart with "failed to load
+        // capture piece". Use nanoseconds + a per-process atomic
+        // counter so every screenshot gets a guaranteed-unique path
+        // regardless of how fast they arrive or how coarse the clock
+        // happens to be.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SCREENSHOT_SEQ: AtomicU64 = AtomicU64::new(0);
+        let seq = SCREENSHOT_SEQ.fetch_add(1, Ordering::Relaxed);
+
         let dir = dirs::picture_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
         std::fs::create_dir_all(&dir).ok();
-        let timestamp = std::time::SystemTime::now()
+        let timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
+            .map(|d| d.as_nanos())
             .unwrap_or(0);
-        dir.join(format!("kara-screenshot-{timestamp}.png"))
+        // Human-readable seconds prefix so the prune-by-age logic in
+        // kara-glimpse keeps working, followed by the disambiguator.
+        let ts_secs = timestamp_ns / 1_000_000_000;
+        let ts_rem = timestamp_ns % 1_000_000_000;
+        dir.join(format!("kara-screenshot-{ts_secs}-{ts_rem:09}-{seq}.png"))
             .to_string_lossy()
             .to_string()
     }
