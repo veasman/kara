@@ -1806,6 +1806,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kara-veil"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "kara-ipc",
+ "kara-ui",
+ "smithay-client-toolkit",
+ "tiny-skia 0.12.0",
+ "wayland-client",
+ "wayland-protocols",
+ "zeroize",
+]
+
+[[package]]
 name = "kara-whisper"
 version = "0.1.0"
 dependencies = [
@@ -4550,6 +4564,12 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "zeroize"
+version = "1.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
 
 [[package]]
 name = "zmij"

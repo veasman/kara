@@ -12,6 +12,7 @@ members = [
     "crates/kara-summon",
     "crates/kara-whisper",
     "crates/kara-glimpse",
+    "crates/kara-veil",
 ]
 
 [workspace.package]

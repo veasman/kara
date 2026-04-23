@@ -1,0 +1,33 @@
+[package]
+name = "kara-veil"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Screen lock for the kara desktop environment"
+authors = ["Charlton Moren"]
+
+[[bin]]
+name = "kara-veil"
+path = "src/main.rs"
+
+# Link against the system's libpam at build time. Arch/Artix ship
+# /usr/lib/libpam.so.0 by default; we don't need a compile-time header,
+# only the shared object's symbols at link/runtime.
+[package.metadata]
+links = "pam"
+
+[dependencies]
+kara-ipc = { path = "../kara-ipc" }
+kara-ui = { path = "../kara-ui" }
+smithay-client-toolkit = "0.19"
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["staging", "client"] }
+tiny-skia = { workspace = true }
+chrono = { workspace = true }
+# PAM authentication is wired via direct FFI in `src/pam.rs` against
+# libpam.so.0. Pulling the `pam` crate would drag clang/bindgen in as a
+# build-time dep; kara's target distros (Artix/Arch minimal) don't ship
+# that by default. The FFI surface we use is tiny (pam_start /
+# pam_authenticate / pam_end + conv callback) so hand-written bindings
+# are cheaper than the build-dep dance.
+zeroize = "1"

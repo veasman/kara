@@ -58,6 +58,8 @@ install:
 		install -m 0755 "target/release/kara-whisper" "$(DESTDIR)$(BINDIR)/kara-whisper" || true
 	@test -f "target/release/kara-beautify" && \
 		install -m 0755 "target/release/kara-beautify" "$(DESTDIR)$(BINDIR)/kara-beautify" || true
+	@test -f "target/release/kara-veil" && \
+		install -m 0755 "target/release/kara-veil" "$(DESTDIR)$(BINDIR)/kara-veil" || true
 	install -d "$(DESTDIR)$(APPDIR)"
 	install -m 0644 example/kara-gate.conf "$(DESTDIR)$(APPDIR)/kara-gate.conf.example"
 	install -m 0644 example/kara-beautify.toml "$(DESTDIR)$(APPDIR)/kara-beautify.toml.example"
@@ -101,6 +103,7 @@ uninstall:
 	rm -f "$(DESTDIR)$(BINDIR)/kara-glimpse"
 	rm -f "$(DESTDIR)$(BINDIR)/kara-whisper"
 	rm -f "$(DESTDIR)$(BINDIR)/kara-beautify"
+	rm -f "$(DESTDIR)$(BINDIR)/kara-veil"
 	rm -f "$(DESTDIR)$(APPDIR)/kara-gate.conf.example"
 	rm -f "$(DESTDIR)$(APPDIR)/kara-beautify.toml.example"
 	rm -f "$(DESTDIR)$(DATADIR)/wayland-sessions/kara.desktop"

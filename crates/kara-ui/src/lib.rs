@@ -3,6 +3,7 @@
 //! Canvas drawing (rounded rects, circles, glyph blitting) and
 //! text rendering (cosmic-text measurement and drawing).
 
+pub mod blur;
 pub mod canvas;
 pub mod text;
 
