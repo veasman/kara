@@ -2874,7 +2874,17 @@ fn capture_screenshot<'a>(
                         // hits an EOF in the PNG decoder. POSIX rename
                         // is atomic: glimpse either doesn't see the
                         // path yet or sees the fully-written file.
-                        let tmp = format!("{path}.tmp");
+                        //
+                        // The tmp path must keep `.png` as its final
+                        // extension — `image::save` picks the encoder
+                        // from the extension, and a previous version
+                        // used `.tmp` which made every capture fail
+                        // with "file extension not recognized". Insert
+                        // `.partial` before `.png` instead.
+                        let tmp = path
+                            .strip_suffix(".png")
+                            .map(|stem| format!("{stem}.partial.png"))
+                            .unwrap_or_else(|| format!("{path}.partial.png"));
                         match final_img.save(&tmp) {
                             Ok(()) => {
                                 if let Err(e) = std::fs::rename(&tmp, path) {
