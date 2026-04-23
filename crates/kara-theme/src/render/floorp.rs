@@ -26,6 +26,16 @@
 //!     Bool. Lets GTK widgets inside web content (select menus,
 //!     scrollbars) render dark. Harmless when set on light themes.
 //!
+//!   widget.use-xdg-desktop-portal.file-picker
+//!     Integer. 0 = never, 1 = auto, 2 = always. Forces Floorp to
+//!     route Attach/Save-As through xdg-desktop-portal.FileChooser
+//!     instead of its built-in GTK dialog — so kara's termfilechooser
+//!     routing (see /usr/share/xdg-desktop-portal/kara-portals.conf)
+//!     can send the dialog to yazi. Without this the portal stack
+//!     is unused for file dialogs and users see the GTK file chooser
+//!     no matter how the portal backend is configured. `2` (always)
+//!     is the right value for kara — the portal is a hard dep.
+//!
 //! Live reload note: Floorp parses user.js once at startup; the
 //! user needs to restart Floorp for changes to stick. In practice,
 //! for a theme swap with an already-running Floorp, the gsettings
@@ -57,6 +67,12 @@ pub fn render_floorp_user_js(theme: &ResolvedTheme) -> String {
 user_pref(\"ui.systemUsesDarkTheme\", {system_theme});
 user_pref(\"layout.css.prefers-color-scheme-content-override\", {content_override});
 user_pref(\"widget.content.allow-gtk-dark-theme\", {allow_gtk_dark});
+
+// Route file dialogs (Attach, Save As, Download show-in-folder) through
+// xdg-desktop-portal so kara FileChooser routing lands in yazi via
+// termfilechooser. Value 2 = always use the portal.
+user_pref(\"widget.use-xdg-desktop-portal.file-picker\", 2);
+user_pref(\"widget.use-xdg-desktop-portal.mime-handler\", 2);
 ",
         name = theme.name,
     )
