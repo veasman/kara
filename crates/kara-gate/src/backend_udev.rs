@@ -1937,19 +1937,40 @@ fn render_frame(
     // landscape scanout buffer), which no longer lines up with either
     // the portrait output size or glimpse's region coords — a portrait
     // monitor would end up with a clipped/wrong crop.
-    // Screenshot trigger. `screenshot_output_idx` takes precedence
-    // (kara-veil uses `ScreenshotOutput` to request a specific
-    // monitor); otherwise we fall back to focused_output for the
-    // plain `Screenshot` / `ScreenshotRegion` paths.
-    let screenshot_target = state
-        .screenshot_output_idx
-        .unwrap_or(state.focused_output);
-    if state.screenshot_path.is_some() && output_idx == screenshot_target {
-        if let Some(path) = state.screenshot_path.take() {
-            let region = state.screenshot_region.take();
-            state.screenshot_output_idx = None;
-            capture_screenshot(&mut renderer, &elements, state, output_idx, &path, region);
+    // Screenshot trigger. Drain any queue entries that target THIS
+    // output — `output_idx=None` in the entry means "focused output",
+    // which matches only when we're rendering the focused one.
+    // Multiple entries can exist when the client batched requests
+    // (glimpse region across N monitors, veil backdrop across N
+    // monitors); each fires independently and writes to its own path.
+    let focused_output = state.focused_output;
+    let to_capture: Vec<crate::state::PendingScreenshot> = {
+        let q = &mut state.screenshot_queue;
+        let mut drained = Vec::new();
+        // Walk in-place and pull out entries whose target matches.
+        let mut i = 0;
+        while i < q.len() {
+            let matches = match q[i].output_idx {
+                Some(idx) => idx == output_idx,
+                None => output_idx == focused_output,
+            };
+            if matches {
+                drained.push(q.remove(i));
+            } else {
+                i += 1;
+            }
         }
+        drained
+    };
+    for entry in to_capture {
+        capture_screenshot(
+            &mut renderer,
+            &elements,
+            state,
+            output_idx,
+            &entry.path,
+            entry.region,
+        );
     }
 
     // Two-pass rotation: render the portrait element vec into the

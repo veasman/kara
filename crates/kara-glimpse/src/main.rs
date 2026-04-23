@@ -234,6 +234,23 @@ fn main() {
     // OutputInfo for. Pair by name — SCTK's OutputInfo.name carries
     // the connector name via xdg_output once it's been populated.
     let wl_outputs: Vec<wl_output::WlOutput> = glimpse.output_state.outputs().collect();
+    eprintln!(
+        "kara-glimpse: IPC outputs=[{}], wayland outputs={}",
+        output_infos
+            .iter()
+            .map(|o| format!(
+                "{}@({},{}) {}x{}{}",
+                o.name,
+                o.x,
+                o.y,
+                o.width,
+                o.height,
+                if o.primary { " primary" } else { "" }
+            ))
+            .collect::<Vec<_>>()
+            .join(", "),
+        wl_outputs.len(),
+    );
     for wl in wl_outputs.iter() {
         let info_name = glimpse
             .output_state
@@ -244,8 +261,15 @@ fn main() {
         // outputs we don't have IPC data for so we don't paint a
         // rogue surface we can't position.
         let Some(info) = output_infos.iter().find(|o| o.name == info_name) else {
+            eprintln!(
+                "kara-glimpse: skipping wayland output {info_name:?} — no IPC match"
+            );
             continue;
         };
+        eprintln!(
+            "kara-glimpse: surface for {} at origin ({}, {})",
+            info.name, info.x, info.y
+        );
 
         let surface = compositor.create_surface(&qh);
         let layer = layer_shell.create_layer_surface(

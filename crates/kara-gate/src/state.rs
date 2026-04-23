@@ -192,6 +192,17 @@ impl ClientData for ClientState {
 /// window the user manually spawns minutes later with the same app_id.
 const AUTOSTART_ROUTE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// One pending screenshot capture. Owned by `Gate.screenshot_queue`,
+/// drained by `render_frame` when the matching output's render runs.
+pub struct PendingScreenshot {
+    pub path: String,
+    /// Target output index, or `None` to capture whichever output is
+    /// currently focused (legacy `Screenshot` request semantics).
+    pub output_idx: Option<usize>,
+    /// Optional crop in the target output's local coordinate space.
+    pub region: Option<(i32, i32, i32, i32)>,
+}
+
 /// Per-active-lock state for ext-session-lock-v1.
 ///
 /// Lifecycle:
@@ -488,14 +499,16 @@ pub struct Gate {
     // Backend-specific data (UdevData for udev, None for winit)
     #[allow(dead_code)]
     pub backend_data: Option<Box<dyn std::any::Any>>,
-    pub screenshot_path: Option<String>,
-    pub screenshot_region: Option<(i32, i32, i32, i32)>,
-    /// Output index the pending screenshot should capture, if any. When
-    /// `None` the render hook falls back to `focused_output` (existing
-    /// behavior); when `Some`, only the matching output captures. Set
-    /// via `ScreenshotOutput { name }` IPC from kara-veil so it can ask
-    /// for a specific monitor without juggling compositor focus.
-    pub screenshot_output_idx: Option<usize>,
+    /// Queue of pending screenshot captures. Each entry names a target
+    /// output (or None meaning focused_output) and an optional region
+    /// sub-rect. `render_frame` drains entries whose target matches the
+    /// output being rendered. Multiple entries can pile up between
+    /// renders — kara-glimpse's multi-output region capture issues one
+    /// per touched output in rapid succession, and a single-shot
+    /// `Option<...>` state set would clobber earlier entries before
+    /// `render_frame` got to them. Previously that silently dropped
+    /// every screenshot except the last.
+    pub screenshot_queue: Vec<PendingScreenshot>,
 
     // Keybind overlay
     pub keybind_overlay_visible: bool,
@@ -643,9 +656,7 @@ impl Gate {
             cursor_idle_pos: (0.0, 0.0).into(),
             config_mtime: Self::get_config_mtime(),
             backend_data: None,
-            screenshot_path: None,
-            screenshot_region: None,
-            screenshot_output_idx: None,
+            screenshot_queue: Vec::new(),
             keybind_overlay_visible: false,
         };
 

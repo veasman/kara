@@ -304,21 +304,36 @@ impl Gate {
             }
 
             Request::Screenshot => {
+                // Legacy full-screen capture of the focused output.
+                // output_idx=None means "whichever output is focused at
+                // render time"; matches pre-queue behaviour.
                 let path_str = self.screenshot_output_path();
-                self.screenshot_path = Some(path_str.clone());
+                self.screenshot_queue.push(crate::state::PendingScreenshot {
+                    path: path_str.clone(),
+                    output_idx: None,
+                    region: None,
+                });
                 Response::ScreenshotDone { path: path_str }
             }
 
             Request::ScreenshotRegion { x, y, w, h } => {
                 let path_str = self.screenshot_output_path();
-                self.screenshot_path = Some(path_str.clone());
-                self.screenshot_region = Some((x, y, w, h));
+                self.screenshot_queue.push(crate::state::PendingScreenshot {
+                    path: path_str.clone(),
+                    output_idx: None,
+                    region: Some((x, y, w, h)),
+                });
                 Response::ScreenshotDone { path: path_str }
             }
 
             Request::ScreenshotOutput { name } => {
-                // Resolve the connector name to an outputs-index; bail if the
-                // caller asked for a monitor kara doesn't know about.
+                // Resolve the connector name to an outputs-index; bail if
+                // the caller asked for a monitor kara doesn't know about.
+                // Multi-output capture paths (kara-glimpse region
+                // selection, kara-veil lock backdrop) fire several of
+                // these in rapid succession — queuing them lets every
+                // capture land on its own frame instead of having the
+                // N-th request silently overwrite the previous N-1.
                 match self
                     .outputs
                     .iter()
@@ -326,8 +341,11 @@ impl Gate {
                 {
                     Some(idx) => {
                         let path_str = self.screenshot_output_path();
-                        self.screenshot_path = Some(path_str.clone());
-                        self.screenshot_output_idx = Some(idx);
+                        self.screenshot_queue.push(crate::state::PendingScreenshot {
+                            path: path_str.clone(),
+                            output_idx: Some(idx),
+                            region: None,
+                        });
                         Response::ScreenshotDone { path: path_str }
                     }
                     None => Response::Error {
