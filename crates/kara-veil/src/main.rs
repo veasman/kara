@@ -353,10 +353,21 @@ fn main() {
         Ok(kara_ipc::Response::Theme { colors }) => colors,
         _ => default_theme(),
     };
+    // Primary is whichever output the user marked `primary` in their
+    // `monitors { }` config — NOT the first entry (which is leftmost
+    // after the compositor's spatial sort) and NOT whatever's
+    // currently focused. kara-veil's login card lands where the user
+    // expects to type; for multi-monitor setups that's as often the
+    // middle or right monitor as the leftmost. Falls back to the
+    // first-reported output only if nothing is marked.
     let primary_name: Option<String> = match kara_ipc::IpcClient::connect()
         .and_then(|mut c| c.request(&kara_ipc::Request::GetOutputs))
     {
-        Ok(kara_ipc::Response::Outputs { outputs }) => outputs.first().map(|o| o.name.clone()),
+        Ok(kara_ipc::Response::Outputs { outputs }) => outputs
+            .iter()
+            .find(|o| o.primary)
+            .or_else(|| outputs.first())
+            .map(|o| o.name.clone()),
         _ => None,
     };
 

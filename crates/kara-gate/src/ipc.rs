@@ -167,12 +167,28 @@ impl Gate {
                 let outputs: Vec<kara_ipc::OutputInfo> = order
                     .iter()
                     .filter_map(|&idx| self.outputs.get(idx))
-                    .map(|o| kara_ipc::OutputInfo {
-                        name: o.output.name(),
-                        width: o.size.0,
-                        height: o.size.1,
-                        x: o.location.x,
-                        y: o.location.y,
+                    .map(|o| {
+                        let name = o.output.name();
+                        // Walk the user's monitor config to surface the
+                        // `primary` marker. Clients like kara-veil
+                        // render their login card on whichever output
+                        // this flag points at, independent of spatial
+                        // position or enumeration order.
+                        let primary = self
+                            .config
+                            .monitors
+                            .iter()
+                            .find(|m| m.name == name)
+                            .map(|m| m.primary)
+                            .unwrap_or(false);
+                        kara_ipc::OutputInfo {
+                            name,
+                            width: o.size.0,
+                            height: o.size.1,
+                            x: o.location.x,
+                            y: o.location.y,
+                            primary,
+                        }
                     })
                     .collect();
                 if outputs.is_empty() {
@@ -187,6 +203,7 @@ impl Gate {
                             height: h,
                             x: 0,
                             y: 0,
+                            primary: true,
                         }],
                     }
                 } else {

@@ -106,6 +106,16 @@ pub struct OutputInfo {
     pub x: i32,
     #[serde(default)]
     pub y: i32,
+    /// True for the output the user marked `primary` in their
+    /// `monitors { }` config. Consumers that want to render
+    /// "primary-only" chrome (kara-veil's login card, a future
+    /// widgets layer) look for this flag rather than assuming the
+    /// first entry or the leftmost monitor — neither is reliable
+    /// when the user has a dedicated "work" monitor in the middle
+    /// or on the right. Defaults to false so pre-field clients
+    /// parse cleanly.
+    #[serde(default)]
+    pub primary: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
