@@ -60,20 +60,46 @@ export ELECTRON_OZONE_PLATFORM_HINT="${ELECTRON_OZONE_PLATFORM_HINT:-wayland}"
 export _JAVA_AWT_WM_NONREPARENTING="${_JAVA_AWT_WM_NONREPARENTING:-1}"
 
 # ─── D-Bus session ────────────────────────────────────────────────────
-# dbus-run-session:
-#   - starts a private dbus-daemon for this session
-#   - exports DBUS_SESSION_BUS_ADDRESS + DBUS_SESSION_BUS_PID
-#   - runs kara-gate as the session leader
-#   - tears the bus down when kara-gate exits
+# Two scenarios:
 #
-# If dbus-run-session isn't installed we fall through to plain
-# kara-gate with a warning so the user isn't left staring at a
-# blank TTY.
-if command -v dbus-run-session >/dev/null 2>&1; then
+#   1. A user-session D-Bus is ALREADY running (Artix dinit starts one
+#      at boot via the `dbus` service, exposed at
+#      $XDG_RUNTIME_DIR/bus; systemd distros do the same via
+#      dbus.socket). In this case we join that bus. It persists across
+#      kara restarts — kara-whisper keeps its `org.freedesktop.Notifications`
+#      registration across compositor reloads, and notify-send from
+#      any terminal (started before, during, or after kara) reaches
+#      the same bus.
+#
+#   2. No user bus is running. Then we fall back to `dbus-run-session`,
+#      which spawns a throwaway private daemon keyed to this kara
+#      process tree. Works, but every compositor restart cuts a new
+#      socket — terminals opened before the restart go stale and
+#      notify-send starts failing with "Could not connect: No such
+#      file or directory". That was the whole kara-gate-spawned bus
+#      problem. Skipping the wrapper when the system bus exists
+#      avoids the stale-address trap entirely.
+#
+# `DBUS_SESSION_BUS_ADDRESS` takes precedence if set (e.g. the
+# display manager already resolved it). Otherwise probe
+# `$XDG_RUNTIME_DIR/bus` directly — that's where dbus-daemon
+# --session installs by default on both systemd and dinit.
+_kara_bus="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus"
+if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+    # Already resolved; just exec.
+    exec kara-gate "$@"
+elif [ -S "$_kara_bus" ]; then
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=$_kara_bus"
+    exec kara-gate "$@"
+elif command -v dbus-run-session >/dev/null 2>&1; then
+    # No user-session bus running; spin up a private one.
+    # Every kara restart will cut a new socket — keep that in mind
+    # when opening terminals from outside the compositor.
     exec dbus-run-session -- kara-gate "$@"
 else
-    echo "kara: warning: dbus-run-session not found — session D-Bus"     >&2
-    echo "kara:          will not be available. Install dbus to enable"  >&2
-    echo "kara:          live theme switching in Firefox/GTK apps."      >&2
+    echo "kara: warning: no session D-Bus and dbus-run-session missing" >&2
+    echo "kara:          install the 'dbus' package or enable the"      >&2
+    echo "kara:          user-session bus for live theme switching,"    >&2
+    echo "kara:          notifications, and portal file pickers."       >&2
     exec kara-gate "$@"
 fi
